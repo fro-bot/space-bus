@@ -1,7 +1,7 @@
 ---
 title: 'feat: Convert space-bus into the distributable @fro.bot/space-bus plugin'
 type: feat
-status: active
+status: completed
 date: 2026-07-02
 deepened: 2026-07-02
 origin: docs/brainstorms/2026-07-02-space-bus-plugin-conversion-requirements.md
@@ -93,7 +93,7 @@ R1–R12 from the origin document, grouped: packaging (R1–R4), roster discover
 
 ## Implementation Units
 
-- [ ] **Unit 1: Lazy roster resolution (`spacebus.json` + env override)**
+- [x] **Unit 1: Lazy roster resolution (`spacebus.json` + env override)**
 
 **Goal:** Roster loads on demand per call, never at import; `spacebus.json` discovered from the workspace directory; `SPACE_BUS_CONFIG` override.
 
@@ -121,7 +121,7 @@ R1–R12 from the origin document, grouped: packaging (R1–R4), roster discover
 
 **Verification:** typecheck clean; new unit tests pass under `bun test`; `bun run smoke` still PASS against the live server.
 
-- [ ] **Unit 2: Plugin entry + per-file tools**
+- [x] **Unit 2: Plugin entry + per-file tools**
 
 **Goal:** `src/index.ts` default-exports the Plugin factory registering exactly the four tools; tool bodies move to `src/tools/*.ts`; `.opencode/tools/` untouched (removed in Unit 6).
 
@@ -145,7 +145,7 @@ R1–R12 from the origin document, grouped: packaging (R1–R4), roster discover
 
 **Verification:** typecheck clean; fixture-workspace live probe shows the four tools functioning via plugin registration.
 
-- [ ] **Unit 3: Packaging, build, Biome, MCP bin**
+- [x] **Unit 3: Packaging, build, Biome, MCP bin**
 
 **Goal:** Publishable package shape: ESM `dist/`, declarations, bin for the MCP facade, Biome lint/format, Changesets initialized.
 
@@ -169,7 +169,7 @@ R1–R12 from the origin document, grouped: packaging (R1–R4), roster discover
 
 **Verification:** `bun run build` emits `dist/index.js`, `dist/mcp.js`, `.d.ts`; `bunx biome check .` clean; `bun pm pack --dry-run` (or equivalent) lists only intended files; fixture workspace loads the BUILT dist (not src) successfully; MCP stdio probe against `dist/mcp.js` passes (four tools, isError path, no stdout noise).
 
-- [ ] **Unit 4: CI workflow set + settings**
+- [x] **Unit 4: CI workflow set + settings**
 
 **Goal:** The seven workflows plus `settings.yml`, SHA-pinned, with branch protection contexts matching CI job names.
 
@@ -191,7 +191,7 @@ R1–R12 from the origin document, grouped: packaging (R1–R4), roster discover
 
 **Verification:** CI green on the conversion PR; actionlint (via ci job or local) clean; release workflow dry-behavior verified on main after merge (version PR appears when a changeset exists).
 
-- [ ] **Unit 5: Docs rewrite**
+- [x] **Unit 5: Docs rewrite**
 
 **Goal:** README and AGENTS.md reorient to the plugin: install/config for consumers, dev-loop for contributors; control-board specifics out.
 
@@ -209,7 +209,7 @@ R1–R12 from the origin document, grouped: packaging (R1–R4), roster discover
 
 **Verification:** No references to `workspace.json`, `.opencode/tools/`, or repo-checkout Claude Desktop paths remain outside historical docs (`docs/brainstorms`, `docs/solutions`, `HANDOFF.md`).
 
-- [ ] **Unit 6: Control-board migration + repo cleanup (reversible cutover)**
+- [x] **Unit 6: Control-board migration + repo cleanup (reversible cutover)**
 
 **Goal:** New control board at `~/src/github.com/fro-bot/workspace` passes AE4; only then the repo sheds `.opencode/tools/`, root `workspace.json`/`spacebus.json`, and the old control-board AGENTS.md content.
 
@@ -229,7 +229,7 @@ R1–R12 from the origin document, grouped: packaging (R1–R4), roster discover
 
 **Verification:** AE4 live pass from the new workspace; `git grep` confirms no `.opencode/tools` remnants; smoke still PASS from the repo using the fixture.
 
-- [ ] **Unit 7: First publish + AE6**
+- [x] **Unit 7: First publish + AE6**
 
 **Goal:** The package reaches npm and the control board switches to the npm name. Bootstrap constraint (verified against current npm docs): a trusted publisher CANNOT be configured for a package that doesn't exist yet — the FIRST publish is a manual maintainer publish (`npm publish` with 2FA/granular token, version 0.1.0), then the trusted publisher is configured on npmjs.com (owner fro-bot, repo space-bus, workflow `release.yaml` — exact filename match), and AE5 is satisfied by the SECOND release flowing through CI OIDC.
 
