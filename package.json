@@ -8,6 +8,7 @@
   "repository": "github:fro-bot/space-bus",
   "scripts": {
     "typecheck": "tsc --noEmit",
+    "test": "bun test",
     "smoke": "bun run scripts/smoke.ts",
     "mcp": "bun run src/mcp.ts"
   },

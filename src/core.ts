@@ -1,66 +1,8 @@
-import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { existsSync } from "node:fs";
 import { z } from "zod";
+import { getProjects, getRoster, type Project } from "./config";
 
-const manifestSchema = z.object({
-  server: z.object({ baseUrl: z.string().url() }),
-  projects: z.array(
-    z.object({
-      name: z.string(),
-      path: z.string(),
-      description: z.string(),
-    }),
-  ),
-});
-
-type Manifest = z.infer<typeof manifestSchema>;
-
-function expandHome(path: string): string {
-  return path.startsWith("~") ? join(homedir(), path.slice(1)) : path;
-}
-
-function loadManifest(): Manifest {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const manifestPath = resolve(here, "..", "workspace.json");
-  let raw: string;
-  try {
-    raw = readFileSync(manifestPath, "utf8");
-  } catch (err) {
-    throw new Error(`space-bus: cannot read manifest at ${manifestPath}: ${(err as Error).message}`);
-  }
-  let json: unknown;
-  try {
-    json = JSON.parse(raw);
-  } catch (err) {
-    throw new Error(`space-bus: manifest at ${manifestPath} is not valid JSON: ${(err as Error).message}`);
-  }
-  const parsed = manifestSchema.safeParse(json);
-  if (!parsed.success) {
-    throw new Error(`space-bus: manifest at ${manifestPath} failed schema validation: ${parsed.error.message}`);
-  }
-  const url = new URL(parsed.data.server.baseUrl);
-  const hostname = url.hostname;
-  const allowedHosts = new Set(["127.0.0.1", "::1", "[::1]", "localhost"]);
-  if (!allowedHosts.has(hostname)) {
-    throw new Error(
-      `space-bus: workspace.json baseUrl must point to localhost (got ${hostname}) — refusing to send credentials off-machine`,
-    );
-  }
-  return parsed.data;
-}
-
-const manifest = loadManifest();
-
-type Project = Manifest["projects"][number] & { expandedPath: string };
-
-const projects: Project[] = manifest.projects.map((p) => ({
-  ...p,
-  expandedPath: expandHome(p.path),
-}));
-
-function findProject(name: string): Project | undefined {
+function findProject(projects: Project[], name: string): Project | undefined {
   return projects.find((p) => p.name === name);
 }
 
@@ -83,12 +25,13 @@ function authHeader(): Record<string, string> {
 }
 
 async function api(
+  baseUrl: string,
   directory: string,
   path: string,
   init?: RequestInit,
 ): Promise<{ res: Response; bodyText: string }> {
   try {
-    const res = await fetch(`${manifest.server.baseUrl}${path}`, {
+    const res = await fetch(`${baseUrl}${path}`, {
       ...init,
       headers: {
         "content-type": "application/json",
@@ -197,10 +140,15 @@ const sessionSummarySchema = z
   .passthrough();
 
 async function fetchTurnDiffs(
+  baseUrl: string,
   directory: string,
   sessionId: string,
 ): Promise<z.infer<typeof diffSchema>> {
-  const { res, bodyText } = await api(directory, `/session/${encodeURIComponent(sessionId)}/message?limit=100`);
+  const { res, bodyText } = await api(
+    baseUrl,
+    directory,
+    `/session/${encodeURIComponent(sessionId)}/message?limit=100`,
+  );
   if (!res.ok) return [];
   let messages: z.infer<typeof turnMessageListSchema>;
   try {
@@ -222,10 +170,11 @@ async function fetchTurnDiffs(
 }
 
 async function fetchDiffWithFallback(
+  baseUrl: string,
   directory: string,
   sessionId: string,
 ): Promise<{ diff: z.infer<typeof diffSchema>; diffSource: DiffSource }> {
-  const diffRes = await api(directory, `/session/${encodeURIComponent(sessionId)}/diff`);
+  const diffRes = await api(baseUrl, directory, `/session/${encodeURIComponent(sessionId)}/diff`);
   let diff: z.infer<typeof diffSchema> = [];
   try {
     diff = diffRes.res.ok ? diffSchema.parse(JSON.parse(diffRes.bodyText)) : [];
@@ -236,7 +185,7 @@ async function fetchDiffWithFallback(
     return { diff, diffSource: "session" };
   }
   try {
-    const sessionRes = await api(directory, `/session/${encodeURIComponent(sessionId)}`);
+    const sessionRes = await api(baseUrl, directory, `/session/${encodeURIComponent(sessionId)}`);
     if (sessionRes.res.ok) {
       const parsed = sessionSummarySchema.parse(JSON.parse(sessionRes.bodyText));
       const summaryDiffs = parsed.summary?.diffs;
@@ -248,7 +197,7 @@ async function fetchDiffWithFallback(
     // ignore, fall through to per-turn aggregation
   }
   try {
-    const turnDiffs = await fetchTurnDiffs(directory, sessionId);
+    const turnDiffs = await fetchTurnDiffs(baseUrl, directory, sessionId);
     if (turnDiffs.length > 0) {
       return { diff: turnDiffs, diffSource: "turns" };
     }
@@ -256,7 +205,7 @@ async function fetchDiffWithFallback(
     // ignore, fall through to working-tree fallback
   }
   try {
-    const vcsRes = await api(directory, "/vcs/status");
+    const vcsRes = await api(baseUrl, directory, "/vcs/status");
     if (vcsRes.res.ok) {
       const vcsStatus = vcsStatusSchema.parse(JSON.parse(vcsRes.bodyText));
       if (vcsStatus.length > 0) {
@@ -290,8 +239,8 @@ const messageListSchema = z.array(messageEnvelopeSchema);
 
 // --- Path guard --------------------------------------------------------------
 
-function resolveProjectOrErr(name: string): Result<{ project: Project }> {
-  const project = findProject(name);
+function resolveProjectOrErr(projects: Project[], name: string): Result<{ project: Project }> {
+  const project = findProject(projects, name);
   if (!project) {
     const valid = projects.map((p) => p.name).join(", ");
     return err(`space-bus: unknown project "${name}". Valid projects: ${valid}`);
@@ -315,7 +264,10 @@ export type RosterProject = {
   statusError?: string;
 };
 
-export async function roster(): Promise<Result<{ projects: RosterProject[] }>> {
+export async function roster(opts?: { directory?: string }): Promise<Result<{ projects: RosterProject[] }>> {
+  const manifest = getRoster(opts?.directory);
+  const baseUrl = manifest.server.baseUrl;
+  const projects = getProjects(opts?.directory);
   const results = await Promise.all(
     projects.map(async (p): Promise<RosterProject> => {
       const pathExists = existsSync(p.expandedPath);
@@ -324,8 +276,8 @@ export async function roster(): Promise<Result<{ projects: RosterProject[] }>> {
       }
       try {
         const [statusRes, listRes] = await Promise.all([
-          api(p.expandedPath, "/session/status"),
-          api(p.expandedPath, "/session?limit=101"),
+          api(baseUrl, p.expandedPath, "/session/status"),
+          api(baseUrl, p.expandedPath, "/session?limit=101"),
         ]);
         if (!statusRes.res.ok || !listRes.res.ok) {
           return {
@@ -366,16 +318,18 @@ export async function roster(): Promise<Result<{ projects: RosterProject[] }>> {
 // --- dispatch ------------------------------------------------------------------
 
 async function dispatchNew(
+  baseUrl: string,
+  projects: Project[],
   project: string,
   prompt: string,
   title?: string,
 ): Promise<Result<{ sessionId: string; project: string; directory: string }>> {
-  const resolved = resolveProjectOrErr(project);
+  const resolved = resolveProjectOrErr(projects, project);
   if (!resolved.ok) return resolved;
   const directory = resolved.project.expandedPath;
 
   const sessionTitle = title ?? `bus: ${prompt.slice(0, 60)}`;
-  const createRes = await api(directory, "/session", {
+  const createRes = await api(baseUrl, directory, "/session", {
     method: "POST",
     body: JSON.stringify({ title: sessionTitle }),
   });
@@ -389,7 +343,7 @@ async function dispatchNew(
     return err(`space-bus: unexpected /session response shape: ${(e as Error).message}`);
   }
 
-  const promptRes = await api(directory, `/session/${encodeURIComponent(session.id)}/prompt_async`, {
+  const promptRes = await api(baseUrl, directory, `/session/${encodeURIComponent(session.id)}/prompt_async`, {
     method: "POST",
     body: JSON.stringify({ parts: [{ type: "text", text: prompt }] }),
   });
@@ -412,17 +366,22 @@ export async function dispatch(args: {
   prompt: string;
   title?: string;
   sessionId?: string;
+  directory?: string;
 }): Promise<Result<DispatchResult>> {
+  const manifest = getRoster(args.directory);
+  const baseUrl = manifest.server.baseUrl;
+  const projects = getProjects(args.directory);
+
   if (!args.sessionId) {
     if (!args.project) {
       return err("space-bus: project is required when starting a new session");
     }
-    const r = await dispatchNew(args.project, args.prompt, args.title);
+    const r = await dispatchNew(baseUrl, projects, args.project, args.prompt, args.title);
     if (!r.ok) return r;
     return { ok: true, sessionId: r.sessionId, project: r.project, mode: "new", directory: r.directory };
   }
 
-  const loc = await findSessionDirectory(args.sessionId);
+  const loc = await findSessionDirectory(baseUrl, projects, args.sessionId);
   if (!loc.ok) return loc;
   const { directory, project } = loc;
 
@@ -432,19 +391,23 @@ export async function dispatch(args: {
     );
   }
 
-  return steerSession(args.sessionId, args.prompt, directory, project);
+  return steerSession(baseUrl, args.sessionId, args.prompt, directory, project);
 }
 
 // --- session resolution by id (try each project's directory) ------------------
 
-async function findSessionDirectory(sessionId: string): Promise<Result<{ directory: string; project: string }>> {
+async function findSessionDirectory(
+  baseUrl: string,
+  projects: Project[],
+  sessionId: string,
+): Promise<Result<{ directory: string; project: string }>> {
   // Session lookup succeeds regardless of which directory header is sent (the
   // session store is global), so probe with any reachable project directory
   // and trust the returned session's own `directory` field to identify the
   // owning manifest project.
   for (const p of projects) {
     if (!existsSync(p.expandedPath)) continue;
-    const { res, bodyText } = await api(p.expandedPath, `/session/${encodeURIComponent(sessionId)}`);
+    const { res, bodyText } = await api(baseUrl, p.expandedPath, `/session/${encodeURIComponent(sessionId)}`);
     if (!res.ok) continue;
     let session: z.infer<typeof sessionSchema>;
     try {
@@ -498,11 +461,12 @@ const pendingQuestionEntrySchema = z
 const pendingQuestionListSchema = z.array(pendingQuestionEntrySchema);
 
 async function fetchPendingQuestion(
+  baseUrl: string,
   directory: string,
   sessionId: string,
 ): Promise<{ preview: string; options: string[] } | undefined> {
   try {
-    const { res, bodyText } = await api(directory, "/question");
+    const { res, bodyText } = await api(baseUrl, directory, "/question");
     if (!res.ok) return undefined;
     const entries = pendingQuestionListSchema.parse(JSON.parse(bodyText));
     const entry = entries.find((e) => e.sessionID === sessionId);
@@ -517,17 +481,24 @@ async function fetchPendingQuestion(
   }
 }
 
-export async function status(sessionId: string): Promise<Result<SessionStatusResult>> {
-  const loc = await findSessionDirectory(sessionId);
+export async function status(
+  sessionId: string,
+  opts?: { directory?: string },
+): Promise<Result<SessionStatusResult>> {
+  const manifest = getRoster(opts?.directory);
+  const baseUrl = manifest.server.baseUrl;
+  const projects = getProjects(opts?.directory);
+
+  const loc = await findSessionDirectory(baseUrl, projects, sessionId);
   if (!loc.ok) return loc;
   const { directory, project } = loc;
 
   const [sessionRes, statusMapRes, todoRes, diffResult, pendingQuestion] = await Promise.all([
-    api(directory, `/session/${encodeURIComponent(sessionId)}`),
-    api(directory, "/session/status"),
-    api(directory, `/session/${encodeURIComponent(sessionId)}/todo`),
-    fetchDiffWithFallback(directory, sessionId),
-    fetchPendingQuestion(directory, sessionId),
+    api(baseUrl, directory, `/session/${encodeURIComponent(sessionId)}`),
+    api(baseUrl, directory, "/session/status"),
+    api(baseUrl, directory, `/session/${encodeURIComponent(sessionId)}/todo`),
+    fetchDiffWithFallback(baseUrl, directory, sessionId),
+    fetchPendingQuestion(baseUrl, directory, sessionId),
   ]);
 
   if (!sessionRes.res.ok) {
@@ -571,12 +542,13 @@ const questionEntrySchema = z.object({ id: z.string(), sessionID: z.string() }).
 const questionListSchema = z.array(questionEntrySchema);
 
 async function steerSession(
+  baseUrl: string,
   sessionId: string,
   message: string,
   directory: string,
   project: string,
 ): Promise<Result<DispatchResult>> {
-  const questionsRes = await api(directory, "/question");
+  const questionsRes = await api(baseUrl, directory, "/question");
   if (questionsRes.res.ok) {
     let questions: z.infer<typeof questionListSchema>;
     try {
@@ -586,7 +558,7 @@ async function steerSession(
     }
     const pending = questions.find((q) => q.sessionID === sessionId);
     if (pending) {
-      const replyRes = await api(directory, `/question/${encodeURIComponent(pending.id)}/reply`, {
+      const replyRes = await api(baseUrl, directory, `/question/${encodeURIComponent(pending.id)}/reply`, {
         method: "POST",
         body: JSON.stringify({ answers: [[message]] }),
       });
@@ -599,7 +571,7 @@ async function steerSession(
     }
   }
 
-  const promptRes = await api(directory, `/session/${encodeURIComponent(sessionId)}/prompt_async`, {
+  const promptRes = await api(baseUrl, directory, `/session/${encodeURIComponent(sessionId)}/prompt_async`, {
     method: "POST",
     body: JSON.stringify({ parts: [{ type: "text", text: message }] }),
   });
@@ -621,12 +593,19 @@ export type SessionResultResult = {
   diffSource: DiffSource;
 };
 
-export async function result(sessionId: string): Promise<Result<SessionResultResult>> {
-  const loc = await findSessionDirectory(sessionId);
+export async function result(
+  sessionId: string,
+  opts?: { directory?: string },
+): Promise<Result<SessionResultResult>> {
+  const manifest = getRoster(opts?.directory);
+  const baseUrl = manifest.server.baseUrl;
+  const projects = getProjects(opts?.directory);
+
+  const loc = await findSessionDirectory(baseUrl, projects, sessionId);
   if (!loc.ok) return loc;
   const { directory, project } = loc;
 
-  const statusMapRes = await api(directory, "/session/status");
+  const statusMapRes = await api(baseUrl, directory, "/session/status");
   if (statusMapRes.res.ok) {
     try {
       const statusMap = sessionStatusMapSchema.parse(JSON.parse(statusMapRes.bodyText));
@@ -640,8 +619,8 @@ export async function result(sessionId: string): Promise<Result<SessionResultRes
   }
 
   const [messageRes, diffResult] = await Promise.all([
-    api(directory, `/session/${encodeURIComponent(sessionId)}/message?limit=50`),
-    fetchDiffWithFallback(directory, sessionId),
+    api(baseUrl, directory, `/session/${encodeURIComponent(sessionId)}/message?limit=50`),
+    fetchDiffWithFallback(baseUrl, directory, sessionId),
   ]);
 
   if (!messageRes.res.ok) {

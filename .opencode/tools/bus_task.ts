@@ -17,8 +17,8 @@ export default tool({
       .optional()
       .describe("Existing session ID to steer instead of starting a new session"),
   },
-  async execute(args) {
-    const r = await dispatch(args);
+  async execute(args, ctx) {
+    const r = await dispatch({ ...args, directory: ctx.directory });
     if (!r.ok) throw new Error(r.error);
     return formatDispatch(r);
   },

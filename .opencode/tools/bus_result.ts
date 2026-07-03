@@ -8,8 +8,8 @@ export default tool({
   args: {
     sessionId: tool.schema.string().describe("Session ID returned by bus_task"),
   },
-  async execute(args) {
-    const r = await result(args.sessionId);
+  async execute(args, ctx) {
+    const r = await result(args.sessionId, { directory: ctx.directory });
     if (!r.ok) throw new Error(r.error);
     return formatResult(r);
   },

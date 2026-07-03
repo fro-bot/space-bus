@@ -6,11 +6,19 @@
  * Run: bun run smoke
  */
 
-const BASE_URL = "http://127.0.0.1:4096";
-const PROJECTS = [
-  "/Users/mrbrown/src/github.com/fro-bot/agent",
-  "/Users/mrbrown/src/github.com/fro-bot/dashboard",
-] as const;
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { expandHome, getRoster } from "../src/config";
+
+// Reads SPACE_BUS_CONFIG, defaulting to the repo-root spacebus.json during
+// the transition (see plan Unit 1 "Smoke roster contract"). After Unit 6
+// this default moves to fixtures/dev-workspace/spacebus.json.
+const here = dirname(fileURLToPath(import.meta.url));
+const repoRoot = resolve(here, "..");
+const roster = getRoster(repoRoot);
+
+const BASE_URL = roster.server.baseUrl;
+const PROJECTS = roster.projects.slice(0, 2).map((p) => expandHome(p.path));
 
 const POLL_INTERVAL_MS = 2_000;
 const POLL_TIMEOUT_MS = 180_000;
