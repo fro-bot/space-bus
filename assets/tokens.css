@@ -1,0 +1,280 @@
+/**
+ * Fro Bot Design Tokens
+ * Generated from assets/styleguide.md
+ */
+
+:root {
+  /* ─── Brand Colors ────────────────────────────────────── */
+  --frobot-void: #0d0216;
+  --frobot-purple: #1a0b2e;
+  --frobot-purple-mid: #2d1b4e;
+  --frobot-purple-muted: #3d2a5f;
+  --frobot-cyan: #00bcd4;
+  --frobot-cyan-bright: #00e5ff;
+  --frobot-cyan-aa: #00838f;
+  --frobot-cyan-aaa: #006064;
+  --frobot-magenta: #e91e63;
+  --frobot-magenta-light: #f06292;
+  --frobot-magenta-aaa: #880e4f;
+  --frobot-amber: #ffc107;
+  --frobot-amber-large: #e65100;
+  --frobot-white: #ffffff;
+  --frobot-cream: #f5ebeb;
+
+  /* ─── Typography ──────────────────────────────────────── */
+  --font-display: 'Inter', 'SF Pro Display', system-ui, sans-serif;
+  --font-body: 'Inter', 'SF Pro Text', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+
+  --text-display: 6rem; /* 96px */
+  --text-h1: 3.5rem; /* 56px */
+  --text-h2: 2.5rem; /* 40px */
+  --text-h3: 1.75rem; /* 28px */
+  --text-h4: 1.375rem; /* 22px */
+  --text-body-lg: 1.125rem; /* 18px */
+  --text-body: 1rem; /* 16px */
+  --text-body-sm: 0.875rem; /* 14px */
+  --text-label: 0.75rem; /* 12px */
+  --text-code: 0.875rem; /* 14px */
+
+  --tracking-display: -0.04em;
+  --tracking-heading: -0.02em;
+  --tracking-body: 0em;
+  --tracking-label: 0.06em;
+
+  /* ─── Spacing ─────────────────────────────────────────── */
+  --space-1: 0.25rem; /* 4px  */
+  --space-2: 0.5rem; /* 8px  */
+  --space-3: 0.75rem; /* 12px */
+  --space-4: 1rem; /* 16px */
+  --space-6: 1.5rem; /* 24px */
+  --space-8: 2rem; /* 32px */
+  --space-12: 3rem; /* 48px */
+  --space-16: 4rem; /* 64px */
+
+  /* ─── Border Radius ───────────────────────────────────── */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 20px;
+  --radius-full: 9999px;
+
+  /* ─── Breakpoints ─────────────────────────────────────── */
+  --bp-sm: 640px;
+  --bp-md: 768px;
+  --bp-lg: 1024px;
+  --bp-xl: 1280px;
+
+  /* ─── Motion & Animation ──────────────────────────────── */
+  --duration-instant: 80ms;
+  --duration-fast: 150ms;
+  --duration-normal: 250ms;
+  --duration-slow: 400ms;
+  --duration-deliberate: 600ms;
+
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ─── Dark Theme (Default) ────────────────────────────── */
+/* Dark semantic tokens in :root — dark is the default theme */
+:root {
+  --color-bg: #0d0216; /* Page background */
+  --color-surface: #1a0b2e; /* Card/panel background */
+  --color-surface-raised: #2d1b4e; /* Elevated card, tooltip */
+  --color-surface-overlay: #3d2a5f; /* Dialog overlay surface */
+
+  --color-border: #3d2a5f; /* Default border */
+  --color-border-muted: #2d1b4e; /* Subtle separator */
+  --color-border-accent: #00bcd4; /* Focused/active border */
+
+  --color-text: #ffffff; /* Primary text */
+  --color-text-muted: #f5ebeb; /* Secondary/dimmed text */
+  --color-text-subtle: rgba(245, 235, 235, 0.5); /* Placeholder */
+  --color-text-disabled: rgba(255, 255, 255, 0.3); /* Disabled state */
+
+  --color-accent: #00bcd4; /* Primary interactive (links) */
+  --color-accent-hover: #00e5ff; /* Hover state */
+  --color-accent-pressed: #00acc1; /* Active/pressed */
+
+  --color-cta: #e91e63; /* Call-to-action buttons */
+  --color-cta-hover: #f06292; /* CTA hover */
+
+  --color-highlight: #ffc107; /* Badges, warnings, stars */
+
+  --color-success: #69f0ae; /* Success states */
+  --color-warning: #ffc107; /* Warning states */
+  --color-error: #f44336; /* Error states */
+  --color-info: #00bcd4; /* Info states */
+
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.6);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.7);
+  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.8);
+  --shadow-glow: 0 0 20px rgba(0, 188, 212, 0.25);
+  --shadow-glow-magenta: 0 0 20px rgba(233, 30, 99, 0.25);
+}
+
+/* Explicit dark theme via data attribute */
+[data-theme='dark'] {
+  --color-bg: #0d0216;
+  --color-surface: #1a0b2e;
+  --color-surface-raised: #2d1b4e;
+  --color-surface-overlay: #3d2a5f;
+
+  --color-border: #3d2a5f;
+  --color-border-muted: #2d1b4e;
+  --color-border-accent: #00bcd4;
+
+  --color-text: #ffffff;
+  --color-text-muted: #f5ebeb;
+  --color-text-subtle: rgba(245, 235, 235, 0.5);
+  --color-text-disabled: rgba(255, 255, 255, 0.3);
+
+  --color-accent: #00bcd4;
+  --color-accent-hover: #00e5ff;
+  --color-accent-pressed: #00acc1;
+
+  --color-cta: #e91e63;
+  --color-cta-hover: #f06292;
+
+  --color-highlight: #ffc107;
+
+  --color-success: #69f0ae;
+  --color-warning: #ffc107;
+  --color-error: #f44336;
+  --color-info: #00bcd4;
+
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.6);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.7);
+  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.8);
+  --shadow-glow: 0 0 20px rgba(0, 188, 212, 0.25);
+  --shadow-glow-magenta: 0 0 20px rgba(233, 30, 99, 0.25);
+}
+
+/* OS-level dark preference */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-bg: #0d0216;
+    --color-surface: #1a0b2e;
+    --color-surface-raised: #2d1b4e;
+    --color-surface-overlay: #3d2a5f;
+
+    --color-border: #3d2a5f;
+    --color-border-muted: #2d1b4e;
+    --color-border-accent: #00bcd4;
+
+    --color-text: #ffffff;
+    --color-text-muted: #f5ebeb;
+    --color-text-subtle: rgba(245, 235, 235, 0.5);
+    --color-text-disabled: rgba(255, 255, 255, 0.3);
+
+    --color-accent: #00bcd4;
+    --color-accent-hover: #00e5ff;
+    --color-accent-pressed: #00acc1;
+
+    --color-cta: #e91e63;
+    --color-cta-hover: #f06292;
+
+    --color-highlight: #ffc107;
+
+    --color-success: #69f0ae;
+    --color-warning: #ffc107;
+    --color-error: #f44336;
+    --color-info: #00bcd4;
+
+    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.6);
+    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.7);
+    --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.8);
+    --shadow-glow: 0 0 20px rgba(0, 188, 212, 0.25);
+    --shadow-glow-magenta: 0 0 20px rgba(233, 30, 99, 0.25);
+  }
+}
+
+/* ─── Light Theme ─────────────────────────────────────── */
+/* Explicit light theme via data attribute */
+[data-theme='light'] {
+  --color-bg: #ffffff; /* Page background */
+  --color-surface: #f5ebeb; /* Card/panel background */
+  --color-surface-raised: #edd8d8; /* Elevated card */
+  --color-surface-overlay: #e8cccc; /* Dialog overlay */
+
+  --color-border: #d4b8b8; /* Default border */
+  --color-border-muted: #edd8d8; /* Subtle separator */
+  --color-border-accent: #006064; /* Focused/active border */
+
+  --color-text: #1a0b2e; /* Primary text — AAA on white */
+  --color-text-muted: #5c4569; /* Secondary text */
+  --color-text-subtle: rgba(26, 11, 46, 0.45); /* Placeholder */
+  --color-text-disabled: rgba(26, 11, 46, 0.3); /* Disabled state */
+
+  --color-accent: #006064; /* Primary interactive (links) — AAA */
+  --color-accent-hover: #00838f; /* Hover state */
+  --color-accent-pressed: #004d50; /* Active/pressed */
+
+  --color-cta: #880e4f; /* Call-to-action — AAA on white */
+  --color-cta-hover: #ad1457; /* CTA hover */
+
+  --color-highlight: #e65100; /* Badges — AA Large on white */
+
+  --color-success: #2e7d32; /* Success */
+  --color-warning: #e65100; /* Warning */
+  --color-error: #c62828; /* Error */
+  --color-info: #006064; /* Info */
+
+  --shadow-sm: 0 1px 3px rgba(26, 11, 46, 0.12);
+  --shadow-md: 0 4px 12px rgba(26, 11, 46, 0.15);
+  --shadow-lg: 0 8px 32px rgba(26, 11, 46, 0.18);
+  --shadow-glow: 0 0 20px rgba(0, 96, 100, 0.15);
+  --shadow-glow-magenta: 0 0 20px rgba(136, 14, 79, 0.15);
+}
+
+/* OS-level light preference */
+@media (prefers-color-scheme: light) {
+  :root {
+    --color-bg: #ffffff;
+    --color-surface: #f5ebeb;
+    --color-surface-raised: #edd8d8;
+    --color-surface-overlay: #e8cccc;
+
+    --color-border: #d4b8b8;
+    --color-border-muted: #edd8d8;
+    --color-border-accent: #006064;
+
+    --color-text: #1a0b2e;
+    --color-text-muted: #5c4569;
+    --color-text-subtle: rgba(26, 11, 46, 0.45);
+    --color-text-disabled: rgba(26, 11, 46, 0.3);
+
+    --color-accent: #006064;
+    --color-accent-hover: #00838f;
+    --color-accent-pressed: #004d50;
+
+    --color-cta: #880e4f;
+    --color-cta-hover: #ad1457;
+
+    --color-highlight: #e65100;
+
+    --color-success: #2e7d32;
+    --color-warning: #e65100;
+    --color-error: #c62828;
+    --color-info: #006064;
+
+    --shadow-sm: 0 1px 3px rgba(26, 11, 46, 0.12);
+    --shadow-md: 0 4px 12px rgba(26, 11, 46, 0.15);
+    --shadow-lg: 0 8px 32px rgba(26, 11, 46, 0.18);
+    --shadow-glow: 0 0 20px rgba(0, 96, 100, 0.15);
+    --shadow-glow-magenta: 0 0 20px rgba(136, 14, 79, 0.15);
+  }
+}
+
+/* ─── Accessibility ───────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
