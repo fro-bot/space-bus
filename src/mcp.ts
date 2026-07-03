@@ -1,5 +1,3 @@
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
@@ -15,17 +13,6 @@ import { BUS_ROSTER_DESCRIPTION } from "./tools/bus_roster";
 import { BUS_STATUS_DESCRIPTION } from "./tools/bus_status";
 import { BUS_TASK_DESCRIPTION } from "./tools/bus_task";
 
-// transitional: removed at Unit 6 cutover — the MCP facade currently has no
-// tool-provided workspace directory (unlike the plugin/adapter tool contexts),
-// so when SPACE_BUS_CONFIG isn't set we fall back to the repo-root
-// spacebus.json relative to this module's own location. Once the package
-// ships as a real bin (Unit 6), callers must set SPACE_BUS_CONFIG.
-function fallbackDirectory(): string | undefined {
-  if (process.env["SPACE_BUS_CONFIG"]) return undefined;
-  const here = dirname(fileURLToPath(import.meta.url));
-  return resolve(here, "..");
-}
-
 const server = new McpServer({
   name: "space-bus",
   version: "0.0.0",
@@ -38,7 +25,7 @@ server.registerTool(
     inputSchema: {},
   },
   async () => {
-    const r = await roster({ directory: fallbackDirectory() });
+    const r = await roster({});
     if (!r.ok)
       return { content: [{ type: "text", text: r.error }], isError: true };
     return { content: [{ type: "text", text: formatRoster(r.projects) }] };
@@ -72,7 +59,7 @@ server.registerTool(
     },
   },
   async (args) => {
-    const r = await dispatch({ ...args, directory: fallbackDirectory() });
+    const r = await dispatch({ ...args });
     if (!r.ok)
       return { content: [{ type: "text", text: r.error }], isError: true };
     return { content: [{ type: "text", text: formatDispatch(r) }] };
@@ -88,7 +75,7 @@ server.registerTool(
     },
   },
   async (args) => {
-    const r = await status(args.sessionId, { directory: fallbackDirectory() });
+    const r = await status(args.sessionId, {});
     if (!r.ok)
       return { content: [{ type: "text", text: r.error }], isError: true };
     return { content: [{ type: "text", text: formatStatus(r) }] };
@@ -104,7 +91,7 @@ server.registerTool(
     },
   },
   async (args) => {
-    const r = await result(args.sessionId, { directory: fallbackDirectory() });
+    const r = await result(args.sessionId, {});
     if (!r.ok)
       return { content: [{ type: "text", text: r.error }], isError: true };
     return { content: [{ type: "text", text: formatResult(r) }] };

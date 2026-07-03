@@ -17,10 +17,34 @@ await Bun.write(
   `${JSON.stringify({ plugin: [repoRoot] }, null, 2)}\n`,
 );
 
-const spacebusSource = Bun.file(resolve(repoRoot, "spacebus.json"));
+const spacebusRoster = {
+  server: { baseUrl: "http://127.0.0.1:4096" },
+  projects: [
+    {
+      name: "agent",
+      path: "~/src/github.com/fro-bot/agent",
+      description: "Fro Bot agent runtime + gateway + Discord integration",
+    },
+    {
+      name: "dashboard",
+      path: "~/src/github.com/fro-bot/dashboard",
+      description: "Operator dashboard (React + Vite PWA)",
+    },
+    {
+      name: "control-plane",
+      path: "~/src/github.com/fro-bot/.github",
+      description: "Control plane + autoresearch + loop (org workflows)",
+    },
+    {
+      name: "infra",
+      path: "~/src/github.com/marcusrbrown/infra",
+      description: "IaC — cloud deploys and log pulls",
+    },
+  ],
+};
 await Bun.write(
   resolve(fixtureDir, "spacebus.json"),
-  await spacebusSource.text(),
+  `${JSON.stringify(spacebusRoster, null, 2)}\n`,
 );
 
 console.log(`fixture: wrote ${fixtureDir}`);
