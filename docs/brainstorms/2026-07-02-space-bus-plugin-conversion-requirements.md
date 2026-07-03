@@ -95,7 +95,8 @@ The MVP works, but only inside this repo: tools load from `.opencode/tools/`, an
 
 - npm trusted publisher configuration for `@fro.bot/space-bus` on npmjs.com is Marcus's manual step before the first CI publish (AE5 fails without it).
 - `@opencode-ai/plugin` 1.17.x npm/ESM loading caveat: published output must be valid ESM with `.js` extensions — a real build step.
-- Harness loader parity is assumed, not verified: the operator runs `harness`, not stock opencode. Before cutover, verify the harness runtime installs and loads npm plugins from `opencode.json` identically (covers ESM shape and peer-range skew in one live check — AE6).
+- Harness loader parity: verified live (2026-07-02, harness ee55e157) — a file-path plugin entry in `opencode.json` loads and registers tools on `harness serve`; npm-package-name resolution still gets its first exercise at AE6 with the published package.
+- Plugin directory scoping: verified live — on one shared server, each session's plugin instance receives the per-request workspace in `input.directory`/`ctx.directory` (correct for `spacebus.json` discovery). `process.cwd()` stays pinned to the server launch dir and must never be used.
 - Migration sequencing (R8 before R3/R9): this session's own control board is this repo; the new workspace must pass AE4 before the local tools/manifest are removed, or the bus goes dark mid-conversion. Rollback is relaunching from this repo pre-deletion.
 
 ---
