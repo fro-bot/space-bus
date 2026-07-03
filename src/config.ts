@@ -99,8 +99,7 @@ export function getRoster(directory?: string): Manifest {
 
 export type Project = Manifest["projects"][number] & { expandedPath: string };
 
-export function getProjects(directory?: string): Project[] {
-  const manifest = getRoster(directory);
+export function getProjects(manifest: Manifest): Project[] {
   return manifest.projects.map((p) => ({
     ...p,
     expandedPath: expandHome(p.path),

@@ -269,7 +269,7 @@ function resolveContext(
 ): Result<{ baseUrl: string; projects: Project[] }> {
   try {
     const manifest = getRoster(directory);
-    const projects = getProjects(directory);
+    const projects = getProjects(manifest);
     return { ok: true, baseUrl: manifest.server.baseUrl, projects };
   } catch (e) {
     return err((e as Error).message);

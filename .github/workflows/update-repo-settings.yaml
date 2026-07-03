@@ -5,11 +5,8 @@ name: Update Repo Settings
 on:
   push:
     branches: [main]
-    paths:
-      - '.github/settings.yml'
-      - '.github/workflows/update-repo-settings.yaml'
   schedule:
-    - cron: '55 2 * * *'
+    - cron: '22 3 * * *' # Daily at 03:22 UTC
   workflow_dispatch:
 
 permissions:
@@ -17,8 +14,8 @@ permissions:
 
 jobs:
   update-repo-settings:
-    name: Update Repository Settings
+    name: Update Repo Settings
     secrets:
       APPLICATION_ID: ${{ secrets.APPLICATION_ID }}
       APPLICATION_PRIVATE_KEY: ${{ secrets.APPLICATION_PRIVATE_KEY }}
-    uses: bfra-me/.github/.github/workflows/update-repo-settings.yaml@f6a7976c5cc48af150f7de3df331362262f15a18
+    uses: bfra-me/.github/.github/workflows/update-repo-settings.yaml@9a23d66d4579e92175093919a8bc8e55ecbab38f # v4.16.33

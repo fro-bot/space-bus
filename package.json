@@ -1,7 +1,7 @@
 {
   "name": "@fro.bot/space-bus",
   "version": "0.0.0",
-  "description": "Fro Bot Space Bus — workspace agent bus for OpenCode. One control agent tasking per-project agents over the OpenCode server API, with an MCP facade for Claude Desktop.",
+  "description": "Space Bus — workspace agent bus for OpenCode. One control agent tasking per-project agents over the OpenCode server API, with an MCP facade for Claude Desktop.",
   "type": "module",
   "license": "MIT",
   "repository": "github:fro-bot/space-bus",
