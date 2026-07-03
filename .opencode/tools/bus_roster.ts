@@ -7,7 +7,7 @@ export default tool({
   args: {},
   async execute() {
     const r = await roster();
-    if (!r.ok) return r.error;
+    if (!r.ok) throw new Error(r.error);
     return formatRoster(r.projects);
   },
 });

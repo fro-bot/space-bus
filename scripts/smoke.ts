@@ -163,7 +163,7 @@ async function pollUntilIdle(directory: string, sessionId: string): Promise<void
 
     if (Date.now() >= deadline) {
       record(
-        `[${directory}] session reached idle before timeout`,
+        `[${directory}] session did not reach idle before timeout`,
         false,
         `last status=${JSON.stringify(entry)} timeout=${POLL_TIMEOUT_MS}ms`,
       );

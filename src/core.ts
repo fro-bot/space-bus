@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { z } from "zod";
 
 const manifestSchema = z.object({
-  server: z.object({ baseUrl: z.string() }),
+  server: z.object({ baseUrl: z.string().url() }),
   projects: z.array(
     z.object({
       name: z.string(),
@@ -79,17 +79,26 @@ async function api(
   path: string,
   init?: RequestInit,
 ): Promise<{ res: Response; bodyText: string }> {
-  const res = await fetch(`${manifest.server.baseUrl}${path}`, {
-    ...init,
-    headers: {
-      "content-type": "application/json",
-      "x-opencode-directory": directory,
-      ...authHeader(),
-      ...(init?.headers as Record<string, string> | undefined),
-    },
-  });
-  const bodyText = await res.text().catch(() => "<unreadable body>");
-  return { res, bodyText };
+  try {
+    const res = await fetch(`${manifest.server.baseUrl}${path}`, {
+      ...init,
+      headers: {
+        "content-type": "application/json",
+        "x-opencode-directory": directory,
+        ...authHeader(),
+        ...(init?.headers as Record<string, string> | undefined),
+      },
+      signal: AbortSignal.timeout(30_000),
+    });
+    const bodyText = await res.text().catch(() => "<unreadable body>");
+    return { res, bodyText };
+  } catch (e) {
+    const message = (e as Error).message;
+    return {
+      res: new Response(null, { status: 599, statusText: "space-bus: request failed" }),
+      bodyText: `space-bus: request failed: ${message}`,
+    };
+  }
 }
 
 // --- Loose response schemas (parse only fields we consume) -----------------
@@ -143,14 +152,7 @@ export type DiffSource = "session" | "turns" | "working-tree";
 // though per-turn diffs on messages remain intact (including untracked
 // files). We aggregate those as a fallback, last-turn-wins per file —
 // same semantics as upstream PR #33444.
-const turnDiffEntrySchema = z
-  .object({
-    file: z.string().optional(),
-    additions: z.number(),
-    deletions: z.number(),
-    status: z.string().optional(),
-  })
-  .passthrough();
+const turnDiffEntrySchema = diffEntrySchema;
 
 const turnMessageSchema = z
   .object({
@@ -190,7 +192,7 @@ async function fetchTurnDiffs(
   directory: string,
   sessionId: string,
 ): Promise<z.infer<typeof diffSchema>> {
-  const { res, bodyText } = await api(directory, `/session/${sessionId}/message?limit=100`);
+  const { res, bodyText } = await api(directory, `/session/${encodeURIComponent(sessionId)}/message?limit=100`);
   if (!res.ok) return [];
   let messages: z.infer<typeof turnMessageListSchema>;
   try {
@@ -215,7 +217,7 @@ async function fetchDiffWithFallback(
   directory: string,
   sessionId: string,
 ): Promise<{ diff: z.infer<typeof diffSchema>; diffSource: DiffSource }> {
-  const diffRes = await api(directory, `/session/${sessionId}/diff`);
+  const diffRes = await api(directory, `/session/${encodeURIComponent(sessionId)}/diff`);
   let diff: z.infer<typeof diffSchema> = [];
   try {
     diff = diffRes.res.ok ? diffSchema.parse(JSON.parse(diffRes.bodyText)) : [];
@@ -226,7 +228,7 @@ async function fetchDiffWithFallback(
     return { diff, diffSource: "session" };
   }
   try {
-    const sessionRes = await api(directory, `/session/${sessionId}`);
+    const sessionRes = await api(directory, `/session/${encodeURIComponent(sessionId)}`);
     if (sessionRes.res.ok) {
       const parsed = sessionSummarySchema.parse(JSON.parse(sessionRes.bodyText));
       const summaryDiffs = parsed.summary?.diffs;
@@ -379,7 +381,7 @@ async function dispatchNew(
     return err(`space-bus: unexpected /session response shape: ${(e as Error).message}`);
   }
 
-  const promptRes = await api(directory, `/session/${session.id}/prompt_async`, {
+  const promptRes = await api(directory, `/session/${encodeURIComponent(session.id)}/prompt_async`, {
     method: "POST",
     body: JSON.stringify({ parts: [{ type: "text", text: prompt }] }),
   });
@@ -392,12 +394,10 @@ async function dispatchNew(
   return { ok: true, sessionId: session.id, project, directory };
 }
 
-export type DispatchResult = {
-  sessionId: string;
-  project: string;
-  mode: "new" | "question-reply" | "follow-up";
-  directory?: string;
-};
+export type DispatchResult = { sessionId: string; project: string } & (
+  | { mode: "new"; directory: string }
+  | { mode: "question-reply" | "follow-up" }
+);
 
 export async function dispatch(args: {
   project?: string;
@@ -436,7 +436,7 @@ async function findSessionDirectory(sessionId: string): Promise<Result<{ directo
   // owning manifest project.
   for (const p of projects) {
     if (!existsSync(p.expandedPath)) continue;
-    const { res, bodyText } = await api(p.expandedPath, `/session/${sessionId}`);
+    const { res, bodyText } = await api(p.expandedPath, `/session/${encodeURIComponent(sessionId)}`);
     if (!res.ok) continue;
     let session: z.infer<typeof sessionSchema>;
     try {
@@ -512,9 +512,9 @@ export async function status(sessionId: string): Promise<Result<SessionStatusRes
   const { directory, project } = loc;
 
   const [sessionRes, statusMapRes, todoRes, diffResult, pendingQuestion] = await Promise.all([
-    api(directory, `/session/${sessionId}`),
+    api(directory, `/session/${encodeURIComponent(sessionId)}`),
     api(directory, "/session/status"),
-    api(directory, `/session/${sessionId}/todo`),
+    api(directory, `/session/${encodeURIComponent(sessionId)}/todo`),
     fetchDiffWithFallback(directory, sessionId),
     fetchPendingQuestion(directory, sessionId),
   ]);
@@ -575,7 +575,7 @@ async function steerSession(
     }
     const pending = questions.find((q) => q.sessionID === sessionId);
     if (pending) {
-      const replyRes = await api(directory, `/question/${pending.id}/reply`, {
+      const replyRes = await api(directory, `/question/${encodeURIComponent(pending.id)}/reply`, {
         method: "POST",
         body: JSON.stringify({ answers: [[message]] }),
       });
@@ -588,7 +588,7 @@ async function steerSession(
     }
   }
 
-  const promptRes = await api(directory, `/session/${sessionId}/prompt_async`, {
+  const promptRes = await api(directory, `/session/${encodeURIComponent(sessionId)}/prompt_async`, {
     method: "POST",
     body: JSON.stringify({ parts: [{ type: "text", text: message }] }),
   });
@@ -629,7 +629,7 @@ export async function result(sessionId: string): Promise<Result<SessionResultRes
   }
 
   const [messageRes, diffResult] = await Promise.all([
-    api(directory, `/session/${sessionId}/message?limit=50`),
+    api(directory, `/session/${encodeURIComponent(sessionId)}/message?limit=50`),
     fetchDiffWithFallback(directory, sessionId),
   ]);
 

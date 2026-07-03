@@ -47,7 +47,8 @@ server.registerTool(
 server.registerTool(
   "bus_status",
   {
-    description: "Report a space-bus session's status plus a summary of its latest todo and diff.",
+    description:
+      "Report a space-bus session's status plus a summary of its latest todo and diff. Also reports when the session is blocked on an interactive question awaiting a reply.",
     inputSchema: {
       sessionId: z.string().describe("Session ID returned by bus_task"),
     },
@@ -62,7 +63,8 @@ server.registerTool(
 server.registerTool(
   "bus_result",
   {
-    description: "Return a completed space-bus session's final assistant message and diff.",
+    description:
+      "Return a completed space-bus session's final assistant message and diff. Errors if the session is still running — use bus_status to check first.",
     inputSchema: {
       sessionId: z.string().describe("Session ID returned by bus_task"),
     },

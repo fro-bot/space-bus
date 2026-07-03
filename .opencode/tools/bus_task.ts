@@ -19,7 +19,7 @@ export default tool({
   },
   async execute(args) {
     const r = await dispatch(args);
-    if (!r.ok) return r.error;
+    if (!r.ok) throw new Error(r.error);
     return formatDispatch(r);
   },
 });
