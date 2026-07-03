@@ -1,10 +1,17 @@
-import type { DispatchResult, RosterProject, SessionResultResult, SessionStatusResult } from "./core";
+import type {
+  DispatchResult,
+  RosterProject,
+  SessionResultResult,
+  SessionStatusResult,
+} from "./core";
 
 export function formatRoster(projects: RosterProject[]): string {
   return projects
     .map((p) => {
-      if (!p.pathExists) return `${p.name}: MISSING PATH (${p.path}) — ${p.description}`;
-      if (p.statusError) return `${p.name}: status error (${p.statusError}) — ${p.description}`;
+      if (!p.pathExists)
+        return `${p.name}: MISSING PATH (${p.path}) — ${p.description}`;
+      if (p.statusError)
+        return `${p.name}: status error (${p.statusError}) — ${p.description}`;
       const count = `${p.sessionCount ?? 0}${p.sessionCountCapped ? "+" : ""}`;
       return `${p.name}: ${p.busyCount ?? 0} busy / ${count} sessions — ${p.description} (${p.path})`;
     })
@@ -24,7 +31,9 @@ export function formatDispatch(r: DispatchResult): string {
 
 export function formatStatus(r: SessionStatusResult): string {
   const todoLines = r.todos.length
-    ? r.todos.map((t) => `  - [${t.status}] ${t.content} (${t.priority})`).join("\n")
+    ? r.todos
+        .map((t) => `  - [${t.status}] ${t.content} (${t.priority})`)
+        .join("\n")
     : "  (none)";
   const lines = [
     `session: ${r.sessionId} (${r.project})`,
@@ -32,7 +41,9 @@ export function formatStatus(r: SessionStatusResult): string {
     `busy: ${r.busy}`,
   ];
   if (r.pendingQuestion) {
-    lines.push(`blocked: waiting on a question — "${r.pendingQuestion.preview}"`);
+    lines.push(
+      `blocked: waiting on a question — "${r.pendingQuestion.preview}"`,
+    );
     if (r.pendingQuestion.options.length > 0) {
       lines.push(`  options: ${r.pendingQuestion.options.join(" | ")}`);
     }
@@ -50,13 +61,20 @@ export function formatStatus(r: SessionStatusResult): string {
 
 export function formatResult(r: SessionResultResult): string {
   const diffLines = r.diff.length
-    ? r.diff.map((d) => `  - ${d.file ?? "(unknown)"} [${d.status ?? "?"}] +${d.additions}/-${d.deletions}`).join("\n")
+    ? r.diff
+        .map(
+          (d) =>
+            `  - ${d.file ?? "(unknown)"} [${d.status ?? "?"}] +${d.additions}/-${d.deletions}`,
+        )
+        .join("\n")
     : "  (no changes)";
   return [
     `session: ${r.sessionId} (${r.project})`,
     `--- reply ---`,
     r.text || "(empty)",
-    r.diffSource === "working-tree" ? `--- diff (working tree — repo-wide, may include changes from other sessions) ---` : `--- diff ---`,
+    r.diffSource === "working-tree"
+      ? `--- diff (working tree — repo-wide, may include changes from other sessions) ---`
+      : `--- diff ---`,
     diffLines,
   ].join("\n");
 }

@@ -1,0 +1,31 @@
+{
+  $schema: 'https://docs.renovatebot.com/renovate-schema.json',
+  description: ['Use the config preset for the @fro.bot/space-bus repository'],
+  extends: ['github>fro-bot/.github'],
+  packageRules: [
+    {
+      description: 'Only allow LTS versions of @types/node (even major versions)',
+      matchPackageNames: ['@types/node'],
+      allowedVersions: '/^v?([0-9]*[02468])\\./',
+    },
+    {
+      description: 'Only allow LTS versions of Node.js in GitHub Actions',
+      matchManagers: ['github-actions'],
+      matchPackageNames: ['node'],
+      allowedVersions: '/^([0-9]*[02468])$/',
+    },
+    {
+      matchPackageNames: ['@opencode-ai/{/,}**'],
+      semanticCommitType: 'build',
+    },
+    {
+      description: 'Never automerge GitHub Actions version bumps',
+      matchManagers: ['github-actions'],
+      automerge: false,
+    },
+  ],
+  postUpgradeTasks: {
+    commands: ['bun install', 'bun run fix', 'bun run build'],
+    executionMode: 'branch',
+  },
+}

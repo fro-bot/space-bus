@@ -1,0 +1,284 @@
+---
+name: Fro Bot
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  issues:
+    types: [opened, edited]
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened, review_requested]
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+    inputs:
+      prompt:
+        description: 'Custom prompt for the Fro Bot agent (leave empty to run the default daily oversight + autohealing pass)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+# For push/synchronize on a PR, key the group on the PR head SHA so each push gets
+# its own slot. The previous PR-number key shared one group across every event for
+# a PR, so a push landing while a prior run for the same PR was still in-flight was
+# dropped (only one pending run is allowed per group and cancel-in-progress is
+# false). Gate the head-SHA key on the pull_request event specifically — other
+# events (review comments, issues) carry a pull_request payload too and must keep
+# their own keys rather than collapsing onto the same SHA group.
+concurrency:
+  group: >-
+    fro-bot-${{
+      (github.event_name == 'pull_request' && github.event.pull_request.head.sha) ||
+      github.event.issue.number ||
+      github.event.pull_request.number ||
+      ((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'daily')
+      || github.run_id
+    }}
+  cancel-in-progress: false
+
+env:
+  PR_REVIEW_PROMPT: |
+    Review this OpenCode plugin PR (@fro.bot/space-bus) focusing on:
+    - OpenCode plugin API contract fidelity: default-exported Plugin factory, exactly the four `bus_*` tools (bus_roster, bus_task, bus_status, bus_result), tool schema correctness, ToolResult shape
+    - Three-surface parity: `.opencode/tools/` wrappers, the plugin's tool map, and the MCP registrations in `src/mcp.ts` must stay byte-identical in descriptions and output — driven from the same `makeBus*` factories and description constants, never duplicated by hand
+    - Roster/config safety: `spacebus.json`/`SPACE_BUS_CONFIG` resolution never walks upward, `server.baseUrl` localhost guard (127.0.0.1/::1/localhost) is preserved, no credential or token values ever appear in logs or tool output
+    - Never `process.cwd()`: directory resolution must use `ctx.directory` (per-call) falling back to captured `input.directory` — this is what makes directory-routing work on a shared `opencode serve` instance
+    - MCP stdio discipline: `src/mcp.ts`'s stdout carries protocol frames only — all diagnostics must go to stderr
+    - `src/core.ts` never throws across the boundary: functions return discriminated unions (`{ ok: true, ... } | { ok: false, error }`); tool adapters convert `ok:false` to a thrown error (plugin tools) or an `isError` content block (MCP)
+    - Changeset hygiene: breaking public API changes require a `major` bump, new features require `minor`, bug fixes use `patch`; verify a `.changeset/*.md` is present for user-visible changes
+
+    Review the diff directly. Do NOT invoke `ce:review` or any other `ce:*`
+    skill (ce:work, ce:plan, ce:brainstorm, ce:compound, etc.). Those are
+    heavy multi-agent workflows meant for authoring changes, not reviewing
+    them — `ce:review` in particular is run by the author before pushing, so
+    repeating it here is redundant and makes the review take far too long.
+    Read the changed files yourself and form your own assessment with the
+    standard tools (read, grep, git diff). A focused single-pass review is
+    the goal.
+
+    Skip style nits — Biome handles formatting and lint.
+
+    Hard boundaries:
+    - Review only. Do NOT push commits, modify files, create branches, or open PRs.
+    - Do NOT use labels, assignments, or milestone changes.
+    - Use inline comments for file-specific findings. Use review body for summary only.
+    - Do NOT speculate. If uncertain, state what evidence is missing.
+
+    Output:
+    ## Verdict: PASS / CONDITIONAL / REJECT
+    ### Blocking issues
+    ### Non-blocking concerns
+    ### Missing tests
+    ### Risk assessment (LOW/MED/HIGH) + rationale
+
+    Requirements:
+    - Include every heading exactly once and in the order above.
+    - Write "None" under headings with no findings.
+    - Keep findings actionable: file path, impact, and concrete remediation.
+
+  SCHEDULE_PROMPT: |
+    Run the daily Fro Bot pass for fro-bot/space-bus, a TypeScript OpenCode
+    plugin (@fro.bot/space-bus on npm; Bun toolchain, bun test/typecheck/lint/build;
+    changesets + npm trusted publishing). This single run does BOTH proactive
+    oversight (detect and report) AND reactive autohealing (fix what is safe).
+    Prioritize minimal, reversible changes. Read the canonical context first:
+    README.md and AGENTS.md.
+
+    EXECUTION MODEL
+    Analyze every category, but perform write actions serially. Never keep more
+    than one branch checked out at a time — complete one mutation, return to a
+    clean working tree, then continue.
+
+    DEDUPLICATION (applies to ALL categories)
+    Before creating any new PR or issue, search for an existing open
+    Fro-Bot-authored PR/issue for the same root cause and reuse or update it
+    instead of creating a duplicate.
+
+    SCOPE CAP
+    Only auto-heal a fix that is clearly minimal and reversible. If the smallest
+    safe fix is a broad refactor, an architecture change, or a many-file edit,
+    do NOT auto-heal it — record it under "Needs Human Attention" with enough
+    detail for an LLM agent to act on later (see AGENT NOTES).
+
+    DEPENDENCY OWNERSHIP
+    Renovate owns routine dependency and version bumps. Change dependency
+    versions only to remediate a confirmed critical/high security advisory or to
+    repair an existing security-update PR. Never open a non-security version-bump
+    PR and never batch unrelated dependency changes into a security fix.
+
+    TRUSTED AUTHORS
+    Only repair a PR branch authored by the repository owner/a collaborator with
+    write access, or an approved automation bot (renovate[bot], dependabot[bot],
+    fro-bot). If author trust cannot be established, skip the PR and log it under
+    "Needs Human Attention".
+
+    CATEGORIES (work in order)
+
+    1. ERRORED PRs
+       Find open PRs with failing CI. Skip dependency/security PRs here (handle
+       in category 2). Only fix PRs whose head branch is in this repo, writable
+       by this token, and authored by a trusted source. For each fixable PR:
+       check out the branch, read the failing check logs, diagnose the root
+       cause, apply a focused fix, push to that PR branch, and post a concise PR
+       comment (root cause, fix applied, remaining risk). If the PR touches
+       .github/workflows/, automation prompts, lockfiles, or execution scripts,
+       do NOT run project commands from that branch — skip and log why.
+
+    2. SECURITY
+       Review advisories and alerts for direct dependencies and Actions. If a
+       security PR is failing or conflicted, fix and push to it. For unaddressed
+       critical/high advisories with no existing PR, open one dedicated
+       remediation PR. Never bundle unrelated upgrades. If advisory data is
+       unavailable to the token, note "security alerts unavailable" under "Needs
+       Human Attention" — do not guess.
+       Special attention: this package sends Basic auth to a localhost OpenCode
+       server. Flag any code path that could leak or log
+       OPENCODE_SERVER_PASSWORD, or send it off-machine, and any weakening of
+       the roster localhost guard (spacebus.json's server.baseUrl must resolve
+       to 127.0.0.1/::1/localhost).
+
+    3. CI HEALTH
+       Run the repository's own validation gates in order:
+         bun install --frozen-lockfile
+         bun run typecheck
+         bun run lint
+         bun run build
+         bun test
+       Also verify the npm publish pipeline: release.yaml's changesets/action
+       invocation, the version-changesets/publish-changesets scripts in
+       package.json, and npm trusted-publishing (OIDC) setup must stay
+       internally consistent. Treat any release.yaml/changesets misconfig as CI
+       health, not code quality. Apply safe mechanical fixes (lint/format
+       autofixes) on a PR branch — NEVER commit directly to main. If a check
+       fails and the fix is not minimal/reversible, open or update an issue and
+       log it under "Needs Human Attention".
+
+    4. DOCS DRIFT
+       Compare README.md and AGENTS.md against the actual tool map, roster
+       config shape, and package.json scripts. Flag stale examples, renamed
+       tools/exports, or outdated setup instructions. Fix small, unambiguous
+       drift directly on a PR branch; log larger drift under "Needs Human
+       Attention".
+
+    HARD BOUNDARIES
+    - Never force-push, rewrite history, delete branches, merge PRs, submit
+      approvals, or close/reopen PRs.
+    - Never push directly to main. Direct pushes are allowed only to an existing
+      non-default PR branch you are repairing under category 1 or 2.
+    - Never modify secrets, settings, environments, or branch protection.
+    - Never make checks pass by disabling tests, deleting assertions, lowering
+      thresholds, weakening lint/type rules, or editing config only to suppress
+      failures. If the smallest safe fix would weaken a guardrail, skip and log.
+    - Do not modify .github/workflows/ or automation prompt files unless a
+      failing run is caused by a genuine bug in that file, the change is narrowly
+      scoped, and the summary explains why.
+
+    AGENT NOTES (instead of per-agent follow-up tasks)
+    Do NOT create follow-up tasks addressed to a specific agent. When work is
+    deferred, write the note so any LLM agent can pick it up cold: state the
+    exact file paths, the root cause, the smallest safe fix, any constraints or
+    "do not retry" warnings, and how to verify. Put these under "Needs Human
+    Attention" in the report.
+
+    Tasks for Agents:
+    Use a single "Tasks for Agents" section for any deferred, actionable work
+    items — do not split into per-agent subsections.
+
+    OUTPUT — ONE PERPETUAL SUMMARY ISSUE
+    Maintain exactly one daily report. Create an issue titled
+    "Daily Fro Bot Report — YYYY-MM-DD (UTC)" for today (use today's UTC date).
+    Before or after creating it, CLOSE every older open issue whose title starts
+    with "Daily Fro Bot Report —" (and any earlier "Daily Autohealing Report"
+    variant), leaving a one-line closing comment that links the newest report.
+    There must be exactly one open daily report when the run finishes.
+
+    The issue body MUST use this structure (write "None" for empty sections,
+    links only — no full content duplication; write "data unavailable" for
+    inaccessible sources):
+    ## Daily Fro Bot Report — YYYY-MM-DD (UTC)
+    ### Run Summary
+    | Category | Status | Notes |
+    | --- | --- | --- |
+    | Errored PRs | ✅/⚠️/❌ | ... |
+    | Security | ✅/⚠️/❌ | ... |
+    | CI Health | ✅/⚠️/❌ | ... |
+    | Docs Drift | ✅/⚠️/❌ | ... |
+    ### Errored PRs
+    ### Security
+    ### CI Health
+    ### Docs Drift
+    ### Tasks for Agents
+    ### Needs Human Attention
+
+jobs:
+  fro-bot:
+    name: Fro Bot
+    runs-on: ubuntu-latest
+    if: >-
+      (
+        github.event.pull_request == null ||
+        (
+          !github.event.pull_request.head.repo.fork &&
+          !endsWith(github.event.pull_request.user.login || '', '[bot]')
+        )
+      ) && (
+        (
+          github.event_name == 'issues' &&
+          !endsWith(github.event.issue.user.login || '', '[bot]') &&
+          (github.event.issue.user.login || '') != 'fro-bot'
+        ) ||
+        (
+          github.event_name == 'pull_request' &&
+          !endsWith(github.event.pull_request.user.login || '', '[bot]') &&
+          (github.event.pull_request.user.login || '') != 'fro-bot'
+        ) ||
+        github.event_name == 'schedule' ||
+        github.event_name == 'workflow_dispatch' ||
+        (
+          (github.event_name == 'issue_comment' ||
+           github.event_name == 'pull_request_review_comment') &&
+          contains(github.event.comment.body || '', '@fro-bot') &&
+          (github.event.comment.user.login || '') != 'fro-bot' &&
+          contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association || '')
+        )
+      )
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          # Always check out the default/workflow ref — never PR-head code. On
+          # issue_comment the fork guard cannot see PR fork status (the event has
+          # no github.event.pull_request), so checking out refs/pull/<n>/head would
+          # run fork-controlled code with FRO_BOT_PAT present. Default checkout
+          # closes that secret-exfiltration vector.
+          token: ${{ secrets.FRO_BOT_PAT }}
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Run Fro Bot
+        id: fro-bot-agent
+        uses: fro-bot/agent@b13c6c424f56de405c3c1be39089f00d646e8830 # v0.81.0
+        env:
+          OPENCODE_PROMPT_ARTIFACT: 'true'
+          TASK_PROMPT: >-
+            ${{
+              (github.event_name == 'workflow_dispatch' && github.event.inputs.prompt)
+              || ((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && env.SCHEDULE_PROMPT)
+              || (github.event_name == 'pull_request' && env.PR_REVIEW_PROMPT)
+              || ''
+            }}
+        with:
+          github-token: ${{ secrets.FRO_BOT_PAT }}
+          auth-json: ${{ secrets.OPENCODE_AUTH_JSON }}
+          model: ${{ vars.FRO_BOT_MODEL }}
+          opencode-config: ${{ secrets.OPENCODE_CONFIG }}
+          prompt: ${{ env.TASK_PROMPT }}

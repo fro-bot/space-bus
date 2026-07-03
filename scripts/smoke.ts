@@ -6,11 +6,20 @@
  * Run: bun run smoke
  */
 
-const BASE_URL = "http://127.0.0.1:4096";
-const PROJECTS = [
-  "/Users/mrbrown/src/github.com/fro-bot/agent",
-  "/Users/mrbrown/src/github.com/fro-bot/dashboard",
-] as const;
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { expandHome, getRoster } from "../src/config";
+import { authHeader } from "../src/core";
+
+// Reads SPACE_BUS_CONFIG, defaulting to the repo-root spacebus.json during
+// the transition (see plan Unit 1 "Smoke roster contract"). After Unit 6
+// this default moves to fixtures/dev-workspace/spacebus.json.
+const here = dirname(fileURLToPath(import.meta.url));
+const repoRoot = resolve(here, "..");
+const roster = getRoster(repoRoot);
+
+const BASE_URL = roster.server.baseUrl;
+const PROJECTS = roster.projects.slice(0, 2).map((p) => expandHome(p.path));
 
 const POLL_INTERVAL_MS = 2_000;
 const POLL_TIMEOUT_MS = 180_000;
@@ -72,15 +81,10 @@ function record(name: string, pass: boolean, detail?: string): void {
   console.log(`[${status}] ${name}${detail && !pass ? `\n  ${detail}` : ""}`);
 }
 
-function authHeader(): Record<string, string> {
-  const password = process.env["OPENCODE_SERVER_PASSWORD"];
-  if (!password) return {};
-  const username = process.env["OPENCODE_SERVER_USERNAME"] ?? "opencode";
-  const token = Buffer.from(`${username}:${password}`).toString("base64");
-  return { Authorization: `Basic ${token}` };
-}
-
-function headers(directory: string, extra?: Record<string, string>): Record<string, string> {
+function headers(
+  directory: string,
+  extra?: Record<string, string>,
+): Record<string, string> {
   return {
     "content-type": "application/json",
     "x-opencode-directory": directory,
@@ -118,7 +122,10 @@ async function createSession(directory: string): Promise<SessionResponse> {
   return body;
 }
 
-async function dispatchPromptAsync(directory: string, sessionId: string): Promise<void> {
+async function dispatchPromptAsync(
+  directory: string,
+  sessionId: string,
+): Promise<void> {
   const res = await fetch(`${BASE_URL}/session/${sessionId}/prompt_async`, {
     method: "POST",
     headers: headers(directory),
@@ -133,11 +140,16 @@ async function dispatchPromptAsync(directory: string, sessionId: string): Promis
   );
 
   if (res.status !== 204) {
-    throw new Error(`prompt_async failed for ${directory} (${res.status}): ${bodyText}`);
+    throw new Error(
+      `prompt_async failed for ${directory} (${res.status}): ${bodyText}`,
+    );
   }
 }
 
-async function pollUntilIdle(directory: string, sessionId: string): Promise<void> {
+async function pollUntilIdle(
+  directory: string,
+  sessionId: string,
+): Promise<void> {
   const deadline = Date.now() + POLL_TIMEOUT_MS;
   for (;;) {
     const res = await fetch(`${BASE_URL}/session/status`, {
@@ -151,10 +163,15 @@ async function pollUntilIdle(directory: string, sessionId: string): Promise<void
         false,
         `status=${res.status} body=${bodyText}`,
       );
-      throw new Error(`GET /session/status failed (${res.status}): ${bodyText}`);
+      throw new Error(
+        `GET /session/status failed (${res.status}): ${bodyText}`,
+      );
     }
 
-    const statusMap = JSON.parse(bodyText) as Record<string, SessionStatusEntry>;
+    const statusMap = JSON.parse(bodyText) as Record<
+      string,
+      SessionStatusEntry
+    >;
     const entry = statusMap[sessionId];
     if (!entry || entry.type === "idle") {
       record(`[${directory}] session reached idle before timeout`, true);
@@ -167,14 +184,19 @@ async function pollUntilIdle(directory: string, sessionId: string): Promise<void
         false,
         `last status=${JSON.stringify(entry)} timeout=${POLL_TIMEOUT_MS}ms`,
       );
-      throw new Error(`Timed out waiting for session ${sessionId} (${directory}) to idle`);
+      throw new Error(
+        `Timed out waiting for session ${sessionId} (${directory}) to idle`,
+      );
     }
 
     await Bun.sleep(POLL_INTERVAL_MS);
   }
 }
 
-async function fetchLastAssistantText(directory: string, sessionId: string): Promise<string> {
+async function fetchLastAssistantText(
+  directory: string,
+  sessionId: string,
+): Promise<string> {
   // Status can flip to idle a moment before the message is persisted/queryable;
   // retry briefly to avoid a spurious empty-array read.
   let bodyText = "";
@@ -182,14 +204,23 @@ async function fetchLastAssistantText(directory: string, sessionId: string): Pro
   let last: MessageEnvelope | undefined;
 
   for (let attempt = 0; attempt < 5; attempt++) {
-    const res = await fetch(`${BASE_URL}/session/${sessionId}/message?limit=50`, {
-      method: "GET",
-      headers: headers(directory),
-    });
+    const res = await fetch(
+      `${BASE_URL}/session/${sessionId}/message?limit=50`,
+      {
+        method: "GET",
+        headers: headers(directory),
+      },
+    );
     bodyText = await readBodyText(res);
     if (!res.ok) {
-      record(`[${directory}] fetch messages`, false, `status=${res.status} body=${bodyText}`);
-      throw new Error(`GET /session/${sessionId}/message failed (${res.status}): ${bodyText}`);
+      record(
+        `[${directory}] fetch messages`,
+        false,
+        `status=${res.status} body=${bodyText}`,
+      );
+      throw new Error(
+        `GET /session/${sessionId}/message failed (${res.status}): ${bodyText}`,
+      );
     }
 
     messages = JSON.parse(bodyText) as MessageEnvelope[];
@@ -199,7 +230,11 @@ async function fetchLastAssistantText(directory: string, sessionId: string): Pro
   }
 
   if (!last) {
-    record(`[${directory}] result retrieval: assistant message present`, false, bodyText);
+    record(
+      `[${directory}] result retrieval: assistant message present`,
+      false,
+      bodyText,
+    );
     return "";
   }
 
@@ -226,7 +261,11 @@ async function checkDiff(directory: string, sessionId: string): Promise<void> {
   });
   const bodyText = await readBodyText(res);
   if (!res.ok) {
-    record(`[${directory}] diff check: returns JSON array`, false, `status=${res.status} body=${bodyText}`);
+    record(
+      `[${directory}] diff check: returns JSON array`,
+      false,
+      `status=${res.status} body=${bodyText}`,
+    );
     return;
   }
 
@@ -234,7 +273,11 @@ async function checkDiff(directory: string, sessionId: string): Promise<void> {
   try {
     parsed = JSON.parse(bodyText) as DiffEntry[];
   } catch {
-    record(`[${directory}] diff check: returns JSON array`, false, `unparseable body=${bodyText}`);
+    record(
+      `[${directory}] diff check: returns JSON array`,
+      false,
+      `unparseable body=${bodyText}`,
+    );
     return;
   }
 
@@ -250,7 +293,9 @@ function extractHeading(text: string): string {
   return lines[1] ?? "<missing second line>";
 }
 
-async function runForProject(directory: string): Promise<{ directory: string; text: string }> {
+async function runForProject(
+  directory: string,
+): Promise<{ directory: string; text: string }> {
   const session = await createSession(directory);
   await dispatchPromptAsync(directory, session.id);
   await pollUntilIdle(directory, session.id);
@@ -276,7 +321,9 @@ async function main(): Promise<void> {
 
     record(
       "cross-check: sessions report distinct, correctly-bound working directories",
-      a.text.includes(a.directory) && b.text.includes(b.directory) && a.text !== b.text,
+      a.text.includes(a.directory) &&
+        b.text.includes(b.directory) &&
+        a.text !== b.text,
       `a=${JSON.stringify(a.text)} b=${JSON.stringify(b.text)}`,
     );
   }
