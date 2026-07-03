@@ -3,6 +3,7 @@ title: 'feat: Convert space-bus into the distributable @fro.bot/space-bus plugin
 type: feat
 status: active
 date: 2026-07-02
+deepened: 2026-07-02
 origin: docs/brainstorms/2026-07-02-space-bus-plugin-conversion-requirements.md
 ---
 
@@ -55,7 +56,7 @@ R1–R12 from the origin document, grouped: packaging (R1–R4), roster discover
 
 - Lazy roster resolution: replace import-time `loadManifest()` with `getRoster(directory)` resolving `<directory>/spacebus.json`, `SPACE_BUS_CONFIG` env override (absolute or `~` paths only; URLs and bare-relative rejected; resolved path canonicalized before read). No cross-call caching — a local file read per tool call is cheap and hot-edits of the roster take effect immediately. Discovery is exact-path (no upward directory walk); `ctx.directory` preferred, captured `input.directory` as fallback. Forced deviation from "logic unchanged" — eager load crashes plugin registration in consumer workspaces; ALL module-level roster/project state goes away, every exported function resolves per call.
 - Plugin entry per copilot-delegate: default-exported Plugin factory; tools built once per plugin instance with the instance's `input.directory` baked in; per-call `ctx.directory` used when present (probe showed both track the request workspace).
-- MCP facade as package `bin` (`space-bus-mcp`): resolves the origin doc's bin-vs-export question; Claude Desktop config becomes `bunx @fro.bot/space-bus-mcp`-style with `SPACE_BUS_CONFIG` env.
+- MCP facade as package `bin` (`space-bus-mcp`): resolves the origin doc's bin-vs-export question; Claude Desktop invocation is `bunx --package=@fro.bot/space-bus space-bus-mcp` (bunx/npx resolve bin names, not package names, when they differ) with `SPACE_BUS_CONFIG` env. Bin pattern per @fro.bot/systematic (`bin` → built dist file).
 - Build: `bun build` bundle with `--target node` (matching copilot-delegate's plugin entry; the OpenCode host is Node-compatible and the bin must run under both runtimes), external `@opencode-ai/plugin`/`@modelcontextprotocol/sdk`/`zod`, + `tsc --emitDeclarationOnly` — bundling sidesteps the 1.17.x published-ESM `.js`-extension footgun.
 - Peer range `>=1.17.13 <2` for `@opencode-ai/plugin`, exact dev-pin; loose peer avoids npm 7+ auto-install conflicts with the host runtime.
 - Roster filename `spacebus.json`; schema unchanged from `workspace.json` (server.baseUrl + projects), localhost guard retained at load.
@@ -158,7 +159,8 @@ R1–R12 from the origin document, grouped: packaging (R1–R4), roster discover
 - Test: `Test expectation: none — packaging/config; gated by build output checks below`
 
 **Approach:**
-- `name: @fro.bot/space-bus`, `type: module`, `main/types/exports` → `dist/`, `bin: {"space-bus-mcp": "dist/mcp.js"}`, `files: [dist, README.md, LICENSE]`, `publishConfig: {access: public, provenance: true}`.
+- `name: @fro.bot/space-bus`, `type: module`, `main/types/exports` → `dist/`, `bin: {"space-bus-mcp": "dist/mcp.js"}`, `files: [dist, README.md, LICENSE]`, `publishConfig: {access: public}` (trusted publishing auto-generates provenance — no flag needed).
+- Scripts contract (copilot-delegate): `clean` (rimraf dist), `build` (clean → bun bundle → `tsc --emitDeclarationOnly --noEmit false`), `version-changesets` (`changeset version && bun install --lockfile-only`), `publish-changesets` (`bun run build && changeset publish`), `prepublishOnly` (build). `.changeset/config.json` copied verbatim (access public, baseBranch main).
 - `peerDependencies: {"@opencode-ai/plugin": ">=1.17.13 <2"}`; move today's exact pins to devDependencies; keep `@modelcontextprotocol/sdk` + `zod` as regular dependencies.
 - Build: `bun build src/index.ts src/mcp.ts --outdir dist --target bun --external …` + `tsc --emitDeclarationOnly`; `dev` watch script.
 - MCP entry gains a shebang and stays stdout-clean (stderr-only diagnostics).
@@ -180,8 +182,10 @@ R1–R12 from the origin document, grouped: packaging (R1–R4), roster discover
 - Test: `Test expectation: none — CI config; verified by live runs on push/PR`
 
 **Approach:**
-- ci.yaml: one job (lint, typecheck, build, test, smoke-less) per copilot-delegate; release.yaml: `workflow_run` on CI success **gated to `head_branch == main`** (fork PRs never reach the publish job) → changesets/action with `id-token: write`, no NPM_TOKEN; fro-bot.yaml/renovate.yaml/codeql/scorecard/update-repo-settings copied from the conventions with repo-specific prompts and pins. Renovate must not auto-merge changes touching workflows or action pins (org preset default — verify it holds here).
-- App secrets (APPLICATION_ID/APPLICATION_PRIVATE_KEY) live as repo secrets exactly as in copilot-delegate; they scope to the settings App, not the release path.
+- ci.yaml: one job — name it exactly as settings.yml's required context will reference (copilot-delegate uses `Lint, typecheck, build, unit tests`); steps: checkout → mise/bun setup → install → typecheck → lint → build → ESM export-shape smoke (`node --input-type=module -e "import(...)"`) → unit tests.
+- release.yaml (copilot-delegate contract): triggers `workflow_dispatch` + `workflow_run: {workflows: [CI], branches: [main], types: [completed]}` with a job-level `if` on `workflow_run.conclusion == 'success'` (the branches filter is the fork gate); job permissions `contents: write, id-token: write, pull-requests: write`; App token via `actions/create-github-app-token` feeds changesets/action (`setupGitUser: false`, version/publish = the package scripts above); `actions/setup-node` with `registry-url: https://registry.npmjs.org`; npm ≥ 11.5.1 in the job for OIDC (upgrade step if the runner's is older); no NPM_TOKEN anywhere.
+- fro-bot.yaml: pinned fro-bot/agent SHA; review prompt customized to this package (plugin API contracts, roster/config safety, changeset hygiene) keeping the standard verdict heading structure. renovate.json5 lives at `.github/renovate.json5` extending `github>marcusrbrown/renovate-config`; add a packageRule preventing automerge on `matchManagers: [github-actions]` if the preset doesn't already.
+- App secrets (APPLICATION_ID/APPLICATION_PRIVATE_KEY) live as repo secrets exactly as in copilot-delegate; the SAME App token pattern also drives release.yaml's changesets action — both are Marcus-provisioned prerequisites.
 - `settings.yml`: `_extends: .github:common-settings.yaml`, description/topics, required contexts = {Fro Bot, the CI job name, Renovate / Renovate}.
 - Secrets/app setup (APPLICATION_ID/KEY for settings workflow; trusted publisher on npmjs.com) are Marcus's manual steps — named in the PR body checklist.
 
@@ -227,18 +231,18 @@ R1–R12 from the origin document, grouped: packaging (R1–R4), roster discover
 
 - [ ] **Unit 7: First publish + AE6**
 
-**Goal:** `1.0.0` (or `0.1.0`) publishes through CI trusted publishing; the control board switches to the npm package name.
+**Goal:** The package reaches npm and the control board switches to the npm name. Bootstrap constraint (verified against current npm docs): a trusted publisher CANNOT be configured for a package that doesn't exist yet — the FIRST publish is a manual maintainer publish (`npm publish` with 2FA/granular token, version 0.1.0), then the trusted publisher is configured on npmjs.com (owner fro-bot, repo space-bus, workflow `release.yaml` — exact filename match), and AE5 is satisfied by the SECOND release flowing through CI OIDC.
 
-**Requirements:** R1, R10; AE5, AE6
+**Requirements:** R1, R10; AE5 (second release), AE6
 
-**Dependencies:** Units 4, 6; Marcus's npm trusted-publisher setup
+**Dependencies:** Units 4, 6; Marcus's manual bootstrap publish + trusted-publisher config
 
 **Files:**
 - Create: `.changeset/*.md` (initial version changeset)
 - Modify: `~/src/github.com/fro-bot/workspace/opencode.json` (file path → npm name)
 - Test: `Test expectation: none — release operations; gated by AE5/AE6 live checks`
 
-**Approach:** merge the version PR; verify provenance on the npm listing; flip the control board's plugin reference to `@fro.bot/space-bus` and re-run the AE4 round-trip (this is AE6 — npm-name resolution through harness).
+**Approach:** bootstrap-publish 0.1.0 manually → configure trusted publisher → land a changeset → merge the CI version PR → verify the OIDC publish + auto-generated provenance on the npm listing; flip the control board's plugin reference to `@fro.bot/space-bus` and re-run the AE4 round-trip (this is AE6 — npm-name resolution through harness).
 
 **Rollback:** a bad publish is recovered by pinning the previous version in the control board's `opencode.json` (`@fro.bot/space-bus@<prev>`) or reverting to the file-path reference — which also remains the offline fallback if npm is unreachable at startup.
 
@@ -266,7 +270,7 @@ R1–R12 from the origin document, grouped: packaging (R1–R4), roster discover
 
 ## Documentation / Operational Notes
 
-- Marcus manual steps: npm trusted-publisher config for `@fro.bot/space-bus`; APPLICATION_ID/APPLICATION_PRIVATE_KEY secrets for update-repo-settings; branch-protection contexts activate via settings workflow.
+- Marcus manual steps, in order: (1) APPLICATION_ID/APPLICATION_PRIVATE_KEY repo secrets (settings + release workflows); (2) bootstrap `npm publish` of 0.1.0 (package must exist before a trusted publisher can be configured); (3) trusted-publisher config on npmjs.com — owner `fro-bot`, repo `space-bus`, workflow filename exactly `release.yaml`, no environment; (4) branch-protection contexts activate via the settings workflow.
 - HANDOFF.md and docs/brainstorms stay as history — no retro-editing.
 
 ## Sources & References
