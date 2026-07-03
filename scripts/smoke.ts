@@ -6,17 +6,29 @@
  * Run: bun run smoke
  */
 
-import { dirname, resolve } from "node:path";
+import { existsSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expandHome, getRoster } from "../src/config";
 import { authHeader } from "../src/core";
 
-// Reads SPACE_BUS_CONFIG, defaulting to the repo-root spacebus.json during
-// the transition (see plan Unit 1 "Smoke roster contract"). After Unit 6
-// this default moves to fixtures/dev-workspace/spacebus.json.
+// Reads SPACE_BUS_CONFIG, defaulting to fixtures/dev-workspace/spacebus.json
+// (see plan Unit 1 "Smoke roster contract" / Unit 6 cutover).
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "..");
-const roster = getRoster(repoRoot);
+const fixtureDir = resolve(repoRoot, "fixtures/dev-workspace");
+
+if (
+  !process.env["SPACE_BUS_CONFIG"] &&
+  !existsSync(join(fixtureDir, "spacebus.json"))
+) {
+  console.error(
+    `space-bus smoke: no fixture roster found at ${join(fixtureDir, "spacebus.json")} — run \`bun run fixture\` first, or set SPACE_BUS_CONFIG.`,
+  );
+  process.exit(1);
+}
+
+const roster = getRoster(fixtureDir);
 
 const BASE_URL = roster.server.baseUrl;
 const PROJECTS = roster.projects.slice(0, 2).map((p) => expandHome(p.path));
