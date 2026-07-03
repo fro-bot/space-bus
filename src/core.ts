@@ -16,7 +16,7 @@ function err(error: string): Err {
 
 // --- HTTP helper -----------------------------------------------------------
 
-function authHeader(): Record<string, string> {
+export function authHeader(): Record<string, string> {
   const password = process.env["OPENCODE_SERVER_PASSWORD"];
   if (!password) return {};
   const username = process.env["OPENCODE_SERVER_USERNAME"] ?? "opencode";
@@ -39,6 +39,7 @@ async function api(
         ...authHeader(),
         ...(init?.headers as Record<string, string> | undefined),
       },
+      redirect: "error",
       signal: AbortSignal.timeout(30_000),
     });
     const bodyText = await res.text().catch(() => "<unreadable body>");
@@ -258,6 +259,23 @@ const messageListSchema = z.array(messageEnvelopeSchema);
 
 // --- Path guard --------------------------------------------------------------
 
+// --- config resolution boundary -----------------------------------------
+// getRoster/getProjects (config.ts) throw on missing/invalid roster; every
+// exported function here converts that into a Result so core never throws
+// across the boundary (see AGENTS.md invariant).
+
+function resolveContext(
+  directory?: string,
+): Result<{ baseUrl: string; projects: Project[] }> {
+  try {
+    const manifest = getRoster(directory);
+    const projects = getProjects(directory);
+    return { ok: true, baseUrl: manifest.server.baseUrl, projects };
+  } catch (e) {
+    return err((e as Error).message);
+  }
+}
+
 function resolveProjectOrErr(
   projects: Project[],
   name: string,
@@ -293,9 +311,9 @@ export type RosterProject = {
 export async function roster(opts?: {
   directory?: string;
 }): Promise<Result<{ projects: RosterProject[] }>> {
-  const manifest = getRoster(opts?.directory);
-  const baseUrl = manifest.server.baseUrl;
-  const projects = getProjects(opts?.directory);
+  const ctx = resolveContext(opts?.directory);
+  if (!ctx.ok) return ctx;
+  const { baseUrl, projects } = ctx;
   const results = await Promise.all(
     projects.map(async (p): Promise<RosterProject> => {
       const pathExists = existsSync(p.expandedPath);
@@ -414,9 +432,9 @@ export async function dispatch(args: {
   sessionId?: string;
   directory?: string;
 }): Promise<Result<DispatchResult>> {
-  const manifest = getRoster(args.directory);
-  const baseUrl = manifest.server.baseUrl;
-  const projects = getProjects(args.directory);
+  const ctx = resolveContext(args.directory);
+  if (!ctx.ok) return ctx;
+  const { baseUrl, projects } = ctx;
 
   if (!args.sessionId) {
     if (!args.project) {
@@ -555,9 +573,9 @@ export async function status(
   sessionId: string,
   opts?: { directory?: string },
 ): Promise<Result<SessionStatusResult>> {
-  const manifest = getRoster(opts?.directory);
-  const baseUrl = manifest.server.baseUrl;
-  const projects = getProjects(opts?.directory);
+  const ctx = resolveContext(opts?.directory);
+  if (!ctx.ok) return ctx;
+  const { baseUrl, projects } = ctx;
 
   const loc = await findSessionDirectory(baseUrl, projects, sessionId);
   if (!loc.ok) return loc;
@@ -693,9 +711,9 @@ export async function result(
   sessionId: string,
   opts?: { directory?: string },
 ): Promise<Result<SessionResultResult>> {
-  const manifest = getRoster(opts?.directory);
-  const baseUrl = manifest.server.baseUrl;
-  const projects = getProjects(opts?.directory);
+  const ctx = resolveContext(opts?.directory);
+  if (!ctx.ok) return ctx;
+  const { baseUrl, projects } = ctx;
 
   const loc = await findSessionDirectory(baseUrl, projects, sessionId);
   if (!loc.ok) return loc;

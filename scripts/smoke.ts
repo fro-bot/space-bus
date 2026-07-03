@@ -9,6 +9,7 @@
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expandHome, getRoster } from "../src/config";
+import { authHeader } from "../src/core";
 
 // Reads SPACE_BUS_CONFIG, defaulting to the repo-root spacebus.json during
 // the transition (see plan Unit 1 "Smoke roster contract"). After Unit 6
@@ -78,14 +79,6 @@ function record(name: string, pass: boolean, detail?: string): void {
   results.push({ name, pass, detail });
   const status = pass ? "PASS" : "FAIL";
   console.log(`[${status}] ${name}${detail && !pass ? `\n  ${detail}` : ""}`);
-}
-
-function authHeader(): Record<string, string> {
-  const password = process.env["OPENCODE_SERVER_PASSWORD"];
-  if (!password) return {};
-  const username = process.env["OPENCODE_SERVER_USERNAME"] ?? "opencode";
-  const token = Buffer.from(`${username}:${password}`).toString("base64");
-  return { Authorization: `Basic ${token}` };
 }
 
 function headers(

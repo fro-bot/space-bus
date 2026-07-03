@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { getRoster, resolveRosterPath } from "./config";
+import { roster } from "./core";
 
 const ORIGINAL_ENV = process.env["SPACE_BUS_CONFIG"];
 
@@ -106,15 +107,23 @@ describe("config", () => {
   });
 
   test("import purity: importing config and core performs no roster read", async () => {
-    const cleanDir = mkdtempSync(join(tmpdir(), "space-bus-import-purity-"));
     delete process.env["SPACE_BUS_CONFIG"];
+    // Dynamic import with a cache-busting query so it re-evaluates the
+    // module body; success (no throw) proves no import-time filesystem I/O.
+    await expect(import(`./config?t=${Date.now()}`)).resolves.toBeDefined();
+    await expect(import(`./core?t=${Date.now()}`)).resolves.toBeDefined();
+  });
+
+  test("never-throw contract: roster() with no spacebus.json resolves ok:false naming spacebus.json", async () => {
+    const emptyDir = mkdtempSync(join(tmpdir(), "space-bus-noroster-"));
     try {
-      // Dynamic import with a cache-busting query so it re-evaluates the
-      // module body; success (no throw) proves no import-time filesystem I/O.
-      await expect(import(`./config?t=${Date.now()}`)).resolves.toBeDefined();
-      await expect(import(`./core?t=${Date.now()}`)).resolves.toBeDefined();
+      const res = await roster({ directory: emptyDir });
+      expect(res.ok).toBe(false);
+      if (!res.ok) {
+        expect(res.error).toMatch(/spacebus\.json/);
+      }
     } finally {
-      rmSync(cleanDir, { recursive: true, force: true });
+      rmSync(emptyDir, { recursive: true, force: true });
     }
   });
 });
