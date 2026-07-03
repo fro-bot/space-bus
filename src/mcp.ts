@@ -5,6 +5,10 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { dispatch, result, roster, status } from "./core";
 import { formatDispatch, formatResult, formatRoster, formatStatus } from "./format";
+import { BUS_RESULT_DESCRIPTION } from "./tools/bus_result";
+import { BUS_ROSTER_DESCRIPTION } from "./tools/bus_roster";
+import { BUS_STATUS_DESCRIPTION } from "./tools/bus_status";
+import { BUS_TASK_DESCRIPTION } from "./tools/bus_task";
 
 // transitional: removed at Unit 6 cutover — the MCP facade currently has no
 // tool-provided workspace directory (unlike the plugin/adapter tool contexts),
@@ -25,7 +29,7 @@ const server = new McpServer({
 server.registerTool(
   "bus_roster",
   {
-    description: "List the space-bus manifest projects with live session status per project.",
+    description: BUS_ROSTER_DESCRIPTION,
     inputSchema: {},
   },
   async () => {
@@ -38,8 +42,7 @@ server.registerTool(
 server.registerTool(
   "bus_task",
   {
-    description:
-      "Dispatch a prompt to an agent in the given space-bus manifest project, or steer an existing session by passing sessionId (answers its pending question, else sends a follow-up prompt). Returns immediately; does not wait for completion.",
+    description: BUS_TASK_DESCRIPTION,
     inputSchema: {
       project: z
         .string()
@@ -60,8 +63,7 @@ server.registerTool(
 server.registerTool(
   "bus_status",
   {
-    description:
-      "Report a space-bus session's status plus a summary of its latest todo and diff. Also reports when the session is blocked on an interactive question awaiting a reply.",
+    description: BUS_STATUS_DESCRIPTION,
     inputSchema: {
       sessionId: z.string().describe("Session ID returned by bus_task"),
     },
@@ -76,8 +78,7 @@ server.registerTool(
 server.registerTool(
   "bus_result",
   {
-    description:
-      "Return a completed space-bus session's final assistant message and diff. Errors if the session is still running — use bus_status to check first.",
+    description: BUS_RESULT_DESCRIPTION,
     inputSchema: {
       sessionId: z.string().describe("Session ID returned by bus_task"),
     },
