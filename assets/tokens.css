@@ -22,9 +22,9 @@
   --frobot-cream: #f5ebeb;
 
   /* ─── Typography ──────────────────────────────────────── */
-  --font-display: 'Inter', 'SF Pro Display', system-ui, sans-serif;
-  --font-body: 'Inter', 'SF Pro Text', system-ui, sans-serif;
-  --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+  --font-display: "Inter", "SF Pro Display", system-ui, sans-serif;
+  --font-body: "Inter", "SF Pro Text", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", monospace;
 
   --text-display: 6rem; /* 96px */
   --text-h1: 3.5rem; /* 56px */
@@ -117,7 +117,7 @@
 }
 
 /* Explicit dark theme via data attribute */
-[data-theme='dark'] {
+[data-theme="dark"] {
   --color-bg: #0d0216;
   --color-surface: #1a0b2e;
   --color-surface-raised: #2d1b4e;
@@ -194,7 +194,7 @@
 
 /* ─── Light Theme ─────────────────────────────────────── */
 /* Explicit light theme via data attribute */
-[data-theme='light'] {
+[data-theme="light"] {
   --color-bg: #ffffff; /* Page background */
   --color-surface: #f5ebeb; /* Card/panel background */
   --color-surface-raised: #edd8d8; /* Elevated card */
