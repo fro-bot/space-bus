@@ -40,6 +40,14 @@ function loadManifest(): Manifest {
   if (!parsed.success) {
     throw new Error(`space-bus: manifest at ${manifestPath} failed schema validation: ${parsed.error.message}`);
   }
+  const url = new URL(parsed.data.server.baseUrl);
+  const hostname = url.hostname;
+  const allowedHosts = new Set(["127.0.0.1", "::1", "[::1]", "localhost"]);
+  if (!allowedHosts.has(hostname)) {
+    throw new Error(
+      `space-bus: workspace.json baseUrl must point to localhost (got ${hostname}) — refusing to send credentials off-machine`,
+    );
+  }
   return parsed.data;
 }
 
@@ -448,9 +456,12 @@ async function findSessionDirectory(sessionId: string): Promise<Result<{ directo
     if (owner) {
       return { ok: true, directory: owner.expandedPath, project: owner.name };
     }
-    // Session exists but its directory isn't a manifest project (shouldn't
-    // happen for bus-dispatched sessions) — fall back to the probing project.
-    return { ok: true, directory: p.expandedPath, project: p.name };
+    // Session exists but its directory is missing or isn't a manifest project
+    // (shouldn't happen for bus-dispatched sessions) — refuse to guess, since
+    // attributing it to the probing project would misidentify the owner.
+    return err(
+      `space-bus: session ${sessionId} belongs to ${session.directory ?? "an unknown directory"}, which is not a manifest project`,
+    );
   }
   return err(`space-bus: no manifest project has a session with id ${sessionId}`);
 }
