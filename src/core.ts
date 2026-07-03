@@ -170,6 +170,22 @@ const turnMessageSchema = z
 
 const turnMessageListSchema = z.array(turnMessageSchema);
 
+// Session-level summary populated by harness builds carrying upstream
+// #33444 (e.g. 1.17.13+harness.ee55e157). GET /session/{id}.summary.diffs
+// mirrors the same per-file shape as the per-turn diffs above; when
+// present it's equivalent fidelity to /session/{id}/diff, so it reports
+// diffSource "session" too. Optional/absent on stock 1.16+ binaries.
+const sessionSummarySchema = z
+  .object({
+    summary: z
+      .object({
+        diffs: z.array(turnDiffEntrySchema).optional(),
+      })
+      .passthrough()
+      .optional(),
+  })
+  .passthrough();
+
 async function fetchTurnDiffs(
   directory: string,
   sessionId: string,
@@ -208,6 +224,18 @@ async function fetchDiffWithFallback(
   }
   if (diff.length > 0) {
     return { diff, diffSource: "session" };
+  }
+  try {
+    const sessionRes = await api(directory, `/session/${sessionId}`);
+    if (sessionRes.res.ok) {
+      const parsed = sessionSummarySchema.parse(JSON.parse(sessionRes.bodyText));
+      const summaryDiffs = parsed.summary?.diffs;
+      if (summaryDiffs && summaryDiffs.length > 0) {
+        return { diff: summaryDiffs, diffSource: "session" };
+      }
+    }
+  } catch {
+    // ignore, fall through to per-turn aggregation
   }
   try {
     const turnDiffs = await fetchTurnDiffs(directory, sessionId);
