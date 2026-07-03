@@ -21,6 +21,7 @@
     {
       description: 'Never automerge GitHub Actions version bumps',
       matchManagers: ['github-actions'],
+      matchPackageNames: ['!fro-bot/agent'],
       automerge: false,
     },
   ],
