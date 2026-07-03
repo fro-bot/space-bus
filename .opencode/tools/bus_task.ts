@@ -1,6 +1,6 @@
 import { tool } from "@opencode-ai/plugin";
-import { z } from "zod";
 import { dispatch } from "../../src/core";
+import { formatDispatch } from "../../src/format";
 
 export default tool({
   description:
@@ -13,6 +13,6 @@ export default tool({
   async execute(args) {
     const r = await dispatch(args.project, args.prompt, args.title);
     if (!r.ok) return r.error;
-    return `Dispatched. Session ${r.sessionId} in ${r.project} — report this ID.`;
+    return formatDispatch(r.sessionId, r.project);
   },
 });

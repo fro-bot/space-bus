@@ -35,3 +35,20 @@ opencode                     # from this directory → control agent with bus_* 
 ```
 
 `@opencode-ai/*` versions are pinned lockstep with the OpenCode CLI (1.17.13). Upgrade both together.
+
+## Claude Desktop
+
+Add `src/mcp.ts` as a stdio MCP server in Claude Desktop's config:
+
+```json
+{
+  "mcpServers": {
+    "space-bus": {
+      "command": "bun",
+      "args": ["run", "/absolute/path/to/space-bus/src/mcp.ts"]
+    }
+  }
+}
+```
+
+The path must be absolute — Claude Desktop launches the server with no cwd context. `opencode serve`/`harness serve` must already be running on `127.0.0.1:4096`.
