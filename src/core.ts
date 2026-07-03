@@ -135,7 +135,65 @@ const vcsStatusEntrySchema = z
 
 const vcsStatusSchema = z.array(vcsStatusEntrySchema).default([]);
 
-export type DiffSource = "session" | "working-tree";
+export type DiffSource = "session" | "turns" | "working-tree";
+
+// Loose schema for per-turn diffs embedded on user messages
+// (info.summary.diffs). Upstream opencode #30127 (v1.16.0) zeroes
+// session-level diff summaries, so /session/{id}/diff returns [] even
+// though per-turn diffs on messages remain intact (including untracked
+// files). We aggregate those as a fallback, last-turn-wins per file —
+// same semantics as upstream PR #33444.
+const turnDiffEntrySchema = z
+  .object({
+    file: z.string().optional(),
+    additions: z.number(),
+    deletions: z.number(),
+    status: z.string().optional(),
+  })
+  .passthrough();
+
+const turnMessageSchema = z
+  .object({
+    info: z
+      .object({
+        role: z.string(),
+        summary: z
+          .object({
+            diffs: z.array(turnDiffEntrySchema).optional(),
+          })
+          .passthrough()
+          .optional(),
+      })
+      .passthrough(),
+  })
+  .passthrough();
+
+const turnMessageListSchema = z.array(turnMessageSchema);
+
+async function fetchTurnDiffs(
+  directory: string,
+  sessionId: string,
+): Promise<z.infer<typeof diffSchema>> {
+  const { res, bodyText } = await api(directory, `/session/${sessionId}/message?limit=100`);
+  if (!res.ok) return [];
+  let messages: z.infer<typeof turnMessageListSchema>;
+  try {
+    messages = turnMessageListSchema.parse(JSON.parse(bodyText));
+  } catch {
+    return [];
+  }
+  const byFile = new Map<string, z.infer<typeof diffEntrySchema>>();
+  for (const m of messages) {
+    if (m.info.role !== "user") continue;
+    const diffs = m.info.summary?.diffs;
+    if (!diffs || diffs.length === 0) continue;
+    for (const d of diffs) {
+      const key = d.file ?? `<unknown:${byFile.size}>`;
+      byFile.set(key, d); // last turn wins
+    }
+  }
+  return Array.from(byFile.values());
+}
 
 async function fetchDiffWithFallback(
   directory: string,
@@ -150,6 +208,14 @@ async function fetchDiffWithFallback(
   }
   if (diff.length > 0) {
     return { diff, diffSource: "session" };
+  }
+  try {
+    const turnDiffs = await fetchTurnDiffs(directory, sessionId);
+    if (turnDiffs.length > 0) {
+      return { diff: turnDiffs, diffSource: "turns" };
+    }
+  } catch {
+    // ignore, fall through to working-tree fallback
   }
   try {
     const vcsRes = await api(directory, "/vcs/status");

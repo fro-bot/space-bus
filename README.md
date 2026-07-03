@@ -41,7 +41,7 @@ bun run typecheck
 ## Notes from implementation
 
 - The session store is global across directory headers: `GET /session/{id}` resolves regardless of which project directory is sent. The bus attributes a session to its owning project via the session's own `directory` field, not the probe header. `GET /session` (list) and `/session/status` are directory-scoped.
-- `GET /session/{id}/diff` misses files a delegated session creates untracked. When the session diff is empty, `bus_status`/`bus_result` fall back to `GET /vcs/status` and label the output *working tree* (repo-wide, may include changes from other sessions).
+- Upstream opencode #30127 (v1.16.0) zeroes session-level diff summaries, so `GET /session/{id}/diff` always returns `[]`. Per-turn diffs on user messages (`GET /session/{id}/message`) stay intact and include untracked files, so `bus_status`/`bus_result` aggregate those instead (last turn wins per file, à la upstream PR #33444). `GET /vcs/status` remains a last-ditch repo-wide fallback, labeled *working tree*.
 - `/session/status` can report a session idle a beat before its final message is queryable; `scripts/smoke.ts` absorbs this with a bounded retry on the message fetch.
 - `.opencode/tools/` resolves `@opencode-ai/plugin` from repo-root `node_modules` — no `.opencode/package.json` needed.
 
