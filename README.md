@@ -1,4 +1,20 @@
+<div align="center">
+
+<img src="./assets/banner.svg" alt="space-bus Banner" width="100%" />
+
 # @fro.bot/space-bus
+
+> Control project agents across workspaces
+
+[![Build Status](https://img.shields.io/github/actions/workflow/status/fro-bot/space-bus/ci.yaml?style=for-the-badge&label=Build&labelColor=0D0216&color=00BCD4)](https://github.com/fro-bot/space-bus/actions) [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/fro-bot/space-bus/badge?style=for-the-badge&labelColor=0D0216&color=E91E63)](https://securityscorecards.dev/viewer/?uri=github.com/fro-bot/space-bus) [![License](https://img.shields.io/badge/License-MIT-FFC107?style=for-the-badge&labelColor=0D0216&color=FFC107)](LICENSE)
+
+[Overview](#overview) · [Install](#install) · [Configure](#configure) · [Tools](#tools) · [Claude Desktop](#claude-desktop) · [Development](#development)
+
+</div>
+
+---
+
+## Overview
 
 Workspace agent bus for OpenCode. A control agent — an ordinary OpenCode TUI running with this plugin installed — tasks dedicated agents in each project on your roster over a single `opencode serve`/`harness serve` instance, using per-request directory routing. A thin stdio MCP facade exposes the same tools to Claude Desktop.
 
@@ -92,3 +108,11 @@ bun run dev             # watch build to dist/
 ## Releasing
 
 PRs land a changeset via `bunx changeset`. On merge to `main`, CI opens a version PR; merging that PR publishes to npm through trusted publishing (OIDC) — no `NPM_TOKEN` involved.
+
+---
+
+<div align="center">
+
+<sub>Part of the <a href="https://github.com/fro-bot">Fro Bot</a> ecosystem</sub>
+
+</div>
