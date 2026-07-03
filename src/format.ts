@@ -1,4 +1,4 @@
-import type { ReplyResult, RosterProject, SessionResultResult, SessionStatusResult } from "./core";
+import type { DispatchResult, RosterProject, SessionResultResult, SessionStatusResult } from "./core";
 
 export function formatRoster(projects: RosterProject[]): string {
   return projects
@@ -11,8 +11,15 @@ export function formatRoster(projects: RosterProject[]): string {
     .join("\n");
 }
 
-export function formatDispatch(sessionId: string, project: string): string {
-  return `Dispatched. Session ${sessionId} in ${project} — report this ID.`;
+export function formatDispatch(r: DispatchResult): string {
+  switch (r.mode) {
+    case "new":
+      return `Dispatched. Session ${r.sessionId} in ${r.project} — report this ID.`;
+    case "question-reply":
+      return `Replied to pending question in session ${r.sessionId} (${r.project}).`;
+    case "follow-up":
+      return `Follow-up prompt sent to session ${r.sessionId} (${r.project}).`;
+  }
 }
 
 export function formatStatus(r: SessionStatusResult): string {
@@ -29,7 +36,7 @@ export function formatStatus(r: SessionStatusResult): string {
     if (r.pendingQuestion.options.length > 0) {
       lines.push(`  options: ${r.pendingQuestion.options.join(" | ")}`);
     }
-    lines.push(`  (answer with bus_reply)`);
+    lines.push(`  (answer with bus_task using sessionId)`);
   }
   lines.push(
     r.diffSource === "working-tree"
@@ -39,12 +46,6 @@ export function formatStatus(r: SessionStatusResult): string {
     todoLines,
   );
   return lines.join("\n");
-}
-
-export function formatReply(r: ReplyResult): string {
-  return r.mode === "question-reply"
-    ? `Replied to pending question in session ${r.sessionId} (${r.project}).`
-    : `Follow-up prompt sent to session ${r.sessionId} (${r.project}).`;
 }
 
 export function formatResult(r: SessionResultResult): string {

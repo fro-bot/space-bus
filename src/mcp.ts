@@ -1,8 +1,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { dispatch, reply, result, roster, status } from "./core";
-import { formatDispatch, formatReply, formatResult, formatRoster, formatStatus } from "./format";
+import { dispatch, result, roster, status } from "./core";
+import { formatDispatch, formatResult, formatRoster, formatStatus } from "./format";
 
 const server = new McpServer({
   name: "space-bus",
@@ -26,17 +26,21 @@ server.registerTool(
   "bus_task",
   {
     description:
-      "Dispatch a prompt to an agent in the given space-bus manifest project. Returns immediately with a session ID; does not wait for completion.",
+      "Dispatch a prompt to an agent in the given space-bus manifest project, or steer an existing session by passing sessionId (answers its pending question, else sends a follow-up prompt). Returns immediately; does not wait for completion.",
     inputSchema: {
-      project: z.string().describe("Manifest project name, e.g. dashboard, agent, control-plane, infra"),
+      project: z
+        .string()
+        .optional()
+        .describe("Manifest project name, e.g. dashboard, agent, control-plane, infra. Required when starting a new session."),
       prompt: z.string().describe("The prompt to send to the delegated agent"),
-      title: z.string().optional().describe("Optional session title"),
+      title: z.string().optional().describe("Optional session title (only used when starting a new session)"),
+      sessionId: z.string().optional().describe("Existing session ID to steer instead of starting a new session"),
     },
   },
   async (args) => {
-    const r = await dispatch(args.project, args.prompt, args.title);
+    const r = await dispatch(args);
     if (!r.ok) return { content: [{ type: "text", text: r.error }], isError: true };
-    return { content: [{ type: "text", text: formatDispatch(r.sessionId, r.project) }] };
+    return { content: [{ type: "text", text: formatDispatch(r) }] };
   },
 );
 
@@ -67,23 +71,6 @@ server.registerTool(
     const r = await result(args.sessionId);
     if (!r.ok) return { content: [{ type: "text", text: r.error }], isError: true };
     return { content: [{ type: "text", text: formatResult(r) }] };
-  },
-);
-
-server.registerTool(
-  "bus_reply",
-  {
-    description:
-      "Answer a delegated session's pending question, or send it a follow-up prompt. Steers an existing space-bus session without creating a new one.",
-    inputSchema: {
-      sessionId: z.string().describe("Session ID returned by bus_task"),
-      message: z.string().describe("The answer or follow-up message to send"),
-    },
-  },
-  async (args) => {
-    const r = await reply(args.sessionId, args.message);
-    if (!r.ok) return { content: [{ type: "text", text: r.error }], isError: true };
-    return { content: [{ type: "text", text: formatReply(r) }] };
   },
 );
 

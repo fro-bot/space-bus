@@ -4,15 +4,22 @@ import { formatDispatch } from "../../src/format";
 
 export default tool({
   description:
-    "Dispatch a prompt to an agent in the given space-bus manifest project. Returns immediately with a session ID; does not wait for completion.",
+    "Dispatch a prompt to an agent in the given space-bus manifest project, or steer an existing session by passing sessionId (answers its pending question, else sends a follow-up prompt). Returns immediately; does not wait for completion.",
   args: {
-    project: tool.schema.string().describe("Manifest project name, e.g. dashboard, agent, control-plane, infra"),
+    project: tool.schema
+      .string()
+      .optional()
+      .describe("Manifest project name, e.g. dashboard, agent, control-plane, infra. Required when starting a new session."),
     prompt: tool.schema.string().describe("The prompt to send to the delegated agent"),
-    title: tool.schema.string().optional().describe("Optional session title"),
+    title: tool.schema.string().optional().describe("Optional session title (only used when starting a new session)"),
+    sessionId: tool.schema
+      .string()
+      .optional()
+      .describe("Existing session ID to steer instead of starting a new session"),
   },
   async execute(args) {
-    const r = await dispatch(args.project, args.prompt, args.title);
+    const r = await dispatch(args);
     if (!r.ok) return r.error;
-    return formatDispatch(r.sessionId, r.project);
+    return formatDispatch(r);
   },
 });

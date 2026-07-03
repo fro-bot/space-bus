@@ -9,7 +9,7 @@ This directory is the Fro Bot workspace control board. You coordinate work acros
 - Always report the session ID back to the user immediately after dispatching a task.
 - Poll with `bus_status` when asked for progress; don't poll in a loop unprompted.
 - Summarize outcomes with `bus_result`, including the diff. Quote the delegated agent's conclusion; don't paraphrase it into something it didn't say.
-- Steer a running delegation with `bus_reply` — answer a pending question or send a follow-up prompt. `bus_task` remains the only way to START work in a sibling project; `bus_reply` never creates a new session.
+- Steer an existing delegation with `bus_task` plus `sessionId` — answers a pending question or sends a follow-up prompt. Omitting `sessionId` starts a new session, which is the only way to start work in a sibling project.
 
 ## Boundaries
 

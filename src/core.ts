@@ -355,7 +355,7 @@ export async function roster(): Promise<Result<{ projects: RosterProject[] }>> {
 
 // --- dispatch ------------------------------------------------------------------
 
-export async function dispatch(
+async function dispatchNew(
   project: string,
   prompt: string,
   title?: string,
@@ -390,6 +390,41 @@ export async function dispatch(
   }
 
   return { ok: true, sessionId: session.id, project, directory };
+}
+
+export type DispatchResult = {
+  sessionId: string;
+  project: string;
+  mode: "new" | "question-reply" | "follow-up";
+  directory?: string;
+};
+
+export async function dispatch(args: {
+  project?: string;
+  prompt: string;
+  title?: string;
+  sessionId?: string;
+}): Promise<Result<DispatchResult>> {
+  if (!args.sessionId) {
+    if (!args.project) {
+      return err("space-bus: project is required when starting a new session");
+    }
+    const r = await dispatchNew(args.project, args.prompt, args.title);
+    if (!r.ok) return r;
+    return { ok: true, sessionId: r.sessionId, project: r.project, mode: "new", directory: r.directory };
+  }
+
+  const loc = await findSessionDirectory(args.sessionId);
+  if (!loc.ok) return loc;
+  const { directory, project } = loc;
+
+  if (args.project && args.project !== project) {
+    return err(
+      `space-bus: session ${args.sessionId} belongs to project "${project}", not "${args.project}" — refusing to steer the wrong session`,
+    );
+  }
+
+  return steerSession(args.sessionId, args.prompt, directory, project);
 }
 
 // --- session resolution by id (try each project's directory) ------------------
@@ -519,22 +554,17 @@ export async function status(sessionId: string): Promise<Result<SessionStatusRes
   };
 }
 
-// --- reply -------------------------------------------------------------------
+// --- steering (question-reply / follow-up) ------------------------------------
 
 const questionEntrySchema = z.object({ id: z.string(), sessionID: z.string() }).passthrough();
 const questionListSchema = z.array(questionEntrySchema);
 
-export type ReplyResult = {
-  sessionId: string;
-  project: string;
-  mode: "question-reply" | "follow-up";
-};
-
-export async function reply(sessionId: string, message: string): Promise<Result<ReplyResult>> {
-  const loc = await findSessionDirectory(sessionId);
-  if (!loc.ok) return loc;
-  const { directory, project } = loc;
-
+async function steerSession(
+  sessionId: string,
+  message: string,
+  directory: string,
+  project: string,
+): Promise<Result<DispatchResult>> {
   const questionsRes = await api(directory, "/question");
   if (questionsRes.res.ok) {
     let questions: z.infer<typeof questionListSchema>;
