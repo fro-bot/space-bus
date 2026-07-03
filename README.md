@@ -2,7 +2,7 @@
 
 Workspace agent bus for OpenCode. One control agent (an ordinary OpenCode TUI launched in this directory) sees and tasks dedicated agents in each Fro Bot project, over a single `opencode serve` instance using per-request directory routing. A thin stdio MCP facade exposes the same four tools to Claude Desktop.
 
-**Status:** MVP scaffold — implementation happens per `HANDOFF.md`. Dogfood as a workspace-local tool first; conversion to a distributable OpenCode plugin comes after.
+**Status:** MVP implemented and verified (Phases 0–2). Dogfood as a workspace-local tool first; conversion to a distributable OpenCode plugin comes after.
 
 ## How it works
 
@@ -26,15 +26,24 @@ Four tools, no broker: `bus_roster`, `bus_task`, `bus_status`, `bus_result`. The
 - `scripts/smoke.ts` — Phase 0 spike, kept as canary
 - `docs/brainstorms/` — requirements (systematic ce-brainstorm format)
 
-## Quick start (once built)
+## Quick start
 
 ```sh
 bun install
-opencode serve --port 4096   # from anywhere
+harness serve --port 4096    # or: opencode serve --port 4096
 opencode                     # from this directory → control agent with bus_* tools
+bun run smoke                # canary: directory-routing isolation against the live server
+bun run typecheck
 ```
 
-`@opencode-ai/*` versions are pinned lockstep with the OpenCode CLI (1.17.13). Upgrade both together.
+`@opencode-ai/*` versions are pinned lockstep with the OpenCode CLI (1.17.13). Upgrade both together. Set `OPENCODE_SERVER_PASSWORD` (and optionally `OPENCODE_SERVER_USERNAME`) to enable HTTP Basic auth on every bus request.
+
+## Notes from implementation
+
+- The session store is global across directory headers: `GET /session/{id}` resolves regardless of which project directory is sent. The bus attributes a session to its owning project via the session's own `directory` field, not the probe header. `GET /session` (list) and `/session/status` are directory-scoped.
+- `GET /session/{id}/diff` misses files a delegated session creates untracked. When the session diff is empty, `bus_status`/`bus_result` fall back to `GET /vcs/status` and label the output *working tree* (repo-wide, may include changes from other sessions).
+- `/session/status` can report a session idle a beat before its final message is queryable; `scripts/smoke.ts` absorbs this with a bounded retry on the message fetch.
+- `.opencode/tools/` resolves `@opencode-ai/plugin` from repo-root `node_modules` — no `.opencode/package.json` needed.
 
 ## Claude Desktop
 
