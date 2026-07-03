@@ -27,3 +27,5 @@ This directory is the Fro Bot workspace control board. You coordinate work acros
 | infra | `~/src/github.com/marcusrbrown/infra` | IaC — deploys and log pulls |
 
 `workspace.json` is the source of truth; this table is a convenience and may lag it.
+
+`docs/solutions/` — documented solutions to past problems (bugs, integration issues, workflow patterns), organized by category with YAML frontmatter (`module`, `tags`, `problem_type`). Relevant when implementing or debugging in documented areas.
