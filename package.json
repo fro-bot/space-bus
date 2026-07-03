@@ -1,0 +1,24 @@
+{
+  "name": "@fro.bot/space-bus",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Fro Bot Space Bus — workspace agent bus for OpenCode. One control agent tasking per-project agents over the OpenCode server API, with an MCP facade for Claude Desktop.",
+  "type": "module",
+  "license": "MIT",
+  "repository": "github:fro-bot/space-bus",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "smoke": "bun run scripts/smoke.ts",
+    "mcp": "bun run src/mcp.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "@opencode-ai/plugin": "1.17.13",
+    "@opencode-ai/sdk": "1.17.13",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.0.0",
+    "typescript": "^5.8.0"
+  }
+}
