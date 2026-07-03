@@ -1,4 +1,4 @@
-import type { RosterProject, SessionResultResult, SessionStatusResult } from "./core";
+import type { ReplyResult, RosterProject, SessionResultResult, SessionStatusResult } from "./core";
 
 export function formatRoster(projects: RosterProject[]): string {
   return projects
@@ -29,6 +29,12 @@ export function formatStatus(r: SessionStatusResult): string {
     `todos:`,
     todoLines,
   ].join("\n");
+}
+
+export function formatReply(r: ReplyResult): string {
+  return r.mode === "question-reply"
+    ? `Replied to pending question in session ${r.sessionId} (${r.project}).`
+    : `Follow-up prompt sent to session ${r.sessionId} (${r.project}).`;
 }
 
 export function formatResult(r: SessionResultResult): string {

@@ -450,6 +450,57 @@ export async function status(sessionId: string): Promise<Result<SessionStatusRes
   };
 }
 
+// --- reply -------------------------------------------------------------------
+
+const questionEntrySchema = z.object({ id: z.string(), sessionID: z.string() }).passthrough();
+const questionListSchema = z.array(questionEntrySchema);
+
+export type ReplyResult = {
+  sessionId: string;
+  project: string;
+  mode: "question-reply" | "follow-up";
+};
+
+export async function reply(sessionId: string, message: string): Promise<Result<ReplyResult>> {
+  const loc = await findSessionDirectory(sessionId);
+  if (!loc.ok) return loc;
+  const { directory, project } = loc;
+
+  const questionsRes = await api(directory, "/question");
+  if (questionsRes.res.ok) {
+    let questions: z.infer<typeof questionListSchema>;
+    try {
+      questions = questionListSchema.parse(JSON.parse(questionsRes.bodyText));
+    } catch {
+      questions = [];
+    }
+    const pending = questions.find((q) => q.sessionID === sessionId);
+    if (pending) {
+      const replyRes = await api(directory, `/question/${pending.id}/reply`, {
+        method: "POST",
+        body: JSON.stringify({ answers: [[message]] }),
+      });
+      if (!replyRes.res.ok) {
+        return err(
+          `space-bus: failed to reply to question ${pending.id} for session ${sessionId} (${replyRes.res.status}): ${replyRes.bodyText}`,
+        );
+      }
+      return { ok: true, sessionId, project, mode: "question-reply" };
+    }
+  }
+
+  const promptRes = await api(directory, `/session/${sessionId}/prompt_async`, {
+    method: "POST",
+    body: JSON.stringify({ parts: [{ type: "text", text: message }] }),
+  });
+  if (promptRes.res.status !== 204) {
+    return err(
+      `space-bus: follow-up prompt to session ${sessionId} failed (${promptRes.res.status}): ${promptRes.bodyText}`,
+    );
+  }
+  return { ok: true, sessionId, project, mode: "follow-up" };
+}
+
 // --- result ------------------------------------------------------------------
 
 export type SessionResultResult = {

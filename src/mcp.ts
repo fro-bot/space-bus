@@ -1,8 +1,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { dispatch, result, roster, status } from "./core";
-import { formatDispatch, formatResult, formatRoster, formatStatus } from "./format";
+import { dispatch, reply, result, roster, status } from "./core";
+import { formatDispatch, formatReply, formatResult, formatRoster, formatStatus } from "./format";
 
 const server = new McpServer({
   name: "space-bus",
@@ -67,6 +67,23 @@ server.registerTool(
     const r = await result(args.sessionId);
     if (!r.ok) return { content: [{ type: "text", text: r.error }], isError: true };
     return { content: [{ type: "text", text: formatResult(r) }] };
+  },
+);
+
+server.registerTool(
+  "bus_reply",
+  {
+    description:
+      "Answer a delegated session's pending question, or send it a follow-up prompt. Steers an existing space-bus session without creating a new one.",
+    inputSchema: {
+      sessionId: z.string().describe("Session ID returned by bus_task"),
+      message: z.string().describe("The answer or follow-up message to send"),
+    },
+  },
+  async (args) => {
+    const r = await reply(args.sessionId, args.message);
+    if (!r.ok) return { content: [{ type: "text", text: r.error }], isError: true };
+    return { content: [{ type: "text", text: formatReply(r) }] };
   },
 );
 

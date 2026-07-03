@@ -1,6 +1,6 @@
 # @fro.bot/space-bus
 
-Workspace agent bus for OpenCode. One control agent (an ordinary OpenCode TUI launched in this directory) sees and tasks dedicated agents in each Fro Bot project, over a single `opencode serve` instance using per-request directory routing. A thin stdio MCP facade exposes the same four tools to Claude Desktop.
+Workspace agent bus for OpenCode. One control agent (an ordinary OpenCode TUI launched in this directory) sees and tasks dedicated agents in each Fro Bot project, over a single `opencode serve` instance using per-request directory routing. A thin stdio MCP facade exposes the same five tools to Claude Desktop.
 
 **Status:** MVP implemented and verified (Phases 0–2). Dogfood as a workspace-local tool first; conversion to a distributable OpenCode plugin comes after.
 
@@ -14,7 +14,7 @@ OpenCode TUI (here) ──.opencode/tools/ ────┘                      
                                               agent · dashboard · control-plane · infra
 ```
 
-Four tools, no broker: `bus_roster`, `bus_task`, `bus_status`, `bus_result`. The OpenCode server API is the state store.
+Five tools, no broker: `bus_roster`, `bus_task`, `bus_status`, `bus_result`, `bus_reply`. The OpenCode server API is the state store.
 
 ## Layout
 
@@ -44,6 +44,7 @@ bun run typecheck
 - Upstream opencode #30127 (v1.16.0) zeroes session-level diff summaries, so `GET /session/{id}/diff` always returns `[]`. Per-turn diffs on user messages (`GET /session/{id}/message`) stay intact and include untracked files, so `bus_status`/`bus_result` aggregate those instead (last turn wins per file, à la upstream PR #33444). `GET /vcs/status` remains a last-ditch repo-wide fallback, labeled *working tree*.
 - `/session/status` can report a session idle a beat before its final message is queryable; `scripts/smoke.ts` absorbs this with a bounded retry on the message fetch.
 - `.opencode/tools/` resolves `@opencode-ai/plugin` from repo-root `node_modules` — no `.opencode/package.json` needed.
+- Dogfooding grew the surface to five — delegates block on interactive questions and the control agent needs a steering path that isn't raw API.
 
 ## Claude Desktop
 
