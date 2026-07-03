@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { dispatch, result, roster, status } from "./core";
+import { type DispatchArgs, dispatch, result, roster, status } from "./core";
 import {
   formatDispatch,
   formatResult,
@@ -13,9 +13,17 @@ import { BUS_ROSTER_DESCRIPTION } from "./tools/bus_roster";
 import { BUS_STATUS_DESCRIPTION } from "./tools/bus_status";
 import { BUS_TASK_DESCRIPTION } from "./tools/bus_task";
 
+// Injected at build time via build.ts's Bun.build `define` (reads
+// package.json's version). Falls back to "dev" when running directly from
+// source (bun run src/mcp.ts, tests) where the define substitution never
+// happens.
+declare const __SPACE_BUS_VERSION__: string;
+const version =
+  typeof __SPACE_BUS_VERSION__ !== "undefined" ? __SPACE_BUS_VERSION__ : "dev";
+
 const server = new McpServer({
   name: "space-bus",
-  version: "0.0.0",
+  version,
 });
 
 server.registerTool(
@@ -59,7 +67,10 @@ server.registerTool(
     },
   },
   async (args) => {
-    const r = await dispatch({ ...args });
+    // Tool inputSchema is runtime-validated but loosely typed (all optional
+    // fields); the discriminated-union exclusivity in DispatchArgs is
+    // enforced by dispatch()'s runtime guard, not by this cast.
+    const r = await dispatch(args as DispatchArgs);
     if (!r.ok)
       return { content: [{ type: "text", text: r.error }], isError: true };
     return { content: [{ type: "text", text: formatDispatch(r) }] };

@@ -134,6 +134,18 @@ describe("dispatch() new-session", () => {
     expect(res.error).toContain("alpha");
     expect(res.error).toContain("beta");
   });
+
+  test("empty-string sessionId: ok:false distinct from missing project", async () => {
+    globalThis.fetch = mockFetch({});
+    const res = await dispatch({
+      project: "alpha",
+      sessionId: "",
+      prompt: "hi",
+    });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.error).toBe("space-bus: sessionId must be a non-empty string");
+  });
 });
 
 describe("dispatch() steering", () => {
@@ -368,6 +380,14 @@ describe("result()", () => {
     expect(res.diff).toEqual([
       { file: "d.ts", additions: 1, deletions: 1, status: "M" },
     ]);
+  });
+});
+
+describe("DispatchArgs type-level exclusivity", () => {
+  test("bare {prompt} is a compile error (neither project nor sessionId)", () => {
+    // @ts-expect-error — DispatchArgs requires project or sessionId.
+    const bad: Parameters<typeof dispatch>[0] = { prompt: "hi" };
+    expect(bad).toBeDefined();
   });
 });
 

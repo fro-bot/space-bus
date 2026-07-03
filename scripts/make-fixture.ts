@@ -40,6 +40,11 @@ const spacebusRoster = {
       path: "~/src/github.com/marcusrbrown/infra",
       description: "IaC — cloud deploys and log pulls",
     },
+    {
+      name: "space-bus",
+      path: "~/src/github.com/fro-bot/space-bus",
+      description: "Space Bus plugin development (@fro.bot/space-bus)",
+    },
   ],
 };
 await Bun.write(
