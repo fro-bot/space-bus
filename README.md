@@ -45,9 +45,9 @@ Space Bus reads a `spacebus.json` roster from the workspace directory (the direc
   },
   "projects": [
     {
-      "name": "agent",
-      "path": "~/src/github.com/fro-bot/agent",
-      "description": "Fro Bot agent runtime + gateway + Discord integration"
+      "name": "my-project",
+      "path": "~/src/my-project",
+      "description": "My project's agent runtime and API"
     }
   ]
 }

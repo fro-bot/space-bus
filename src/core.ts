@@ -425,16 +425,29 @@ export type DispatchResult = { sessionId: string; project: string } & (
   | { mode: "question-reply" | "follow-up" }
 );
 
-export async function dispatch(args: {
-  project?: string;
+// project stays allowed alongside sessionId (the mismatch guard in the
+// steering path consumes it) but a bare {prompt} with neither is now a
+// compile error — new sessions require project, steering requires
+// sessionId.
+export type DispatchArgs = {
   prompt: string;
   title?: string;
-  sessionId?: string;
   directory?: string;
-}): Promise<Result<DispatchResult>> {
+} & (
+  | { project: string; sessionId?: undefined }
+  | { sessionId: string; project?: string }
+);
+
+export async function dispatch(
+  args: DispatchArgs,
+): Promise<Result<DispatchResult>> {
   const ctx = resolveContext(args.directory);
   if (!ctx.ok) return ctx;
   const { baseUrl, projects } = ctx;
+
+  if (args.sessionId !== undefined && args.sessionId === "") {
+    return err("space-bus: sessionId must be a non-empty string");
+  }
 
   if (!args.sessionId) {
     if (!args.project) {

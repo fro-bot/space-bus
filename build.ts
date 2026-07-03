@@ -6,12 +6,17 @@
  * from package.json dependencies/peerDependencies at consume time.
  */
 
+const pkg = await Bun.file("./package.json").json();
+
 const result = await Bun.build({
   entrypoints: ["./src/index.ts", "./src/mcp.ts"],
   outdir: "./dist",
   target: "node",
   format: "esm",
   external: ["@opencode-ai/plugin", "@modelcontextprotocol/sdk", "zod"],
+  define: {
+    __SPACE_BUS_VERSION__: JSON.stringify(pkg.version),
+  },
 });
 
 if (!result.success) {
