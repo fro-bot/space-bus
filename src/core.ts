@@ -46,7 +46,10 @@ async function api(
   } catch (e) {
     const message = (e as Error).message;
     return {
-      res: new Response(null, { status: 599, statusText: "space-bus: request failed" }),
+      res: new Response(null, {
+        status: 599,
+        statusText: "space-bus: request failed",
+      }),
       bodyText: `space-bus: request failed: ${message}`,
     };
   }
@@ -70,7 +73,11 @@ const sessionStatusMapSchema = z.record(
 );
 
 const todoSchema = z
-  .array(z.object({ content: z.string(), status: z.string(), priority: z.string() }).passthrough())
+  .array(
+    z
+      .object({ content: z.string(), status: z.string(), priority: z.string() })
+      .passthrough(),
+  )
   .default([]);
 
 const diffEntrySchema = z
@@ -174,7 +181,11 @@ async function fetchDiffWithFallback(
   directory: string,
   sessionId: string,
 ): Promise<{ diff: z.infer<typeof diffSchema>; diffSource: DiffSource }> {
-  const diffRes = await api(baseUrl, directory, `/session/${encodeURIComponent(sessionId)}/diff`);
+  const diffRes = await api(
+    baseUrl,
+    directory,
+    `/session/${encodeURIComponent(sessionId)}/diff`,
+  );
   let diff: z.infer<typeof diffSchema> = [];
   try {
     diff = diffRes.res.ok ? diffSchema.parse(JSON.parse(diffRes.bodyText)) : [];
@@ -185,9 +196,15 @@ async function fetchDiffWithFallback(
     return { diff, diffSource: "session" };
   }
   try {
-    const sessionRes = await api(baseUrl, directory, `/session/${encodeURIComponent(sessionId)}`);
+    const sessionRes = await api(
+      baseUrl,
+      directory,
+      `/session/${encodeURIComponent(sessionId)}`,
+    );
     if (sessionRes.res.ok) {
-      const parsed = sessionSummarySchema.parse(JSON.parse(sessionRes.bodyText));
+      const parsed = sessionSummarySchema.parse(
+        JSON.parse(sessionRes.bodyText),
+      );
       const summaryDiffs = parsed.summary?.diffs;
       if (summaryDiffs && summaryDiffs.length > 0) {
         return { diff: summaryDiffs, diffSource: "session" };
@@ -226,7 +243,9 @@ async function fetchDiffWithFallback(
   return { diff, diffSource: "session" };
 }
 
-const messagePartSchema = z.object({ type: z.string(), text: z.string().optional() }).passthrough();
+const messagePartSchema = z
+  .object({ type: z.string(), text: z.string().optional() })
+  .passthrough();
 
 const messageEnvelopeSchema = z
   .object({
@@ -239,14 +258,21 @@ const messageListSchema = z.array(messageEnvelopeSchema);
 
 // --- Path guard --------------------------------------------------------------
 
-function resolveProjectOrErr(projects: Project[], name: string): Result<{ project: Project }> {
+function resolveProjectOrErr(
+  projects: Project[],
+  name: string,
+): Result<{ project: Project }> {
   const project = findProject(projects, name);
   if (!project) {
     const valid = projects.map((p) => p.name).join(", ");
-    return err(`space-bus: unknown project "${name}". Valid projects: ${valid}`);
+    return err(
+      `space-bus: unknown project "${name}". Valid projects: ${valid}`,
+    );
   }
   if (!existsSync(project.expandedPath)) {
-    return err(`space-bus: project "${name}" path does not exist on disk: ${project.expandedPath}`);
+    return err(
+      `space-bus: project "${name}" path does not exist on disk: ${project.expandedPath}`,
+    );
   }
   return { ok: true, project };
 }
@@ -264,7 +290,9 @@ export type RosterProject = {
   statusError?: string;
 };
 
-export async function roster(opts?: { directory?: string }): Promise<Result<{ projects: RosterProject[] }>> {
+export async function roster(opts?: {
+  directory?: string;
+}): Promise<Result<{ projects: RosterProject[] }>> {
   const manifest = getRoster(opts?.directory);
   const baseUrl = manifest.server.baseUrl;
   const projects = getProjects(opts?.directory);
@@ -272,7 +300,12 @@ export async function roster(opts?: { directory?: string }): Promise<Result<{ pr
     projects.map(async (p): Promise<RosterProject> => {
       const pathExists = existsSync(p.expandedPath);
       if (!pathExists) {
-        return { name: p.name, path: p.expandedPath, description: p.description, pathExists: false };
+        return {
+          name: p.name,
+          path: p.expandedPath,
+          description: p.description,
+          pathExists: false,
+        };
       }
       try {
         const [statusRes, listRes] = await Promise.all([
@@ -288,9 +321,13 @@ export async function roster(opts?: { directory?: string }): Promise<Result<{ pr
             statusError: `status=${statusRes.res.status}/${listRes.res.status}`,
           };
         }
-        const statusMap = sessionStatusMapSchema.parse(JSON.parse(statusRes.bodyText));
+        const statusMap = sessionStatusMapSchema.parse(
+          JSON.parse(statusRes.bodyText),
+        );
         const sessions = sessionListSchema.parse(JSON.parse(listRes.bodyText));
-        const busyCount = Object.values(statusMap).filter((s) => s.type === "busy" || s.type === "retry").length;
+        const busyCount = Object.values(statusMap).filter(
+          (s) => s.type === "busy" || s.type === "retry",
+        ).length;
         const capped = sessions.length > 100;
         return {
           name: p.name,
@@ -334,19 +371,28 @@ async function dispatchNew(
     body: JSON.stringify({ title: sessionTitle }),
   });
   if (!createRes.res.ok) {
-    return err(`space-bus: failed to create session in "${project}" (${createRes.res.status}): ${createRes.bodyText}`);
+    return err(
+      `space-bus: failed to create session in "${project}" (${createRes.res.status}): ${createRes.bodyText}`,
+    );
   }
   let session: z.infer<typeof sessionSchema>;
   try {
     session = sessionSchema.parse(JSON.parse(createRes.bodyText));
   } catch (e) {
-    return err(`space-bus: unexpected /session response shape: ${(e as Error).message}`);
+    return err(
+      `space-bus: unexpected /session response shape: ${(e as Error).message}`,
+    );
   }
 
-  const promptRes = await api(baseUrl, directory, `/session/${encodeURIComponent(session.id)}/prompt_async`, {
-    method: "POST",
-    body: JSON.stringify({ parts: [{ type: "text", text: prompt }] }),
-  });
+  const promptRes = await api(
+    baseUrl,
+    directory,
+    `/session/${encodeURIComponent(session.id)}/prompt_async`,
+    {
+      method: "POST",
+      body: JSON.stringify({ parts: [{ type: "text", text: prompt }] }),
+    },
+  );
   if (promptRes.res.status !== 204) {
     return err(
       `space-bus: dispatch to "${project}" failed sending prompt (${promptRes.res.status}): ${promptRes.bodyText}`,
@@ -376,9 +422,21 @@ export async function dispatch(args: {
     if (!args.project) {
       return err("space-bus: project is required when starting a new session");
     }
-    const r = await dispatchNew(baseUrl, projects, args.project, args.prompt, args.title);
+    const r = await dispatchNew(
+      baseUrl,
+      projects,
+      args.project,
+      args.prompt,
+      args.title,
+    );
     if (!r.ok) return r;
-    return { ok: true, sessionId: r.sessionId, project: r.project, mode: "new", directory: r.directory };
+    return {
+      ok: true,
+      sessionId: r.sessionId,
+      project: r.project,
+      mode: "new",
+      directory: r.directory,
+    };
   }
 
   const loc = await findSessionDirectory(baseUrl, projects, args.sessionId);
@@ -407,7 +465,11 @@ async function findSessionDirectory(
   // owning manifest project.
   for (const p of projects) {
     if (!existsSync(p.expandedPath)) continue;
-    const { res, bodyText } = await api(baseUrl, p.expandedPath, `/session/${encodeURIComponent(sessionId)}`);
+    const { res, bodyText } = await api(
+      baseUrl,
+      p.expandedPath,
+      `/session/${encodeURIComponent(sessionId)}`,
+    );
     if (!res.ok) continue;
     let session: z.infer<typeof sessionSchema>;
     try {
@@ -415,7 +477,9 @@ async function findSessionDirectory(
     } catch {
       continue;
     }
-    const owner = session.directory ? projects.find((proj) => proj.expandedPath === session.directory) : undefined;
+    const owner = session.directory
+      ? projects.find((proj) => proj.expandedPath === session.directory)
+      : undefined;
     if (owner) {
       return { ok: true, directory: owner.expandedPath, project: owner.name };
     }
@@ -426,7 +490,9 @@ async function findSessionDirectory(
       `space-bus: session ${sessionId} belongs to ${session.directory ?? "an unknown directory"}, which is not a manifest project`,
     );
   }
-  return err(`space-bus: no manifest project has a session with id ${sessionId}`);
+  return err(
+    `space-bus: no manifest project has a session with id ${sessionId}`,
+  );
 }
 
 // --- status ------------------------------------------------------------------
@@ -451,7 +517,9 @@ const pendingQuestionEntrySchema = z
         z
           .object({
             question: z.string().optional(),
-            options: z.array(z.object({ label: z.string().optional() }).passthrough()).optional(),
+            options: z
+              .array(z.object({ label: z.string().optional() }).passthrough())
+              .optional(),
           })
           .passthrough(),
       )
@@ -474,7 +542,9 @@ async function fetchPendingQuestion(
     const firstQuestion = entry.questions?.[0];
     const text = firstQuestion?.question ?? "";
     const preview = text.length > 140 ? `${text.slice(0, 140)}…` : text;
-    const options = (firstQuestion?.options ?? []).map((o) => o.label ?? "").filter((l) => l.length > 0);
+    const options = (firstQuestion?.options ?? [])
+      .map((o) => o.label ?? "")
+      .filter((l) => l.length > 0);
     return { preview, options };
   } catch {
     return undefined;
@@ -493,16 +563,19 @@ export async function status(
   if (!loc.ok) return loc;
   const { directory, project } = loc;
 
-  const [sessionRes, statusMapRes, todoRes, diffResult, pendingQuestion] = await Promise.all([
-    api(baseUrl, directory, `/session/${encodeURIComponent(sessionId)}`),
-    api(baseUrl, directory, "/session/status"),
-    api(baseUrl, directory, `/session/${encodeURIComponent(sessionId)}/todo`),
-    fetchDiffWithFallback(baseUrl, directory, sessionId),
-    fetchPendingQuestion(baseUrl, directory, sessionId),
-  ]);
+  const [sessionRes, statusMapRes, todoRes, diffResult, pendingQuestion] =
+    await Promise.all([
+      api(baseUrl, directory, `/session/${encodeURIComponent(sessionId)}`),
+      api(baseUrl, directory, "/session/status"),
+      api(baseUrl, directory, `/session/${encodeURIComponent(sessionId)}/todo`),
+      fetchDiffWithFallback(baseUrl, directory, sessionId),
+      fetchPendingQuestion(baseUrl, directory, sessionId),
+    ]);
 
   if (!sessionRes.res.ok) {
-    return err(`space-bus: failed to fetch session ${sessionId} (${sessionRes.res.status}): ${sessionRes.bodyText}`);
+    return err(
+      `space-bus: failed to fetch session ${sessionId} (${sessionRes.res.status}): ${sessionRes.bodyText}`,
+    );
   }
 
   let session: z.infer<typeof sessionSchema>;
@@ -510,10 +583,16 @@ export async function status(
   let todos: z.infer<typeof todoSchema>;
   try {
     session = sessionSchema.parse(JSON.parse(sessionRes.bodyText));
-    statusMap = statusMapRes.res.ok ? sessionStatusMapSchema.parse(JSON.parse(statusMapRes.bodyText)) : {};
-    todos = todoRes.res.ok ? todoSchema.parse(JSON.parse(todoRes.bodyText)) : [];
+    statusMap = statusMapRes.res.ok
+      ? sessionStatusMapSchema.parse(JSON.parse(statusMapRes.bodyText))
+      : {};
+    todos = todoRes.res.ok
+      ? todoSchema.parse(JSON.parse(todoRes.bodyText))
+      : [];
   } catch (e) {
-    return err(`space-bus: unexpected response shape for session ${sessionId}: ${(e as Error).message}`);
+    return err(
+      `space-bus: unexpected response shape for session ${sessionId}: ${(e as Error).message}`,
+    );
   }
 
   const entry = statusMap[sessionId];
@@ -538,7 +617,9 @@ export async function status(
 
 // --- steering (question-reply / follow-up) ------------------------------------
 
-const questionEntrySchema = z.object({ id: z.string(), sessionID: z.string() }).passthrough();
+const questionEntrySchema = z
+  .object({ id: z.string(), sessionID: z.string() })
+  .passthrough();
 const questionListSchema = z.array(questionEntrySchema);
 
 async function steerSession(
@@ -558,10 +639,15 @@ async function steerSession(
     }
     const pending = questions.find((q) => q.sessionID === sessionId);
     if (pending) {
-      const replyRes = await api(baseUrl, directory, `/question/${encodeURIComponent(pending.id)}/reply`, {
-        method: "POST",
-        body: JSON.stringify({ answers: [[message]] }),
-      });
+      const replyRes = await api(
+        baseUrl,
+        directory,
+        `/question/${encodeURIComponent(pending.id)}/reply`,
+        {
+          method: "POST",
+          body: JSON.stringify({ answers: [[message]] }),
+        },
+      );
       if (!replyRes.res.ok) {
         return err(
           `space-bus: failed to reply to question ${pending.id} for session ${sessionId} (${replyRes.res.status}): ${replyRes.bodyText}`,
@@ -571,10 +657,15 @@ async function steerSession(
     }
   }
 
-  const promptRes = await api(baseUrl, directory, `/session/${encodeURIComponent(sessionId)}/prompt_async`, {
-    method: "POST",
-    body: JSON.stringify({ parts: [{ type: "text", text: message }] }),
-  });
+  const promptRes = await api(
+    baseUrl,
+    directory,
+    `/session/${encodeURIComponent(sessionId)}/prompt_async`,
+    {
+      method: "POST",
+      body: JSON.stringify({ parts: [{ type: "text", text: message }] }),
+    },
+  );
   if (promptRes.res.status !== 204) {
     return err(
       `space-bus: follow-up prompt to session ${sessionId} failed (${promptRes.res.status}): ${promptRes.bodyText}`,
@@ -589,7 +680,12 @@ export type SessionResultResult = {
   sessionId: string;
   project: string;
   text: string;
-  diff: { file?: string; additions: number; deletions: number; status?: string }[];
+  diff: {
+    file?: string;
+    additions: number;
+    deletions: number;
+    status?: string;
+  }[];
   diffSource: DiffSource;
 };
 
@@ -608,10 +704,14 @@ export async function result(
   const statusMapRes = await api(baseUrl, directory, "/session/status");
   if (statusMapRes.res.ok) {
     try {
-      const statusMap = sessionStatusMapSchema.parse(JSON.parse(statusMapRes.bodyText));
+      const statusMap = sessionStatusMapSchema.parse(
+        JSON.parse(statusMapRes.bodyText),
+      );
       const entry = statusMap[sessionId];
       if (entry && (entry.type === "busy" || entry.type === "retry")) {
-        return err(`space-bus: session ${sessionId} is still running, use bus_status`);
+        return err(
+          `space-bus: session ${sessionId} is still running, use bus_status`,
+        );
       }
     } catch {
       // ignore malformed status map, proceed
@@ -619,19 +719,27 @@ export async function result(
   }
 
   const [messageRes, diffResult] = await Promise.all([
-    api(baseUrl, directory, `/session/${encodeURIComponent(sessionId)}/message?limit=50`),
+    api(
+      baseUrl,
+      directory,
+      `/session/${encodeURIComponent(sessionId)}/message?limit=50`,
+    ),
     fetchDiffWithFallback(baseUrl, directory, sessionId),
   ]);
 
   if (!messageRes.res.ok) {
-    return err(`space-bus: failed to fetch messages for ${sessionId} (${messageRes.res.status}): ${messageRes.bodyText}`);
+    return err(
+      `space-bus: failed to fetch messages for ${sessionId} (${messageRes.res.status}): ${messageRes.bodyText}`,
+    );
   }
 
   let messages: z.infer<typeof messageListSchema>;
   try {
     messages = messageListSchema.parse(JSON.parse(messageRes.bodyText));
   } catch (e) {
-    return err(`space-bus: unexpected response shape for session ${sessionId}: ${(e as Error).message}`);
+    return err(
+      `space-bus: unexpected response shape for session ${sessionId}: ${(e as Error).message}`,
+    );
   }
 
   const { diff, diffSource } = diffResult;

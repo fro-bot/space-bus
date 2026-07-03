@@ -76,11 +76,15 @@ export function getRoster(directory?: string): Manifest {
   try {
     json = JSON.parse(raw);
   } catch (err) {
-    throw new Error(`space-bus: roster at ${manifestPath} is not valid JSON: ${(err as Error).message}`);
+    throw new Error(
+      `space-bus: roster at ${manifestPath} is not valid JSON: ${(err as Error).message}`,
+    );
   }
   const parsed = manifestSchema.safeParse(json);
   if (!parsed.success) {
-    throw new Error(`space-bus: roster at ${manifestPath} failed schema validation: ${parsed.error.message}`);
+    throw new Error(
+      `space-bus: roster at ${manifestPath} failed schema validation: ${parsed.error.message}`,
+    );
   }
   const url = new URL(parsed.data.server.baseUrl);
   const hostname = url.hostname;

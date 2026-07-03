@@ -1,24 +1,55 @@
 {
   "name": "@fro.bot/space-bus",
   "version": "0.0.0",
-  "private": true,
   "description": "Fro Bot Space Bus — workspace agent bus for OpenCode. One control agent tasking per-project agents over the OpenCode server API, with an MCP facade for Claude Desktop.",
   "type": "module",
   "license": "MIT",
   "repository": "github:fro-bot/space-bus",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "space-bus-mcp": "./dist/mcp.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
+    "clean": "rm -rf dist",
+    "build": "bun run clean && bun run build.ts && tsc -p tsconfig.build.json --emitDeclarationOnly",
+    "dev": "bun build ./src/index.ts ./src/mcp.ts --outdir dist --target node --external @opencode-ai/plugin --external @modelcontextprotocol/sdk --external zod --watch",
     "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "fix": "biome check --write .",
     "test": "bun test",
     "smoke": "bun run scripts/smoke.ts",
-    "mcp": "bun run src/mcp.ts"
+    "mcp": "bun run src/mcp.ts",
+    "fixture": "bun run scripts/make-fixture.ts",
+    "version-changesets": "changeset version && bun install --lockfile-only",
+    "publish-changesets": "bun run build && changeset publish",
+    "prepublishOnly": "bun run build"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",
-    "@opencode-ai/plugin": "1.17.13",
-    "@opencode-ai/sdk": "1.17.13",
     "zod": "^3.25.76"
   },
+  "peerDependencies": {
+    "@opencode-ai/plugin": ">=1.17.13 <2"
+  },
   "devDependencies": {
+    "@biomejs/biome": "^2.3.0",
+    "@changesets/cli": "^2.29.0",
+    "@opencode-ai/plugin": "1.17.13",
     "@types/bun": "^1.0.0",
     "typescript": "^5.8.0"
   }

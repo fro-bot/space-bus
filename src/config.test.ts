@@ -6,7 +6,10 @@ import { getRoster, resolveRosterPath } from "./config";
 
 const ORIGINAL_ENV = process.env["SPACE_BUS_CONFIG"];
 
-function writeRoster(dir: string, overrides: Record<string, unknown> = {}): string {
+function writeRoster(
+  dir: string,
+  overrides: Record<string, unknown> = {},
+): string {
   const rosterPath = join(dir, "spacebus.json");
   const roster = {
     server: { baseUrl: "http://127.0.0.1:4096" },
@@ -43,10 +46,18 @@ describe("config", () => {
 
   test("SPACE_BUS_CONFIG wins over directory discovery", () => {
     writeRoster(dir); // decoy in directory
-    const overrideDir = mkdtempSync(join(tmpdir(), "space-bus-config-override-"));
+    const overrideDir = mkdtempSync(
+      join(tmpdir(), "space-bus-config-override-"),
+    );
     try {
       writeRoster(overrideDir, {
-        projects: [{ name: "override", path: "~/override-project", description: "override" }],
+        projects: [
+          {
+            name: "override",
+            path: "~/override-project",
+            description: "override",
+          },
+        ],
       });
       process.env["SPACE_BUS_CONFIG"] = join(overrideDir, "spacebus.json");
       const manifest = getRoster(dir);
@@ -59,7 +70,8 @@ describe("config", () => {
   test("SPACE_BUS_CONFIG expands leading ~", () => {
     // Not writing a real file under homedir; just verify resolution doesn't
     // throw the "absolute or ~" error and resolves to a path under homedir.
-    process.env["SPACE_BUS_CONFIG"] = "~/does-not-exist-space-bus-test/spacebus.json";
+    process.env["SPACE_BUS_CONFIG"] =
+      "~/does-not-exist-space-bus-test/spacebus.json";
     expect(() => resolveRosterPath()).not.toThrow();
     const resolved = resolveRosterPath();
     expect(resolved.startsWith(homedir())).toBe(true);

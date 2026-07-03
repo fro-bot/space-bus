@@ -4,7 +4,12 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { dispatch, result, roster, status } from "./core";
-import { formatDispatch, formatResult, formatRoster, formatStatus } from "./format";
+import {
+  formatDispatch,
+  formatResult,
+  formatRoster,
+  formatStatus,
+} from "./format";
 import { BUS_RESULT_DESCRIPTION } from "./tools/bus_result";
 import { BUS_ROSTER_DESCRIPTION } from "./tools/bus_roster";
 import { BUS_STATUS_DESCRIPTION } from "./tools/bus_status";
@@ -34,7 +39,8 @@ server.registerTool(
   },
   async () => {
     const r = await roster({ directory: fallbackDirectory() });
-    if (!r.ok) return { content: [{ type: "text", text: r.error }], isError: true };
+    if (!r.ok)
+      return { content: [{ type: "text", text: r.error }], isError: true };
     return { content: [{ type: "text", text: formatRoster(r.projects) }] };
   },
 );
@@ -47,15 +53,28 @@ server.registerTool(
       project: z
         .string()
         .optional()
-        .describe("Manifest project name, e.g. dashboard, agent, control-plane, infra. Required when starting a new session."),
+        .describe(
+          "Manifest project name, e.g. dashboard, agent, control-plane, infra. Required when starting a new session.",
+        ),
       prompt: z.string().describe("The prompt to send to the delegated agent"),
-      title: z.string().optional().describe("Optional session title (only used when starting a new session)"),
-      sessionId: z.string().optional().describe("Existing session ID to steer instead of starting a new session"),
+      title: z
+        .string()
+        .optional()
+        .describe(
+          "Optional session title (only used when starting a new session)",
+        ),
+      sessionId: z
+        .string()
+        .optional()
+        .describe(
+          "Existing session ID to steer instead of starting a new session",
+        ),
     },
   },
   async (args) => {
     const r = await dispatch({ ...args, directory: fallbackDirectory() });
-    if (!r.ok) return { content: [{ type: "text", text: r.error }], isError: true };
+    if (!r.ok)
+      return { content: [{ type: "text", text: r.error }], isError: true };
     return { content: [{ type: "text", text: formatDispatch(r) }] };
   },
 );
@@ -70,7 +89,8 @@ server.registerTool(
   },
   async (args) => {
     const r = await status(args.sessionId, { directory: fallbackDirectory() });
-    if (!r.ok) return { content: [{ type: "text", text: r.error }], isError: true };
+    if (!r.ok)
+      return { content: [{ type: "text", text: r.error }], isError: true };
     return { content: [{ type: "text", text: formatStatus(r) }] };
   },
 );
@@ -85,7 +105,8 @@ server.registerTool(
   },
   async (args) => {
     const r = await result(args.sessionId, { directory: fallbackDirectory() });
-    if (!r.ok) return { content: [{ type: "text", text: r.error }], isError: true };
+    if (!r.ok)
+      return { content: [{ type: "text", text: r.error }], isError: true };
     return { content: [{ type: "text", text: formatResult(r) }] };
   },
 );
