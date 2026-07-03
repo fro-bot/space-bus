@@ -5,7 +5,8 @@ export function formatRoster(projects: RosterProject[]): string {
     .map((p) => {
       if (!p.pathExists) return `${p.name}: MISSING PATH (${p.path}) — ${p.description}`;
       if (p.statusError) return `${p.name}: status error (${p.statusError}) — ${p.description}`;
-      return `${p.name}: ${p.busyCount ?? 0} busy / ${p.sessionCount ?? 0} sessions — ${p.description} (${p.path})`;
+      const count = `${p.sessionCount ?? 0}${p.sessionCountCapped ? "+" : ""}`;
+      return `${p.name}: ${p.busyCount ?? 0} busy / ${count} sessions — ${p.description} (${p.path})`;
     })
     .join("\n");
 }

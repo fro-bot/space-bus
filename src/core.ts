@@ -207,6 +207,7 @@ export type RosterProject = {
   pathExists: boolean;
   busyCount?: number;
   sessionCount?: number;
+  sessionCountCapped?: boolean;
   statusError?: string;
 };
 
@@ -220,7 +221,7 @@ export async function roster(): Promise<Result<{ projects: RosterProject[] }>> {
       try {
         const [statusRes, listRes] = await Promise.all([
           api(p.expandedPath, "/session/status"),
-          api(p.expandedPath, "/session"),
+          api(p.expandedPath, "/session?limit=101"),
         ]);
         if (!statusRes.res.ok || !listRes.res.ok) {
           return {
@@ -234,13 +235,15 @@ export async function roster(): Promise<Result<{ projects: RosterProject[] }>> {
         const statusMap = sessionStatusMapSchema.parse(JSON.parse(statusRes.bodyText));
         const sessions = sessionListSchema.parse(JSON.parse(listRes.bodyText));
         const busyCount = Object.values(statusMap).filter((s) => s.type === "busy" || s.type === "retry").length;
+        const capped = sessions.length > 100;
         return {
           name: p.name,
           path: p.expandedPath,
           description: p.description,
           pathExists: true,
           busyCount,
-          sessionCount: sessions.length,
+          sessionCount: capped ? 100 : sessions.length,
+          sessionCountCapped: capped,
         };
       } catch (e) {
         return {
