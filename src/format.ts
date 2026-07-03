@@ -19,16 +19,26 @@ export function formatStatus(r: SessionStatusResult): string {
   const todoLines = r.todos.length
     ? r.todos.map((t) => `  - [${t.status}] ${t.content} (${t.priority})`).join("\n")
     : "  (none)";
-  return [
+  const lines = [
     `session: ${r.sessionId} (${r.project})`,
     `title: ${r.title ?? "(untitled)"}`,
     `busy: ${r.busy}`,
+  ];
+  if (r.pendingQuestion) {
+    lines.push(`blocked: waiting on a question — "${r.pendingQuestion.preview}"`);
+    if (r.pendingQuestion.options.length > 0) {
+      lines.push(`  options: ${r.pendingQuestion.options.join(" | ")}`);
+    }
+    lines.push(`  (answer with bus_reply)`);
+  }
+  lines.push(
     r.diffSource === "working-tree"
       ? `diff (working tree — repo-wide, may include changes from other sessions): ${r.diff.files} files, +${r.diff.additions}/-${r.diff.deletions}`
       : `diff: ${r.diff.files} files, +${r.diff.additions}/-${r.diff.deletions}`,
     `todos:`,
     todoLines,
-  ].join("\n");
+  );
+  return lines.join("\n");
 }
 
 export function formatReply(r: ReplyResult): string {

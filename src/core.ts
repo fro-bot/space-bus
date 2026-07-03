@@ -430,18 +430,58 @@ export type SessionStatusResult = {
   todos: { content: string; status: string; priority: string }[];
   diff: { files: number; additions: number; deletions: number };
   diffSource: DiffSource;
+  pendingQuestion?: { preview: string; options: string[] };
 };
+
+const pendingQuestionEntrySchema = z
+  .object({
+    id: z.string(),
+    sessionID: z.string(),
+    questions: z
+      .array(
+        z
+          .object({
+            question: z.string().optional(),
+            options: z.array(z.object({ label: z.string().optional() }).passthrough()).optional(),
+          })
+          .passthrough(),
+      )
+      .optional(),
+  })
+  .passthrough();
+const pendingQuestionListSchema = z.array(pendingQuestionEntrySchema);
+
+async function fetchPendingQuestion(
+  directory: string,
+  sessionId: string,
+): Promise<{ preview: string; options: string[] } | undefined> {
+  try {
+    const { res, bodyText } = await api(directory, "/question");
+    if (!res.ok) return undefined;
+    const entries = pendingQuestionListSchema.parse(JSON.parse(bodyText));
+    const entry = entries.find((e) => e.sessionID === sessionId);
+    if (!entry) return undefined;
+    const firstQuestion = entry.questions?.[0];
+    const text = firstQuestion?.question ?? "";
+    const preview = text.length > 140 ? `${text.slice(0, 140)}…` : text;
+    const options = (firstQuestion?.options ?? []).map((o) => o.label ?? "").filter((l) => l.length > 0);
+    return { preview, options };
+  } catch {
+    return undefined;
+  }
+}
 
 export async function status(sessionId: string): Promise<Result<SessionStatusResult>> {
   const loc = await findSessionDirectory(sessionId);
   if (!loc.ok) return loc;
   const { directory, project } = loc;
 
-  const [sessionRes, statusMapRes, todoRes, diffResult] = await Promise.all([
+  const [sessionRes, statusMapRes, todoRes, diffResult, pendingQuestion] = await Promise.all([
     api(directory, `/session/${sessionId}`),
     api(directory, "/session/status"),
     api(directory, `/session/${sessionId}/todo`),
     fetchDiffWithFallback(directory, sessionId),
+    fetchPendingQuestion(directory, sessionId),
   ]);
 
   if (!sessionRes.res.ok) {
@@ -475,6 +515,7 @@ export async function status(sessionId: string): Promise<Result<SessionStatusRes
     todos,
     diff: { files: diff.length, additions, deletions },
     diffSource,
+    pendingQuestion,
   };
 }
 
