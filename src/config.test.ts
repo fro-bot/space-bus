@@ -105,6 +105,30 @@ describe("config", () => {
     expect(() => getRoster(dir)).toThrow(/localhost/);
   });
 
+  test("server block with both baseUrl and managed is rejected with an actionable message", () => {
+    writeRoster(dir, {
+      server: {
+        baseUrl: "http://127.0.0.1:4096",
+        managed: { command: ["harness", "serve"] },
+      },
+    });
+    expect(() => getRoster(dir)).toThrow(/exactly one of.*not both/);
+  });
+
+  test("server block with neither baseUrl nor managed is rejected with an actionable message", () => {
+    writeRoster(dir, { server: {} });
+    expect(() => getRoster(dir)).toThrow(/neither was present/);
+  });
+
+  test("managed-only server block parses", () => {
+    writeRoster(dir, {
+      server: { managed: { command: ["harness", "serve"], port: 0 } },
+    });
+    const manifest = getRoster(dir);
+    expect(manifest.server.managed?.command).toEqual(["harness", "serve"]);
+    expect(manifest.server.baseUrl).toBeUndefined();
+  });
+
   test("import purity: importing config and core performs no roster read", async () => {
     delete process.env["SPACE_BUS_CONFIG"];
     // Dynamic import with a cache-busting query so it re-evaluates the
