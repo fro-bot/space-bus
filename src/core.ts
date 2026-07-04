@@ -438,6 +438,42 @@ export type DispatchArgs = {
   | { sessionId: string; project?: string }
 );
 
+// Validates the runtime shape once for both adapters (MCP + plugin tool),
+// so neither call site needs an `as DispatchArgs` cast to satisfy the
+// discriminated-union exclusivity above. dispatch() keeps its own guards
+// as defense in depth.
+export function toDispatchArgs(input: {
+  prompt: string;
+  title?: string;
+  project?: string;
+  sessionId?: string;
+  directory?: string;
+}): Result<DispatchArgs> {
+  if (input.sessionId !== undefined && input.sessionId === "") {
+    return err("space-bus: sessionId must be a non-empty string");
+  }
+  if (!input.sessionId) {
+    if (!input.project) {
+      return err("space-bus: project is required when starting a new session");
+    }
+    return {
+      ok: true,
+      prompt: input.prompt,
+      title: input.title,
+      directory: input.directory,
+      project: input.project,
+    };
+  }
+  return {
+    ok: true,
+    prompt: input.prompt,
+    title: input.title,
+    directory: input.directory,
+    sessionId: input.sessionId,
+    project: input.project,
+  };
+}
+
 export async function dispatch(
   args: DispatchArgs,
 ): Promise<Result<DispatchResult>> {
