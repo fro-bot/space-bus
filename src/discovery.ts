@@ -17,6 +17,7 @@ import {
   openSync,
   readFileSync,
   renameSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -231,6 +232,19 @@ export interface LockHandle {
 }
 
 /**
+ * Grace window (ms) before a null/corrupt lock file is eligible for
+ * reclaim. A winner of the O_EXCL race can be preempted between creating
+ * the file and writing its contents, leaving a momentarily empty/unparsable
+ * file that belongs to a live writer — treating that as "stale" immediately
+ * would let a contender steal the lock out from under them. Only a lock
+ * file older than this grace, and still null/corrupt, is reclaimed as
+ * genuinely abandoned (e.g. a winner that crashed before finishing the
+ * write). Dead-owner reclaim (valid, parseable lock; owner pid confirmed
+ * dead) is unaffected — that stays immediate.
+ */
+const CORRUPT_LOCK_GRACE_MS = 2_000;
+
+/**
  * Acquires the per-roster spawn lock via O_EXCL create. Arbitration: a
  * lock is stale ONLY when its owner is dead (identity-checked) — age never
  * preempts a live owner. Returns a handle on success, or null if the lock
@@ -253,24 +267,47 @@ export function acquireLock(rosterPath: string): LockHandle | null {
     return { rosterPath };
   }
 
-  // Contended — inspect the existing lock. Reclaim it if it's corrupt/
-  // unparseable (readLockFile returned null — e.g. a winner that crashed
-  // between O_EXCL create and writeFileSync, leaving an empty/garbage
-  // file) OR its recorded owner is dead. A corrupt lock has no owner to
-  // verify, so treat "unreadable" the same as "owner is dead": reclaim it.
+  // Contended — inspect the existing lock. Reclaim it if its recorded
+  // owner is dead (immediate — a valid, parseable lock with a confirmed-
+  // dead owner is unambiguously abandoned), or if it's corrupt/unparseable
+  // AND older than CORRUPT_LOCK_GRACE_MS (a fresh null/corrupt lock may
+  // belong to a live winner preempted between O_EXCL create and
+  // writeFileSync — reclaiming it immediately would steal the lock out
+  // from under them; only reclaim once it's old enough to be genuinely
+  // abandoned).
   const existing = readLockFile(target);
-  if (!existing || !verifyIdentity(existing.pid, existing.startTime)) {
-    try {
-      unlinkSync(target);
-    } catch (err) {
-      if (!isEnoent(err)) throw err;
-    }
-    if (tryCreateLockFile(target, lock)) {
-      return { rosterPath };
-    }
+  if (existing) {
+    if (verifyIdentity(existing.pid, existing.startTime)) return null;
+  } else if (!isOlderThan(target, CORRUPT_LOCK_GRACE_MS)) {
+    return null;
+  }
+
+  try {
+    unlinkSync(target);
+  } catch (err) {
+    if (!isEnoent(err)) throw err;
+  }
+  if (tryCreateLockFile(target, lock)) {
+    return { rosterPath };
   }
 
   return null;
+}
+
+/**
+ * True if the file's mtime is older than `ageMs`. Used to gate reclaim of
+ * a null/corrupt lock file — treats a stat failure (file vanished between
+ * the read and the stat, e.g. the live writer finished and released it) as
+ * "not old enough to reclaim", which is safe: the caller's next
+ * `tryCreateLockFile` attempt will simply succeed against the now-absent
+ * file.
+ */
+function isOlderThan(path: string, ageMs: number): boolean {
+  try {
+    return Date.now() - statSync(path).mtimeMs > ageMs;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -412,10 +449,18 @@ export function readProvisional(rosterPath: string): ProvisionalFile | null {
   return parsed.success ? parsed.data : null;
 }
 
+/**
+ * Removes the provisional spawn record. Swallows ALL unlink errors (not
+ * just ENOENT) — this runs in `spawnAndWaitReady`'s `finally`, after a
+ * readiness/spawn error may already be in flight, and a cleanup failure
+ * here (e.g. permissions, a race with external cleanup) must never replace
+ * or mask that primary error. Mirrors `releaseLock`'s swallow-all
+ * best-effort semantics.
+ */
 export function removeProvisional(rosterPath: string): void {
   try {
     unlinkSync(provisionalFilePath(rosterPath));
-  } catch (err) {
-    if (!isEnoent(err)) throw err;
+  } catch {
+    // best-effort — never throw over a caller's primary error.
   }
 }

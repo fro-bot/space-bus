@@ -125,9 +125,17 @@ function redactedReadinessError(
  * signaling the pid directly — safe here because the pid is from our own
  * spawn moments ago, not an arbitrary long-lived pid recycling risk.
  */
-function killIdentifiedProcess(pid: number, identity: string | null): void {
+function killIdentifiedProcess(
+  pid: number,
+  identity: string | null | undefined,
+): void {
   try {
-    if (identity !== null) {
+    // Empty-string identity happens when captureIdentity failed at spawn
+    // time (e.g. `ps` unavailable) and the provisional/discovery record
+    // stored "" as a placeholder — treat it the same as null (no identity
+    // to verify) rather than failing verifyIdentity and silently skipping
+    // the kill.
+    if (identity !== null && identity !== undefined && identity !== "") {
       if (verifyIdentity(pid, identity)) process.kill(pid, "SIGTERM");
       return;
     }
@@ -237,9 +245,14 @@ async function waitForReadiness(
   const logPath = logFilePath(rosterPath);
 
   // Phase 1: wait for the verified stdout readiness line, extract the port.
-  // Reserve MIN_PROBE_PHASE_MS for phase 2 so a starved log-poll phase can't
-  // consume the entire budget and leave phase 2 with zero time.
-  const phase1Deadline = Math.max(Date.now(), deadline - MIN_PROBE_PHASE_MS);
+  // Reserve a slice of the budget for phase 2 so a starved log-poll phase
+  // can't consume the entire budget and leave phase 2 with zero time — but
+  // for small budgets, reserving a flat MIN_PROBE_PHASE_MS would instead
+  // starve phase 1 (e.g. a 2000ms budget would give phase 1 ~0ms). Reserve
+  // whichever is smaller: the flat minimum, or half the budget, so phase 1
+  // always gets a fair share regardless of budget size.
+  const phase2Reserve = Math.min(MIN_PROBE_PHASE_MS, budgetMs / 2);
+  const phase1Deadline = Math.max(Date.now(), deadline - phase2Reserve);
   const lineResult = await waitForReadinessLine(
     logPath,
     child,
@@ -262,8 +275,8 @@ async function waitForReadiness(
 
   // Phase 2: poll the authed endpoint — proves auth AND readiness at once.
   // Gets whatever remains of the overall budget, floored at
-  // MIN_PROBE_PHASE_MS regardless of how much phase 1 consumed.
-  const phase2Deadline = Math.max(deadline, Date.now() + MIN_PROBE_PHASE_MS);
+  // phase2Reserve regardless of how much phase 1 consumed.
+  const phase2Deadline = Math.max(deadline, Date.now() + phase2Reserve);
   const outcome = await pollAuthedEndpoint(
     baseUrl,
     password,
@@ -306,9 +319,17 @@ async function waitForReadiness(
 function reapOrphanedProvisional(rosterPath: string): void {
   const provisional = readProvisional(rosterPath);
   if (!provisional) return;
-  // A live discovery already covers this pid — nothing orphaned.
+  // A discovery record sharing this pid is only "legitimate ownership" (as
+  // opposed to a stale/corrupt discovery left behind by something else) if
+  // it's actually live/attachable — checking pid equality alone would skip
+  // the kill for an orphan whose discovery record happens to share a pid
+  // without being verifiably that same live process.
   const discovery = readDiscovery(rosterPath);
-  if (discovery && discovery.pid === provisional.pid) {
+  if (
+    discovery &&
+    discovery.pid === provisional.pid &&
+    verifyIdentity(discovery.pid, discovery.identity)
+  ) {
     removeProvisional(rosterPath);
     return;
   }

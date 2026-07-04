@@ -146,14 +146,21 @@ export type QuestionListSchema = z.infer<typeof questionListSchema>;
 //
 // Single source of truth for the localhost/loopback hostname allowlist used
 // by core's context guard, config.ts's baseUrl validation, and
-// discovery.ts's attach-path re-validation. `new URL(...).hostname` never
-// includes brackets around an IPv6 literal, so "[::1]" never matches
-// anything in practice — kept out here rather than copied as dead weight.
+// discovery.ts's attach-path re-validation. VERIFIED (node + bun):
+// `new URL("http://[::1]:3000").hostname` === "[::1]" — WITH brackets.
+// "[::1]" must stay in this set or IPv6 loopback rosters/discovery get
+// wrongly rejected; "::1" is kept too as harmless defense in depth in case
+// a caller ever hands us a bare (non-URL-parsed) hostname string.
 // Lives in contract.ts (zod-only, browser-safe) so discovery.ts/config.ts
 // (Node-only) can import the same set without core needing to reach into
 // the Node-only lane.
 
-export const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
+export const LOOPBACK_HOSTS = new Set([
+  "127.0.0.1",
+  "::1",
+  "[::1]",
+  "localhost",
+]);
 
 // --- Bus context (injected roster + credentials boundary) ------------------
 //

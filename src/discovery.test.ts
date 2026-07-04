@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   rmSync,
   statSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -11,6 +12,7 @@ import { join } from "node:path";
 
 import {
   acquireLock,
+  attachLive,
   captureIdentity,
   type DiscoveryFile,
   discoveryFilePath,
@@ -125,21 +127,56 @@ describe("discovery", () => {
     }
   });
 
-  test("a corrupt (empty) lock file is reclaimed rather than wedging forever", () => {
+  test("a corrupt (empty) lock file older than the grace window is reclaimed rather than wedging forever", () => {
     // Simulate the winner-crashed-before-writeFileSync scenario: an
-    // O_EXCL-created file that never got its JSON body written.
+    // O_EXCL-created file that never got its JSON body written, well past
+    // the corrupt-lock grace so it's treated as genuinely abandoned.
     const target = lockFilePath(rosterPath);
     mkdirSync(stateDirFor(rosterPath), { recursive: true, mode: 0o700 });
     writeFileSync(target, "");
+    const old = new Date(Date.now() - 60_000);
+    utimesSync(target, old, old);
     const handle = acquireLock(rosterPath);
     expect(handle).not.toBeNull();
     releaseLock(handle as NonNullable<typeof handle>);
   });
 
-  test("a corrupt (non-JSON) lock file is reclaimed rather than wedging forever", () => {
+  test("a corrupt (non-JSON) lock file older than the grace window is reclaimed rather than wedging forever", () => {
     const target = lockFilePath(rosterPath);
     mkdirSync(stateDirFor(rosterPath), { recursive: true, mode: 0o700 });
     writeFileSync(target, "not json{{{");
+    const old = new Date(Date.now() - 60_000);
+    utimesSync(target, old, old);
+    const handle = acquireLock(rosterPath);
+    expect(handle).not.toBeNull();
+    releaseLock(handle as NonNullable<typeof handle>);
+  });
+
+  test("attachLive accepts a bracketed IPv6 loopback baseUrl (http://[::1]:PORT)", () => {
+    // VERIFIED: new URL("http://[::1]:3000").hostname === "[::1]" (with
+    // brackets) on both node and bun — LOOPBACK_HOSTS must include the
+    // bracketed form or IPv6 loopback discovery is wrongly rejected.
+    writeDiscovery(rosterPath, makeDiscovery({ baseUrl: "http://[::1]:4096" }));
+    expect(attachLive(rosterPath)).not.toBeNull();
+  });
+
+  test("a fresh empty lock file (mtime now) is NOT reclaimed", () => {
+    const target = lockFilePath(rosterPath);
+    mkdirSync(stateDirFor(rosterPath), { recursive: true, mode: 0o700 });
+    writeFileSync(target, "");
+    // mtime defaults to "now" — within the corrupt-lock grace window, so a
+    // contender must not be able to steal it from a possibly-live writer
+    // that was preempted between O_EXCL create and writeFileSync.
+    const handle = acquireLock(rosterPath);
+    expect(handle).toBeNull();
+  });
+
+  test("an old empty lock file (mtime backdated past grace) IS reclaimed", () => {
+    const target = lockFilePath(rosterPath);
+    mkdirSync(stateDirFor(rosterPath), { recursive: true, mode: 0o700 });
+    writeFileSync(target, "");
+    const old = new Date(Date.now() - 60_000);
+    utimesSync(target, old, old);
     const handle = acquireLock(rosterPath);
     expect(handle).not.toBeNull();
     releaseLock(handle as NonNullable<typeof handle>);

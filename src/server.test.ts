@@ -130,6 +130,18 @@ describe("server lifecycle", () => {
     expect(discovery?.pid).toBe(handle.pid);
   });
 
+  test("ensureServer with a small readinessBudgetMs still succeeds against the healthy stub (phase 1 isn't starved)", async () => {
+    // Regression: MIN_PROBE_PHASE_MS was previously reserved as a flat
+    // 3000ms carve-out for phase 2, which left phase 1 (waiting for the
+    // readiness line) with ~0ms on a budget this small — the healthy stub
+    // would falsely time out. The reserve must scale down with the budget.
+    const handle = await ensureServer(rosterPath, { readinessBudgetMs: 2000 });
+    spawnedPids.push(handle.pid);
+
+    expect(handle.baseUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    expect(isAlive(handle.pid)).toBe(true);
+  });
+
   // --- AE1: concurrent ensures → exactly one spawn -------------------------
 
   test("AE1: concurrent ensureServer calls produce exactly one spawn, all callers get the same pid", async () => {
