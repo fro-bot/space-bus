@@ -43,12 +43,18 @@ export type CoreOpts = { context: BusContext };
 
 // --- HTTP helper -----------------------------------------------------------
 
+/** Browser/Bun/Node-safe UTF-8 -> base64 (btoa + TextEncoder are global in all three). */
+function toBase64(s: string): string {
+  const bytes = new TextEncoder().encode(s);
+  let bin = "";
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin);
+}
+
 function authHeader(credentials: Credentials): Record<string, string> {
   if (!credentials.password) return {};
   const username = credentials.username ?? "opencode";
-  const token = Buffer.from(`${username}:${credentials.password}`).toString(
-    "base64",
-  );
+  const token = toBase64(`${username}:${credentials.password}`);
   return { Authorization: `Basic ${token}` };
 }
 
@@ -899,16 +905,20 @@ async function mapWithConcurrency<T, R>(
 ): Promise<R[]> {
   const results = new Array<R>(items.length);
   let next = 0;
-  const workers = Array.from(
-    { length: Math.max(1, Math.min(concurrency, items.length)) },
-    async () => {
-      while (true) {
-        const i = next++;
-        if (i >= items.length) return;
-        results[i] = await fn(items[i] as T);
-      }
-    },
+  const limit = Math.max(
+    1,
+    Math.min(
+      Number.isFinite(concurrency) ? Math.floor(concurrency) : 4,
+      items.length,
+    ),
   );
+  const workers = Array.from({ length: limit }, async () => {
+    while (true) {
+      const i = next++;
+      if (i >= items.length) return;
+      results[i] = await fn(items[i] as T);
+    }
+  });
   await Promise.all(workers);
   return results;
 }

@@ -25,6 +25,15 @@ const BROWSER_ENTRYPOINTS = [
 // shows up in a browser bundle, config.ts leaked into the graph.
 const CONFIG_ONLY_MARKER = "SPACE_BUS_CONFIG must be an absolute path";
 
+// Node-only constructs that must never appear in these browser-safe bundles.
+// Word-boundary regexes keep this pragmatic (avoid false positives inside
+// unrelated identifiers/strings) without trying to fully parse the output.
+const FORBIDDEN_PATTERNS: RegExp[] = [
+  /\bBuffer\.from\(/,
+  /\bprocess\.env\b/,
+  /\brequire\(/,
+];
+
 const forbidNodeBuiltins: BunPlugin = {
   name: "forbid-node-builtins",
   setup(build) {
@@ -64,6 +73,13 @@ describe("browser-safety: core/contract/format bundle for browser target", () =>
 
       // config.ts must never be reachable from these browser-safe graphs.
       expect(text).not.toContain(CONFIG_ONLY_MARKER);
+
+      // Node-only APIs (Buffer, process.env, require()) must never survive
+      // into a browser bundle — this is what catches e.g. authHeader()
+      // regressing to Buffer.from() for base64 encoding.
+      for (const pattern of FORBIDDEN_PATTERNS) {
+        expect(text).not.toMatch(pattern);
+      }
     }
   }, 30_000);
 });
