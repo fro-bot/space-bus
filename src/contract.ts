@@ -142,6 +142,19 @@ export type QuestionEntrySchema = z.infer<typeof questionEntrySchema>;
 export const questionListSchema = z.array(questionEntrySchema);
 export type QuestionListSchema = z.infer<typeof questionListSchema>;
 
+// --- Loopback guard (shared host allowlist) ---------------------------------
+//
+// Single source of truth for the localhost/loopback hostname allowlist used
+// by core's context guard, config.ts's baseUrl validation, and
+// discovery.ts's attach-path re-validation. `new URL(...).hostname` never
+// includes brackets around an IPv6 literal, so "[::1]" never matches
+// anything in practice — kept out here rather than copied as dead weight.
+// Lives in contract.ts (zod-only, browser-safe) so discovery.ts/config.ts
+// (Node-only) can import the same set without core needing to reach into
+// the Node-only lane.
+
+export const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
+
 // --- Bus context (injected roster + credentials boundary) ------------------
 //
 // These schemas back core's single validation gate: consumer-supplied

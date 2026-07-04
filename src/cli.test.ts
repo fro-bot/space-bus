@@ -61,8 +61,8 @@ describe("space-bus CLI", () => {
     writeRoster();
   });
 
-  afterEach(() => {
-    stopServer(rosterPath);
+  afterEach(async () => {
+    await stopServer(rosterPath);
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -90,10 +90,34 @@ describe("space-bus CLI", () => {
     assertNoPasswordLeak(res.stdout, res.stderr);
   });
 
-  test("no command / --help: prints usage, exit 0", () => {
+  test("--help: prints usage, exit 0", () => {
     const res = runCli(["--help"]);
     expect(res.exitCode).toBe(0);
     expect(res.stdout).toContain("Usage:");
+    assertNoPasswordLeak(res.stdout, res.stderr);
+  });
+
+  test("no command: prints usage to stderr, exit 1", () => {
+    const res = runCli([]);
+    expect(res.exitCode).toBe(1);
+    expect(res.stderr).toContain("Usage:");
+    expect(res.stdout).toBe("");
+    assertNoPasswordLeak(res.stdout, res.stderr);
+  });
+
+  test("unknown flag: exit 1, actionable stderr message", () => {
+    const res = runCli(["status", "--bogus-flag"]);
+    expect(res.exitCode).toBe(1);
+    expect(res.stderr).toContain("unknown flag");
+    expect(res.stderr).toContain("--bogus-flag");
+    expect(res.stderr).toContain("Usage:");
+    assertNoPasswordLeak(res.stdout, res.stderr);
+  });
+
+  test("--config with no following value: exit 1, clear error", () => {
+    const res = runCli(["status", "--config"]);
+    expect(res.exitCode).toBe(1);
+    expect(res.stderr).toContain("--config requires a path argument");
     assertNoPasswordLeak(res.stdout, res.stderr);
   });
 

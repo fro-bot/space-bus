@@ -215,8 +215,8 @@ describe("config", () => {
       rosterPath = resolveRosterPath(managedDir);
     });
 
-    afterEach(() => {
-      stopServer(rosterPath);
+    afterEach(async () => {
+      await stopServer(rosterPath);
       removeDiscovery(rosterPath);
       rmSync(managedDir, { recursive: true, force: true });
     });
@@ -234,7 +234,7 @@ describe("config", () => {
         expect(context.roster.server.baseUrl).toBe(handle.baseUrl);
         expect(context.credentials).toEqual(handle.credentials);
       } finally {
-        stopServer(rosterPath);
+        await stopServer(rosterPath);
       }
     });
   });

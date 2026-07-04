@@ -29,35 +29,53 @@ interface ParsedArgs {
   config: string | undefined;
   help: boolean;
   unknownFlags: string[];
+  /** --config was the last arg with no following value. */
+  configMissingValue: boolean;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
-  let command: string | undefined;
-  let json = false;
-  let foreground = false;
-  let config: string | undefined;
-  let help = false;
-  const unknownFlags: string[] = [];
+  const result: ParsedArgs = {
+    command: undefined,
+    json: false,
+    foreground: false,
+    config: undefined,
+    help: false,
+    unknownFlags: [],
+    configMissingValue: false,
+  };
 
   for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
-    if (arg === "--help" || arg === "-h") {
-      help = true;
-    } else if (arg === "--json") {
-      json = true;
-    } else if (arg === "--foreground") {
-      foreground = true;
-    } else if (arg === "--config") {
-      i++;
-      config = argv[i];
-    } else if (arg?.startsWith("--")) {
-      unknownFlags.push(arg);
-    } else if (command === undefined && arg !== undefined) {
-      command = arg;
-    }
+    i = consumeArg(argv, i, result);
   }
 
-  return { command, json, foreground, config, help, unknownFlags };
+  return result;
+}
+
+/** Handles one arg (advancing `i` for `--config <value>`); returns the
+ * (possibly advanced) index. Kept separate from parseArgs's loop to keep
+ * cognitive complexity within the linter's threshold. */
+function consumeArg(argv: string[], i: number, result: ParsedArgs): number {
+  const arg = argv[i];
+  if (arg === "--help" || arg === "-h") {
+    result.help = true;
+  } else if (arg === "--json") {
+    result.json = true;
+  } else if (arg === "--foreground") {
+    result.foreground = true;
+  } else if (arg === "--config") {
+    const value = argv[i + 1];
+    if (value === undefined) {
+      result.configMissingValue = true;
+    } else {
+      result.config = value;
+    }
+    return i + 1;
+  } else if (arg?.startsWith("--")) {
+    result.unknownFlags.push(arg);
+  } else if (result.command === undefined && arg !== undefined) {
+    result.command = arg;
+  }
+  return i;
 }
 
 function resolveRoster(config: string | undefined): string {
@@ -98,8 +116,7 @@ async function runServe(args: ParsedArgs): Promise<number> {
       if (stopping) return;
       stopping = true;
       process.stderr.write(`space-bus: received ${signal}, stopping...\n`);
-      stopServer(rosterPath);
-      resolve(0);
+      void stopServer(rosterPath).finally(() => resolve(0));
     };
     process.on("SIGINT", () => shutdown("SIGINT"));
     process.on("SIGTERM", () => shutdown("SIGTERM"));
@@ -116,9 +133,9 @@ function runStatus(args: ParsedArgs): number {
   return 0;
 }
 
-function runStop(args: ParsedArgs): number {
+async function runStop(args: ParsedArgs): Promise<number> {
   const rosterPath = resolveRoster(args.config);
-  const result = stopServer(rosterPath);
+  const result = await stopServer(rosterPath);
   const plain = result.stopped
     ? "space-bus: stopped"
     : "space-bus: nothing to stop";
@@ -129,9 +146,28 @@ function runStop(args: ParsedArgs): number {
 async function main(): Promise<number> {
   const args = parseArgs(process.argv.slice(2));
 
-  if (args.help || args.command === undefined) {
+  if (args.help) {
     process.stdout.write(USAGE);
     return 0;
+  }
+
+  if (args.configMissingValue) {
+    process.stderr.write("space-bus: --config requires a path argument\n\n");
+    process.stderr.write(USAGE);
+    return 1;
+  }
+
+  if (args.unknownFlags.length > 0) {
+    process.stderr.write(
+      `space-bus: unknown flag${args.unknownFlags.length > 1 ? "s" : ""}: ${args.unknownFlags.join(", ")}\n\n`,
+    );
+    process.stderr.write(USAGE);
+    return 1;
+  }
+
+  if (args.command === undefined) {
+    process.stderr.write(USAGE);
+    return 1;
   }
 
   switch (args.command) {
@@ -140,7 +176,7 @@ async function main(): Promise<number> {
     case "status":
       return runStatus(args);
     case "stop":
-      return runStop(args);
+      return await runStop(args);
     default:
       process.stderr.write(`space-bus: unknown command "${args.command}"\n\n`);
       process.stderr.write(USAGE);

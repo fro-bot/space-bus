@@ -55,7 +55,9 @@ if (!suppressReadinessLine) {
   console.log(`opencode server listening on http://127.0.0.1:${server.port}`);
 }
 
-process.on("SIGTERM", () => {
-  server.stop(true);
-  process.exit(0);
-});
+if (process.env["STUB_IGNORE_SIGTERM"] !== "1") {
+  process.on("SIGTERM", () => {
+    server.stop(true);
+    process.exit(0);
+  });
+}

@@ -7,6 +7,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import type { BusContext } from "./contract";
+import { LOOPBACK_HOSTS } from "./contract";
 import { attachLive } from "./discovery";
 
 export const managedServerConfigSchema = z.object({
@@ -135,8 +136,7 @@ export function getRoster(directory?: string): Manifest {
   if (parsed.data.server.baseUrl !== undefined) {
     const url = new URL(parsed.data.server.baseUrl);
     const hostname = url.hostname;
-    const allowedHosts = new Set(["127.0.0.1", "::1", "[::1]", "localhost"]);
-    if (!allowedHosts.has(hostname)) {
+    if (!LOOPBACK_HOSTS.has(hostname)) {
       throw new Error(
         `space-bus: spacebus.json baseUrl must point to localhost (got ${hostname}) — refusing to send credentials off-machine`,
       );

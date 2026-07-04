@@ -23,6 +23,7 @@ import {
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
+import { LOOPBACK_HOSTS } from "./contract";
 
 // --- State dir resolution ---------------------------------------------------
 
@@ -129,12 +130,10 @@ export function removeDiscovery(rosterPath: string): void {
 
 // --- Live endpoint attach (pure read-path, used by config.ts and server.ts) --
 
-const ALLOWED_HOSTS = new Set(["127.0.0.1", "::1", "[::1]", "localhost"]);
-
 export function loopbackOk(baseUrl: string): boolean {
   try {
     const url = new URL(baseUrl);
-    return ALLOWED_HOSTS.has(url.hostname);
+    return LOOPBACK_HOSTS.has(url.hostname);
   } catch {
     return false;
   }
@@ -173,8 +172,12 @@ export function attachLive(rosterPath: string): LiveEndpoint | null {
 /**
  * Captures a locale-pinned `lstart,comm` identity string for a pid, used to
  * distinguish a live process from a recycled pid reusing the same number.
- * Returns null if the process cannot be inspected (e.g. already exited, or
- * on a platform without `ps`).
+ * Best-effort within the same-user trust boundary: `lstart` is
+ * second-granularity, so a pid recycled by a different process within the
+ * same second and matching `comm` could in principle collide — not a
+ * "never" guarantee, just a strong practical deterrent. Returns null if
+ * the process cannot be inspected (e.g. already exited, or on a platform
+ * without `ps`).
  */
 export function captureIdentity(pid: number): string | null {
   try {
@@ -202,7 +205,10 @@ export function isAlive(pid: number): boolean {
 /**
  * A pid is verified only if it is BOTH alive and its captured identity
  * matches the stored one — a recycled pid (alive, different start
- * time/command) fails this check.
+ * time/command) fails this check in practice. Best-effort, not a formal
+ * guarantee: `lstart` is second-granularity, so a pid recycled within the
+ * same second by a process sharing `comm` could theoretically pass. This
+ * is acceptable within the documented same-user trust boundary.
  */
 export function verifyIdentity(pid: number, storedIdentity: string): boolean {
   if (!isAlive(pid)) return false;
@@ -247,9 +253,13 @@ export function acquireLock(rosterPath: string): LockHandle | null {
     return { rosterPath };
   }
 
-  // Contended — inspect the existing lock. If its owner is dead, reclaim it.
+  // Contended — inspect the existing lock. Reclaim it if it's corrupt/
+  // unparseable (readLockFile returned null — e.g. a winner that crashed
+  // between O_EXCL create and writeFileSync, leaving an empty/garbage
+  // file) OR its recorded owner is dead. A corrupt lock has no owner to
+  // verify, so treat "unreadable" the same as "owner is dead": reclaim it.
   const existing = readLockFile(target);
-  if (existing && !verifyIdentity(existing.pid, existing.startTime)) {
+  if (!existing || !verifyIdentity(existing.pid, existing.startTime)) {
     try {
       unlinkSync(target);
     } catch (err) {
@@ -263,11 +273,17 @@ export function acquireLock(rosterPath: string): LockHandle | null {
   return null;
 }
 
+/**
+ * Releases the spawn lock. Swallows ALL unlink errors (not just ENOENT) —
+ * this typically runs in a `finally` after spawning/readiness work, and a
+ * failure here (e.g. permissions, race with an external cleanup) must
+ * never replace or mask a primary error already in flight.
+ */
 export function releaseLock(handle: LockHandle): void {
   try {
     unlinkSync(lockFilePath(handle.rosterPath));
-  } catch (err) {
-    if (!isEnoent(err)) throw err;
+  } catch {
+    // best-effort — never throw over a caller's primary error.
   }
 }
 
@@ -324,10 +340,82 @@ function isErrnoCode(err: unknown, code: string): boolean {
   );
 }
 
-function closeQuietly(fd: number): void {
+export function closeQuietly(fd: number): void {
   try {
     closeSync(fd);
   } catch {
     // best-effort
+  }
+}
+
+// --- Provisional spawn record (orphan mitigation) ---------------------------
+//
+// Written immediately after spawn+identity-capture, BEFORE the readiness
+// wait — narrows (does not eliminate) the window where a parent process
+// dies before the full discovery record (port/baseUrl known only after the
+// child prints its readiness line) can be written, which would otherwise
+// leave a detached, untracked child running with an unknown password. The
+// next `ensureServer` call checks for a leftover provisional record with no
+// corresponding live discovery and, if the recorded identity still
+// verifies, kills and cleans up the orphan before respawning.
+
+export function provisionalFilePath(rosterPath: string): string {
+  return join(stateDirFor(rosterPath), "spawn.provisional.json");
+}
+
+export const provisionalFileSchema = z.object({
+  pid: z.number().int().positive(),
+  identity: z.string(),
+  password: z.string(),
+  since: z.number(),
+});
+
+export type ProvisionalFile = z.infer<typeof provisionalFileSchema>;
+
+export function writeProvisional(
+  rosterPath: string,
+  data: ProvisionalFile,
+): void {
+  const dir = stateDirFor(rosterPath);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  chmodSync(dir, 0o700);
+  const target = provisionalFilePath(rosterPath);
+  const fd = openSync(
+    target,
+    fsConstants.O_CREAT | fsConstants.O_WRONLY | fsConstants.O_TRUNC,
+    0o600,
+  );
+  try {
+    writeFileSync(fd, JSON.stringify(data));
+  } finally {
+    closeQuietly(fd);
+  }
+  chmodSync(target, 0o600);
+}
+
+/** Reads the provisional spawn record, or null if absent/corrupt. */
+export function readProvisional(rosterPath: string): ProvisionalFile | null {
+  const target = provisionalFilePath(rosterPath);
+  let raw: string;
+  try {
+    raw = readFileSync(target, "utf8");
+  } catch {
+    return null;
+  }
+  let json: unknown;
+  try {
+    json = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  const parsed = provisionalFileSchema.safeParse(json);
+  return parsed.success ? parsed.data : null;
+}
+
+export function removeProvisional(rosterPath: string): void {
+  try {
+    unlinkSync(provisionalFilePath(rosterPath));
+  } catch (err) {
+    if (!isEnoent(err)) throw err;
   }
 }

@@ -1,11 +1,24 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { isAlive, readDiscovery, writeDiscovery } from "./discovery";
-import { attachServer, ensureServer, serverStatus, stopServer } from "./server";
+import {
+  captureIdentity,
+  isAlive,
+  provisionalFilePath,
+  readDiscovery,
+  writeDiscovery,
+  writeProvisional,
+} from "./discovery";
+import {
+  attachServer,
+  ensureServer,
+  redactSensitive,
+  serverStatus,
+  stopServer,
+} from "./server";
 
 const STUB_COMMAND = ["bun", "test/fixtures/stub-server.ts"];
 const REPO_ROOT = process.cwd();
@@ -51,7 +64,7 @@ describe("server lifecycle", () => {
   });
 
   afterEach(async () => {
-    stopServer(rosterPath);
+    await stopServer(rosterPath);
     await killAllSpawned();
     rmSync(dir, { recursive: true, force: true });
   });
@@ -174,17 +187,15 @@ describe("server lifecycle", () => {
     const handle = await ensureServer(rosterPath, { readinessBudgetMs: 5000 });
     expect(isAlive(handle.pid)).toBe(true);
 
-    const { stopped } = stopServer(rosterPath);
+    const { stopped } = await stopServer(rosterPath);
     expect(stopped).toBe(true);
 
-    // Give SIGTERM a moment to land.
-    await new Promise((resolve) => setTimeout(resolve, 300));
     expect(isAlive(handle.pid)).toBe(false);
     expect(readDiscovery(rosterPath)).toBeNull();
   });
 
-  test("stopServer on a roster with no discovery file returns stopped:false", () => {
-    expect(stopServer(rosterPath)).toEqual({ stopped: false });
+  test("stopServer on a roster with no discovery file returns stopped:false", async () => {
+    expect(await stopServer(rosterPath)).toEqual({ stopped: false });
   });
 
   // --- Readiness timeout: never-ready stub ---------------------------------
@@ -317,5 +328,143 @@ describe("server lifecycle", () => {
     await new Promise((resolve) => setTimeout(resolve, 200));
     expect(isAlive(handle.pid)).toBe(true);
     expect(attachServer(rosterPath)).not.toBeNull();
+  });
+
+  // --- Finding 2: spawn 'error' surfaces actionably instead of unhandled --
+
+  test("a nonexistent spawn command rejects with an actionable error naming the command, no leaked process", async () => {
+    writeRoster(
+      makeRoster({
+        managed: {
+          command: ["space-bus-definitely-does-not-exist-binary"],
+          cwd: REPO_ROOT,
+        },
+      }),
+    );
+
+    let caughtError: Error | null = null;
+    try {
+      await ensureServer(rosterPath, { readinessBudgetMs: 3000 });
+    } catch (err) {
+      caughtError = err as Error;
+    }
+    expect(caughtError).not.toBeNull();
+    expect(caughtError?.message).toContain(
+      "space-bus-definitely-does-not-exist-binary",
+    );
+    expect(caughtError?.message).toContain(rosterPath);
+    // No discovery should have been written for a failed spawn.
+    expect(readDiscovery(rosterPath)).toBeNull();
+  });
+
+  // --- Finding 3: stopServer escalates SIGTERM -> SIGKILL, waits for death -
+
+  test("stopServer escalates to SIGKILL when the process ignores SIGTERM, and only clears discovery once dead", async () => {
+    writeRoster(
+      makeRoster({
+        managed: {
+          command: STUB_COMMAND,
+          cwd: REPO_ROOT,
+        },
+      }),
+    );
+    const originalEnv = process.env["STUB_IGNORE_SIGTERM"];
+    process.env["STUB_IGNORE_SIGTERM"] = "1";
+    try {
+      const handle = await ensureServer(rosterPath, {
+        readinessBudgetMs: 5000,
+      });
+      spawnedPids.push(handle.pid);
+      expect(isAlive(handle.pid)).toBe(true);
+
+      const { stopped } = await stopServer(rosterPath);
+      expect(stopped).toBe(true);
+      expect(isAlive(handle.pid)).toBe(false);
+      expect(readDiscovery(rosterPath)).toBeNull();
+    } finally {
+      if (originalEnv === undefined) delete process.env["STUB_IGNORE_SIGTERM"];
+      else process.env["STUB_IGNORE_SIGTERM"] = originalEnv;
+    }
+  }, 15_000);
+
+  // --- Finding 5: base64 Basic-auth token is redacted from surfaced logs --
+
+  test("redactSensitive strips both the raw password and its base64 Basic-auth token from a log tail", () => {
+    const password = "sentinel-test-password-xyz";
+    const token = Buffer.from(`opencode:${password}`).toString("base64");
+    const tail = `incoming request: authorization: Basic ${token}\nplain password mention: ${password}\n`;
+
+    const redacted = redactSensitive(tail, password);
+
+    expect(redacted).not.toContain(password);
+    expect(redacted).not.toContain(token);
+    expect(redacted).toContain("[REDACTED]");
+  });
+
+  // --- Finding 7: leftover provisional record is reaped on next ensure ----
+
+  test("a leftover provisional record with a live pid is reaped before the next ensure spawns fresh", async () => {
+    // Simulate a "parent died before writeDiscovery" scenario: spawn a
+    // live stub directly (bypassing ensureServer) and write only a
+    // provisional record for it, with no discovery file.
+    const { spawn } = await import("node:child_process");
+    const child = spawn("bun", STUB_COMMAND.slice(1), {
+      cwd: REPO_ROOT,
+      detached: true,
+      stdio: "ignore",
+      env: { ...process.env, STUB_NO_READY: "1" },
+    });
+    child.unref();
+    const orphanPid = child.pid as number;
+    spawnedPids.push(orphanPid);
+    // Give it a beat to actually start.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(isAlive(orphanPid)).toBe(true);
+
+    const identity = captureIdentity(orphanPid) ?? "";
+    writeProvisional(rosterPath, {
+      pid: orphanPid,
+      identity,
+      password: "orphan-password",
+      since: Date.now(),
+    });
+    expect(existsSync(provisionalFilePath(rosterPath))).toBe(true);
+
+    const handle = await ensureServer(rosterPath, { readinessBudgetMs: 5000 });
+    spawnedPids.push(handle.pid);
+
+    expect(handle.pid).not.toBe(orphanPid);
+    // The orphan should have been killed as part of the reap.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(isAlive(orphanPid)).toBe(false);
+    expect(existsSync(provisionalFilePath(rosterPath))).toBe(false);
+  }, 15_000);
+
+  // --- Finding 8: crashed child fails fast, well under the budget --------
+
+  test("a child that exits immediately after spawn fails fast, well under the readiness budget", async () => {
+    writeRoster(
+      makeRoster({
+        managed: {
+          // `bun -e` runs and exits immediately, never printing a
+          // readiness line — simulates a crashed child.
+          command: ["bun", "-e", "process.exit(1)"],
+          cwd: REPO_ROOT,
+        },
+      }),
+    );
+
+    const start = Date.now();
+    let caughtError: Error | null = null;
+    try {
+      await ensureServer(rosterPath, { readinessBudgetMs: 10_000 });
+    } catch (err) {
+      caughtError = err as Error;
+    }
+    const elapsed = Date.now() - start;
+    expect(caughtError).not.toBeNull();
+    expect(caughtError?.message).toMatch(/exited before/);
+    // Should fail fast, well under the 10s budget.
+    expect(elapsed).toBeLessThan(5000);
   });
 });

@@ -32,8 +32,8 @@ describe("managed roster wiring: plugin tools ensure before loadContext", () => 
     rosterPath = resolveRosterPath(dir);
   });
 
-  afterEach(() => {
-    stopServer(rosterPath);
+  afterEach(async () => {
+    await stopServer(rosterPath);
     removeDiscovery(rosterPath);
     rmSync(dir, { recursive: true, force: true });
     teardownEnv();

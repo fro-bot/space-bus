@@ -125,6 +125,26 @@ describe("discovery", () => {
     }
   });
 
+  test("a corrupt (empty) lock file is reclaimed rather than wedging forever", () => {
+    // Simulate the winner-crashed-before-writeFileSync scenario: an
+    // O_EXCL-created file that never got its JSON body written.
+    const target = lockFilePath(rosterPath);
+    mkdirSync(stateDirFor(rosterPath), { recursive: true, mode: 0o700 });
+    writeFileSync(target, "");
+    const handle = acquireLock(rosterPath);
+    expect(handle).not.toBeNull();
+    releaseLock(handle as NonNullable<typeof handle>);
+  });
+
+  test("a corrupt (non-JSON) lock file is reclaimed rather than wedging forever", () => {
+    const target = lockFilePath(rosterPath);
+    mkdirSync(stateDirFor(rosterPath), { recursive: true, mode: 0o700 });
+    writeFileSync(target, "not json{{{");
+    const handle = acquireLock(rosterPath);
+    expect(handle).not.toBeNull();
+    releaseLock(handle as NonNullable<typeof handle>);
+  });
+
   test("a lock owned by a dead pid is reclaimed", () => {
     // Simulate a stale lock: dead pid + bogus identity written directly.
     const target = lockFilePath(rosterPath);

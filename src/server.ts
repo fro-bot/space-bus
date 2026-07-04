@@ -12,29 +12,42 @@
  * that outlives its Bun parent process, so that's the spawn primitive used
  * here (no Bun.spawn fallback needed).
  */
-import { spawn } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { closeSync, openSync, readFileSync } from "node:fs";
+import { openSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { type ManagedServerConfig, manifestSchema } from "./config";
 import {
   acquireLock,
   attachLive,
   captureIdentity,
+  closeQuietly,
+  isAlive,
   type LockHandle,
   lockFilePath,
   logFilePath,
   readDiscovery,
   readLockFile,
+  readProvisional,
   releaseLock,
   removeDiscovery,
+  removeProvisional,
   verifyIdentity,
   writeDiscovery,
+  writeProvisional,
 } from "./discovery";
 
 const DEFAULT_READINESS_BUDGET_MS = 15_000;
 const DEFAULT_LOCK_WAIT_BUDGET_MS = 15_000;
 const POLL_INTERVAL_MS = 50;
+/** Minimum time reserved for the HTTP readiness probe phase, carved out of
+ * the overall readiness budget so a slow log-poll phase can't starve it. */
+const MIN_PROBE_PHASE_MS = 3_000;
+/** Per-fetch timeout for the HTTP readiness probe — a stalled response must
+ * not block for the platform's TCP default. */
+const PROBE_FETCH_TIMEOUT_MS = 2_000;
+/** Bounded window for stopServer's SIGTERM->SIGKILL escalation. */
+const STOP_GRACE_MS = 2_000;
 
 export interface EnsureServerOptions {
   /** Bounds the readiness probe loop after spawning. Default 15s. */
@@ -76,27 +89,52 @@ function readLogTail(logPath: string, maxChars = 4000): string {
   }
 }
 
+function basicAuthToken(password: string): string {
+  return Buffer.from(`opencode:${password}`).toString("base64");
+}
+
+/**
+ * Redacts the raw password AND the exact base64 Basic-auth token payload
+ * from a log tail. The readiness probe sends
+ * `Authorization: Basic base64("opencode:"+password)`; if the child
+ * happens to log request headers, the raw-password redaction alone would
+ * miss the still-sensitive base64 encoding of it. Redaction here is a
+ * backup — the primary guarantee is that we never log the password
+ * ourselves.
+ */
+export function redactSensitive(tail: string, password: string): string {
+  return tail
+    .replaceAll(basicAuthToken(password), "[REDACTED]")
+    .replaceAll(password, "[REDACTED]");
+}
+
 function redactedReadinessError(
   rosterPath: string,
   password: string,
   reason: string,
 ): Error {
-  const tail = readLogTail(logFilePath(rosterPath)).replaceAll(
-    password,
-    "[REDACTED]",
-  );
+  const tail = redactSensitive(readLogTail(logFilePath(rosterPath)), password);
   return new Error(
     `space-bus: managed server for roster ${rosterPath} ${reason}. Log tail:\n${tail}`,
   );
 }
 
+/**
+ * Kills a spawned child. Prefers identity-verified signaling; if identity
+ * capture failed (e.g. `ps` unavailable on this platform), falls back to
+ * signaling the pid directly — safe here because the pid is from our own
+ * spawn moments ago, not an arbitrary long-lived pid recycling risk.
+ */
 function killIdentifiedProcess(pid: number, identity: string | null): void {
-  if (identity !== null && verifyIdentity(pid, identity)) {
-    try {
-      process.kill(pid, "SIGTERM");
-    } catch {
-      // already gone — fine.
+  try {
+    if (identity !== null) {
+      if (verifyIdentity(pid, identity)) process.kill(pid, "SIGTERM");
+      return;
     }
+    // No identity available — best-effort direct kill on our own fresh pid.
+    process.kill(pid, "SIGTERM");
+  } catch {
+    // already gone — fine.
   }
 }
 
@@ -133,9 +171,8 @@ type ProbeOutcome = "ready" | "auth-failure" | "retry";
 async function probe(baseUrl: string, password: string): Promise<ProbeOutcome> {
   try {
     const res = await fetch(`${baseUrl}/session?limit=1`, {
-      headers: {
-        authorization: `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}`,
-      },
+      headers: { authorization: `Basic ${basicAuthToken(password)}` },
+      signal: AbortSignal.timeout(PROBE_FETCH_TIMEOUT_MS),
     });
     if (res.status === 200) return "ready";
     if (res.status === 401 || res.status === 403) return "auth-failure";
@@ -145,57 +182,113 @@ async function probe(baseUrl: string, password: string): Promise<ProbeOutcome> {
   }
 }
 
+/** True if the spawned child has already died — a stalled/never-arriving
+ * readiness line should fail fast rather than burn the full budget. */
+function childDied(child: ChildProcess, pid: number): boolean {
+  return child.exitCode !== null || child.signalCode !== null || !isAlive(pid);
+}
+
+async function waitForReadinessLine(
+  logPath: string,
+  child: ChildProcess,
+  pid: number,
+  deadline: number,
+): Promise<{ port: number; baseUrl: string } | null> {
+  const readinessLine =
+    /opencode server listening on (http:\/\/127\.0\.0\.1:(\d+))/;
+  while (Date.now() < deadline) {
+    if (childDied(child, pid)) return null;
+    const tail = readLogTail(logPath);
+    const match = readinessLine.exec(tail);
+    if (match?.[1] && match[2]) {
+      return { baseUrl: match[1], port: Number(match[2]) };
+    }
+    await sleep(POLL_INTERVAL_MS);
+  }
+  return null;
+}
+
+async function pollAuthedEndpoint(
+  baseUrl: string,
+  password: string,
+  child: ChildProcess,
+  pid: number,
+  deadline: number,
+): Promise<"ready" | "died" | "auth-failure" | "timeout"> {
+  while (Date.now() < deadline) {
+    if (childDied(child, pid)) return "died";
+    const outcome = await probe(baseUrl, password);
+    if (outcome === "ready") return "ready";
+    if (outcome === "auth-failure") return "auth-failure";
+    await sleep(POLL_INTERVAL_MS);
+  }
+  return "timeout";
+}
+
 async function waitForReadiness(
   rosterPath: string,
   password: string,
   pid: number,
   identity: string | null,
+  child: ChildProcess,
   budgetMs: number,
 ): Promise<{ port: number; baseUrl: string }> {
   const deadline = Date.now() + budgetMs;
   const logPath = logFilePath(rosterPath);
-  let port: number | null = null;
-  let baseUrl: string | null = null;
 
   // Phase 1: wait for the verified stdout readiness line, extract the port.
-  const readinessLine =
-    /opencode server listening on (http:\/\/127\.0\.0\.1:(\d+))/;
-  while (Date.now() < deadline && port === null) {
-    const tail = readLogTail(logPath);
-    const match = readinessLine.exec(tail);
-    if (match?.[1] && match[2]) {
-      baseUrl = match[1];
-      port = Number(match[2]);
-      break;
-    }
-    await sleep(POLL_INTERVAL_MS);
-  }
+  // Reserve MIN_PROBE_PHASE_MS for phase 2 so a starved log-poll phase can't
+  // consume the entire budget and leave phase 2 with zero time.
+  const phase1Deadline = Math.max(Date.now(), deadline - MIN_PROBE_PHASE_MS);
+  const lineResult = await waitForReadinessLine(
+    logPath,
+    child,
+    pid,
+    phase1Deadline,
+  );
 
-  if (port === null || baseUrl === null) {
+  if (lineResult === null) {
+    const diedEarly = childDied(child, pid);
     killIdentifiedProcess(pid, identity);
     throw redactedReadinessError(
       rosterPath,
       password,
-      `did not print a readiness line within ${budgetMs}ms`,
+      diedEarly
+        ? "exited before printing a readiness line"
+        : `did not print a readiness line within ${budgetMs}ms`,
     );
   }
+  const { port, baseUrl } = lineResult;
 
   // Phase 2: poll the authed endpoint — proves auth AND readiness at once.
-  while (Date.now() < deadline) {
-    const outcome = await probe(baseUrl, password);
-    if (outcome === "ready") return { port, baseUrl };
-    if (outcome === "auth-failure") {
-      killIdentifiedProcess(pid, identity);
-      throw redactedReadinessError(
-        rosterPath,
-        password,
-        "rejected our generated password (401/403) — authentication regression, not retrying",
-      );
-    }
-    await sleep(POLL_INTERVAL_MS);
-  }
+  // Gets whatever remains of the overall budget, floored at
+  // MIN_PROBE_PHASE_MS regardless of how much phase 1 consumed.
+  const phase2Deadline = Math.max(deadline, Date.now() + MIN_PROBE_PHASE_MS);
+  const outcome = await pollAuthedEndpoint(
+    baseUrl,
+    password,
+    child,
+    pid,
+    phase2Deadline,
+  );
+
+  if (outcome === "ready") return { port, baseUrl };
 
   killIdentifiedProcess(pid, identity);
+  if (outcome === "died") {
+    throw redactedReadinessError(
+      rosterPath,
+      password,
+      "exited before becoming ready",
+    );
+  }
+  if (outcome === "auth-failure") {
+    throw redactedReadinessError(
+      rosterPath,
+      password,
+      "rejected our generated password (401/403) — authentication regression, not retrying",
+    );
+  }
   throw redactedReadinessError(
     rosterPath,
     password,
@@ -203,11 +296,33 @@ async function waitForReadiness(
   );
 }
 
+/**
+ * Reaps a leftover provisional-spawn record left by a parent that died
+ * between spawn and writing full discovery (finding 7). If the recorded
+ * pid+identity still verifies live, it's killed (best-effort) before we
+ * proceed to spawn a fresh child; either way the stale provisional record
+ * is removed so it can't wedge future ensures.
+ */
+function reapOrphanedProvisional(rosterPath: string): void {
+  const provisional = readProvisional(rosterPath);
+  if (!provisional) return;
+  // A live discovery already covers this pid — nothing orphaned.
+  const discovery = readDiscovery(rosterPath);
+  if (discovery && discovery.pid === provisional.pid) {
+    removeProvisional(rosterPath);
+    return;
+  }
+  killIdentifiedProcess(provisional.pid, provisional.identity);
+  removeProvisional(rosterPath);
+}
+
 async function spawnAndWaitReady(
   rosterPath: string,
   managedConfig: ManagedServerConfig,
   readinessBudgetMs: number,
 ): Promise<ServerHandle> {
+  reapOrphanedProvisional(rosterPath);
+
   const password = randomBytes(32).toString("base64url");
   const command =
     managedConfig.command && managedConfig.command.length > 0
@@ -218,9 +333,11 @@ async function spawnAndWaitReady(
   const logPath = logFilePath(rosterPath);
 
   const logFd = openSync(logPath, "w", 0o600);
+  let child: ChildProcess;
   let pid: number | undefined;
+  let spawnError: Error | undefined;
   try {
-    const child = spawn(
+    child = spawn(
       command[0] as string,
       [...command.slice(1), "--port", String(requestedPort)],
       {
@@ -230,26 +347,73 @@ async function spawnAndWaitReady(
         env: { ...process.env, OPENCODE_SERVER_PASSWORD: password },
       },
     );
+    // child_process reports spawn failures (e.g. ENOENT for a bad command)
+    // asynchronously via the child's 'error' event — with no listener that
+    // becomes an unhandled error in the plugin host. Capture it so it can
+    // be raced against the readiness wait below instead.
+    child.on("error", (err) => {
+      spawnError = err;
+    });
     child.unref();
     pid = child.pid;
   } finally {
-    closeSync(logFd);
+    closeQuietly(logFd);
   }
 
   if (pid === undefined) {
     throw new Error(
-      `space-bus: failed to spawn managed server (command: ${command.join(" ")}) for roster ${rosterPath}`,
+      `space-bus: failed to spawn managed server (command: ${command.join(" ")}, cwd: ${cwd}, roster: ${rosterPath}, log: ${logPath})${spawnError ? `: ${spawnError.message}` : ""}`,
     );
   }
 
   const identity = captureIdentity(pid);
-  const { port, baseUrl } = await waitForReadiness(
-    rosterPath,
-    password,
+  // Write a provisional record before the readiness wait — narrows the
+  // orphan window described in finding 7 (parent dies before full
+  // discovery is written).
+  writeProvisional(rosterPath, {
     pid,
-    identity,
-    readinessBudgetMs,
-  );
+    identity: identity ?? "",
+    password,
+    since: Date.now(),
+  });
+
+  let port: number;
+  let baseUrl: string;
+  try {
+    // Race the spawn 'error' event against the readiness wait: a bad
+    // command surfaces here promptly instead of only via readiness
+    // timeout (or an unhandled 'error' event with no listener).
+    const readiness = waitForReadiness(
+      rosterPath,
+      password,
+      pid,
+      identity,
+      child,
+      readinessBudgetMs,
+    );
+    const spawnErrorWatch = new Promise<never>((_resolve, reject) => {
+      const check = setInterval(() => {
+        if (spawnError) {
+          clearInterval(check);
+          reject(
+            new Error(
+              `space-bus: failed to spawn managed server (command: ${command.join(" ")}, cwd: ${cwd}, roster: ${rosterPath}, log: ${logPath}): ${spawnError.message}`,
+            ),
+          );
+        }
+      }, POLL_INTERVAL_MS);
+      // .finally() re-throws readiness's rejection into a NEW promise chain
+      // — attach a no-op .catch so that chain can't become an unhandled
+      // rejection (the original `readiness` promise is still properly
+      // awaited/handled via Promise.race below).
+      readiness.finally(() => clearInterval(check)).catch(() => {});
+    });
+    const result = await Promise.race([readiness, spawnErrorWatch]);
+    port = result.port;
+    baseUrl = result.baseUrl;
+  } finally {
+    removeProvisional(rosterPath);
+  }
 
   const finalIdentity = identity ?? captureIdentity(pid) ?? "";
   writeDiscovery(rosterPath, {
@@ -359,11 +523,17 @@ export function serverStatus(rosterPath: string): ServerStatus {
 }
 
 /**
- * Stops a managed server: identity-verified SIGTERM, then removes the
- * discovery file regardless (cleans up a stale file even if the pid was
- * already dead). OS-authz only (R7b) — no additional permission model.
+ * Stops a managed server: identity-verified SIGTERM, then polls for actual
+ * death (bounded by STOP_GRACE_MS) before escalating to SIGKILL and polling
+ * again. The discovery file is removed ONLY once the process is confirmed
+ * dead (or was never verified-live/already gone) — a process that ignores
+ * both signals is reported as not stopped and the discovery file is left in
+ * place, so credentials aren't silently discarded while the server still
+ * holds the port. OS-authz only (R7b) — no additional permission model.
  */
-export function stopServer(rosterPath: string): { stopped: boolean } {
+export async function stopServer(
+  rosterPath: string,
+): Promise<{ stopped: boolean }> {
   const discovery = readDiscovery(rosterPath);
   if (!discovery) return { stopped: false };
 
@@ -372,13 +542,43 @@ export function stopServer(rosterPath: string): { stopped: boolean } {
     return { stopped: false };
   }
 
+  const { pid } = discovery;
+
   try {
-    process.kill(discovery.pid, "SIGTERM");
+    process.kill(pid, "SIGTERM");
   } catch {
+    // Already gone between verify and signal — treat as stopped.
     removeDiscovery(rosterPath);
-    return { stopped: false };
+    return { stopped: true };
   }
 
-  removeDiscovery(rosterPath);
-  return { stopped: true };
+  if (await waitForDeath(pid, STOP_GRACE_MS)) {
+    removeDiscovery(rosterPath);
+    return { stopped: true };
+  }
+
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    removeDiscovery(rosterPath);
+    return { stopped: true };
+  }
+
+  if (await waitForDeath(pid, STOP_GRACE_MS)) {
+    removeDiscovery(rosterPath);
+    return { stopped: true };
+  }
+
+  // Survived SIGKILL too (shouldn't happen) — leave the discovery file so
+  // credentials aren't lost while the server may still be reachable.
+  return { stopped: false };
+}
+
+async function waitForDeath(pid: number, budgetMs: number): Promise<boolean> {
+  const deadline = Date.now() + budgetMs;
+  while (Date.now() < deadline) {
+    if (!isAlive(pid)) return true;
+    await sleep(POLL_INTERVAL_MS);
+  }
+  return !isAlive(pid);
 }
