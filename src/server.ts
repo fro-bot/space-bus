@@ -225,14 +225,21 @@ async function waitForReadinessLine(
   pid: number,
   deadline: number,
 ): Promise<{ port: number; baseUrl: string } | null> {
+  // Capture ONLY the port digits from the log line; the host is a hardcoded
+  // literal. This keeps file-derived data out of the outbound request URL
+  // (CodeQL js/file-access-to-http) — the parsed integer port is the only
+  // value that crosses from the log into the readiness probe.
   const readinessLine =
-    /opencode server listening on (http:\/\/127\.0\.0\.1:(\d+))/;
+    /opencode server listening on http:\/\/127\.0\.0\.1:(\d+)/;
   while (Date.now() < deadline) {
     if (childDied(child, pid)) return null;
     const tail = readLogTail(logPath);
     const match = readinessLine.exec(tail);
-    if (match?.[1] && match[2]) {
-      return { baseUrl: match[1], port: Number(match[2]) };
+    if (match?.[1]) {
+      const port = Number.parseInt(match[1], 10);
+      if (Number.isInteger(port) && port > 0 && port <= 65535) {
+        return { port, baseUrl: `http://127.0.0.1:${port}` };
+      }
     }
     await sleep(POLL_INTERVAL_MS);
   }
