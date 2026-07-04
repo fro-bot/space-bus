@@ -1,7 +1,12 @@
+/**
+ * @experimental
+ * Experimental — shapes may change in minor releases.
+ */
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
+import type { BusContext } from "./contract";
 
 export const manifestSchema = z.object({
   server: z.object({ baseUrl: z.string().url() }),
@@ -97,11 +102,42 @@ export function getRoster(directory?: string): Manifest {
   return parsed.data;
 }
 
-export type Project = Manifest["projects"][number] & { expandedPath: string };
+export type Project = Manifest["projects"][number] & {
+  expandedPath: string;
+  exists: boolean;
+};
 
 export function getProjects(manifest: Manifest): Project[] {
-  return manifest.projects.map((p) => ({
-    ...p,
-    expandedPath: expandHome(p.path),
-  }));
+  return manifest.projects.map((p) => {
+    const expandedPath = expandHome(p.path);
+    return { ...p, expandedPath, exists: existsSync(expandedPath) };
+  });
+}
+
+/**
+ * Reads env-derived credentials for the Node path. Core never reads
+ * `process.env` directly — this is the one place that boundary crosses.
+ */
+export function getCredentials(): { username?: string; password?: string } {
+  const password = process.env["OPENCODE_SERVER_PASSWORD"];
+  if (!password) return {};
+  const username = process.env["OPENCODE_SERVER_USERNAME"] ?? "opencode";
+  return { username, password };
+}
+
+/**
+ * Node-side loader producing a `BusContext` (see contract.ts) for a given
+ * workspace directory: roster with `exists`-flagged projects, plus
+ * env-derived credentials. Per-call/short-lived by contract — build a fresh
+ * one per call, never cache across filesystem changes. Throws on
+ * missing/invalid roster (same as `getRoster`); callers convert to a
+ * discriminated-union Result at the core boundary.
+ */
+export function loadContext(directory?: string): BusContext {
+  const manifest = getRoster(directory);
+  const projects = getProjects(manifest);
+  return {
+    roster: { server: manifest.server, projects },
+    credentials: getCredentials(),
+  };
 }

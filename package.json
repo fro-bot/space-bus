@@ -11,6 +11,22 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./core": {
+      "types": "./dist/core.d.ts",
+      "import": "./dist/core.js"
+    },
+    "./config": {
+      "types": "./dist/config.d.ts",
+      "import": "./dist/config.js"
+    },
+    "./contract": {
+      "types": "./dist/contract.d.ts",
+      "import": "./dist/contract.js"
+    },
+    "./format": {
+      "types": "./dist/format.d.ts",
+      "import": "./dist/format.js"
     }
   },
   "bin": {
@@ -27,7 +43,7 @@
   "scripts": {
     "clean": "rm -rf dist",
     "build": "bun run clean && bun run build.ts && tsc -p tsconfig.build.json --emitDeclarationOnly",
-    "dev": "bun build ./src/index.ts ./src/mcp.ts --outdir dist --target node --external @opencode-ai/plugin --external @modelcontextprotocol/sdk --external zod --watch",
+    "dev": "bun build ./src/index.ts ./src/mcp.ts ./src/core.ts ./src/config.ts ./src/contract.ts ./src/format.ts --outdir dist --target node --external @opencode-ai/plugin --external @modelcontextprotocol/sdk --external zod --watch",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
     "fix": "biome check --write .",

@@ -1,3 +1,7 @@
+/**
+ * @experimental
+ * Experimental — shapes may change in minor releases.
+ */
 import type {
   DispatchResult,
   RosterProject,

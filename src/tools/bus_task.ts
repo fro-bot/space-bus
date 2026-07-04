@@ -1,4 +1,5 @@
 import { type ToolDefinition, tool } from "@opencode-ai/plugin";
+import { loadContext } from "../config";
 import { dispatch, toDispatchArgs } from "../core";
 import { formatDispatch } from "../format";
 
@@ -32,12 +33,18 @@ export function makeBusTask(defaultDirectory?: string): ToolDefinition {
         ),
     },
     async execute(args, ctx) {
-      const dispatchArgs = toDispatchArgs({
-        ...args,
-        directory: ctx.directory ?? defaultDirectory,
-      });
+      // Fail-fast ordering pin: arg-shape validation runs BEFORE context
+      // loading (index.test.ts asserts this).
+      const dispatchArgs = toDispatchArgs(args);
       if (!dispatchArgs.ok) throw new Error(dispatchArgs.error);
-      const r = await dispatch(dispatchArgs);
+      const directory = ctx.directory ?? defaultDirectory;
+      let context: ReturnType<typeof loadContext>;
+      try {
+        context = loadContext(directory);
+      } catch (e) {
+        throw new Error((e as Error).message);
+      }
+      const r = await dispatch(dispatchArgs, { context });
       if (!r.ok) throw new Error(r.error);
       return formatDispatch(r);
     },

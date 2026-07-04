@@ -1,4 +1,5 @@
 import { type ToolDefinition, tool } from "@opencode-ai/plugin";
+import { loadContext } from "../config";
 import { result } from "../core";
 import { formatResult } from "../format";
 
@@ -14,9 +15,14 @@ export function makeBusResult(defaultDirectory?: string): ToolDefinition {
         .describe("Session ID returned by bus_task"),
     },
     async execute(args, ctx) {
-      const r = await result(args.sessionId, {
-        directory: ctx.directory ?? defaultDirectory,
-      });
+      const directory = ctx.directory ?? defaultDirectory;
+      let context: ReturnType<typeof loadContext>;
+      try {
+        context = loadContext(directory);
+      } catch (e) {
+        throw new Error((e as Error).message);
+      }
+      const r = await result(args.sessionId, { context });
       if (!r.ok) throw new Error(r.error);
       return formatResult(r);
     },

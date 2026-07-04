@@ -9,7 +9,14 @@
 const pkg = await Bun.file("./package.json").json();
 
 const result = await Bun.build({
-  entrypoints: ["./src/index.ts", "./src/mcp.ts"],
+  entrypoints: [
+    "./src/index.ts",
+    "./src/mcp.ts",
+    "./src/core.ts",
+    "./src/config.ts",
+    "./src/contract.ts",
+    "./src/format.ts",
+  ],
   outdir: "./dist",
   target: "node",
   format: "esm",

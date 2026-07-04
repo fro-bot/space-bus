@@ -6,8 +6,9 @@ This is the source repo for the `@fro.bot/space-bus` OpenCode plugin: four `bus_
 
 - `src/index.ts` — plugin entry; default-exported factory returning the `tool` map (`bus_roster`, `bus_task`, `bus_status`, `bus_result`).
 - `src/tools/*.ts` — one file per tool: thin adapter factories (`makeBus*`) plus the shared description constants also consumed by `src/mcp.ts`.
-- `src/core.ts` — all bus logic (roster lookups, dispatch, status, result). Discriminated-union returns, no throwing.
-- `src/config.ts` — `spacebus.json` roster resolution: `resolveRosterPath`/`getRoster`/`getProjects`, `SPACE_BUS_CONFIG` override, localhost guard.
+- `src/core.ts` — all bus logic (roster lookups, dispatch, status, result, `snapshot()` composite). Discriminated-union returns, no throwing. Browser-safe: takes an injected `BusContext` (`{ roster, credentials? }`) per call instead of resolving one itself.
+- `src/config.ts` — `spacebus.json` roster resolution: `resolveRosterPath`/`getRoster`/`getProjects`, `SPACE_BUS_CONFIG` override, localhost guard. Node-only. `loadContext(directory?)` is the Node-side loader producing a `BusContext` for core.
+- `src/contract.ts` — zod schemas + inferred types for the OpenCode API and `BusContext`; zod-only imports, no Node deps. Core imports from contract, never the reverse.
 - `src/mcp.ts` — stdio MCP facade; also the package `bin` (`space-bus-mcp`) entry.
 
 ## Invariants
@@ -18,6 +19,8 @@ This is the source repo for the `@fro.bot/space-bus` OpenCode plugin: four `bus_
 - **Localhost guard:** `spacebus.json`'s `server.baseUrl` must resolve to `127.0.0.1`/`::1`/`localhost`; never send bus credentials off-machine.
 - **No telemetry, no off-machine calls** from the plugin or MCP facade at runtime.
 - **Core never throws across the boundary:** `src/core.ts` functions return discriminated unions (`{ ok: true, ... } | { ok: false, error }`); tool adapters convert `ok:false` to a thrown error (plugin tools) or an `isError` content block (MCP).
+- **Browser-safety is CI-enforced:** `src/browser-safety.test.ts` bundles `src/core.ts`, `src/contract.ts`, `src/format.ts` for a browser target and asserts no `node:*` imports and no path into `src/config.ts` — config stays Node-only by construction.
+- **Context is validated per call:** every exported `core.ts` function validates its injected `BusContext` at a single internal gate on entry (zod parse of a copy, plus the localhost guard) — validate-then-mutate on the caller's object can't bypass it, and errors never carry the context object (credentials stay unprintable).
 
 ## Dev loop
 

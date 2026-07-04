@@ -1,8 +1,30 @@
-import { existsSync } from "node:fs";
-import { z } from "zod";
-import { getProjects, getRoster, type Project } from "./config";
+/**
+ * @experimental
+ * Experimental — shapes may change in minor releases.
+ */
+import type { z } from "zod";
+import {
+  type BusContext,
+  busContextSchema,
+  type DiffEntrySchema,
+  diffSchema,
+  messageListSchema,
+  type ProjectSchema,
+  pendingQuestionListSchema,
+  questionListSchema,
+  sessionListSchema,
+  sessionSchema,
+  sessionStatusMapSchema,
+  sessionSummarySchema,
+  todoSchema,
+  turnMessageListSchema,
+  vcsStatusSchema,
+} from "./contract";
 
-function findProject(projects: Project[], name: string): Project | undefined {
+function findProject(
+  projects: ProjectSchema[],
+  name: string,
+): ProjectSchema | undefined {
   return projects.find((p) => p.name === name);
 }
 
@@ -14,18 +36,31 @@ function err(error: string): Err {
   return { ok: false, error };
 }
 
+type Credentials = { username?: string; password?: string };
+
+/** Options every exported core function takes: a per-call BusContext. */
+export type CoreOpts = { context: BusContext };
+
 // --- HTTP helper -----------------------------------------------------------
 
-export function authHeader(): Record<string, string> {
-  const password = process.env["OPENCODE_SERVER_PASSWORD"];
-  if (!password) return {};
-  const username = process.env["OPENCODE_SERVER_USERNAME"] ?? "opencode";
-  const token = Buffer.from(`${username}:${password}`).toString("base64");
+/** Browser/Bun/Node-safe UTF-8 -> base64 (btoa + TextEncoder are global in all three). */
+function toBase64(s: string): string {
+  const bytes = new TextEncoder().encode(s);
+  let bin = "";
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin);
+}
+
+function authHeader(credentials: Credentials): Record<string, string> {
+  if (!credentials.password) return {};
+  const username = credentials.username ?? "opencode";
+  const token = toBase64(`${username}:${credentials.password}`);
   return { Authorization: `Basic ${token}` };
 }
 
 async function api(
   baseUrl: string,
+  credentials: Credentials,
   directory: string,
   path: string,
   init?: RequestInit,
@@ -36,7 +71,7 @@ async function api(
       headers: {
         "content-type": "application/json",
         "x-opencode-directory": directory,
-        ...authHeader(),
+        ...authHeader(credentials),
         ...(init?.headers as Record<string, string> | undefined),
       },
       redirect: "error",
@@ -56,104 +91,17 @@ async function api(
   }
 }
 
-// --- Loose response schemas (parse only fields we consume) -----------------
-
-const sessionSchema = z
-  .object({
-    id: z.string(),
-    directory: z.string().optional(),
-    title: z.string().optional(),
-  })
-  .passthrough();
-
-const sessionListSchema = z.array(sessionSchema);
-
-const sessionStatusMapSchema = z.record(
-  z.string(),
-  z.object({ type: z.string() }).passthrough(),
-);
-
-const todoSchema = z
-  .array(
-    z
-      .object({ content: z.string(), status: z.string(), priority: z.string() })
-      .passthrough(),
-  )
-  .default([]);
-
-const diffEntrySchema = z
-  .object({
-    file: z.string().optional(),
-    additions: z.number(),
-    deletions: z.number(),
-    status: z.string().optional(),
-  })
-  .passthrough();
-
-const diffSchema = z.array(diffEntrySchema).default([]);
-
-const vcsStatusEntrySchema = z
-  .object({
-    file: z.string(),
-    additions: z.number(),
-    deletions: z.number(),
-    status: z.string().optional(),
-  })
-  .passthrough();
-
-const vcsStatusSchema = z.array(vcsStatusEntrySchema).default([]);
-
 export type DiffSource = "session" | "turns" | "working-tree";
-
-// Loose schema for per-turn diffs embedded on user messages
-// (info.summary.diffs). Upstream opencode #30127 (v1.16.0) zeroes
-// session-level diff summaries, so /session/{id}/diff returns [] even
-// though per-turn diffs on messages remain intact (including untracked
-// files). We aggregate those as a fallback, last-turn-wins per file —
-// same semantics as upstream PR #33444.
-const turnDiffEntrySchema = diffEntrySchema;
-
-const turnMessageSchema = z
-  .object({
-    info: z
-      .object({
-        role: z.string(),
-        summary: z
-          .object({
-            diffs: z.array(turnDiffEntrySchema).optional(),
-          })
-          .passthrough()
-          .optional(),
-      })
-      .passthrough(),
-  })
-  .passthrough();
-
-const turnMessageListSchema = z.array(turnMessageSchema);
-
-// Session-level summary populated by harness builds carrying upstream
-// #33444 (e.g. 1.17.13+harness.ee55e157). GET /session/{id}.summary.diffs
-// mirrors the same per-file shape as the per-turn diffs above; when
-// present it's equivalent fidelity to /session/{id}/diff, so it reports
-// diffSource "session" too. Optional/absent on stock 1.16+ binaries.
-const sessionSummarySchema = z
-  .object({
-    summary: z
-      .object({
-        diffs: z.array(turnDiffEntrySchema).optional(),
-      })
-      .passthrough()
-      .optional(),
-  })
-  .passthrough();
 
 async function fetchTurnDiffs(
   baseUrl: string,
+  credentials: Credentials,
   directory: string,
   sessionId: string,
 ): Promise<z.infer<typeof diffSchema>> {
   const { res, bodyText } = await api(
     baseUrl,
+    credentials,
     directory,
     `/session/${encodeURIComponent(sessionId)}/message?limit=100`,
   );
@@ -164,7 +112,7 @@ async function fetchTurnDiffs(
   } catch {
     return [];
   }
-  const byFile = new Map<string, z.infer<typeof diffEntrySchema>>();
+  const byFile = new Map<string, DiffEntrySchema>();
   for (const m of messages) {
     if (m.info.role !== "user") continue;
     const diffs = m.info.summary?.diffs;
@@ -179,11 +127,13 @@ async function fetchTurnDiffs(
 
 async function fetchDiffWithFallback(
   baseUrl: string,
+  credentials: Credentials,
   directory: string,
   sessionId: string,
 ): Promise<{ diff: z.infer<typeof diffSchema>; diffSource: DiffSource }> {
   const diffRes = await api(
     baseUrl,
+    credentials,
     directory,
     `/session/${encodeURIComponent(sessionId)}/diff`,
   );
@@ -199,6 +149,7 @@ async function fetchDiffWithFallback(
   try {
     const sessionRes = await api(
       baseUrl,
+      credentials,
       directory,
       `/session/${encodeURIComponent(sessionId)}`,
     );
@@ -215,7 +166,12 @@ async function fetchDiffWithFallback(
     // ignore, fall through to per-turn aggregation
   }
   try {
-    const turnDiffs = await fetchTurnDiffs(baseUrl, directory, sessionId);
+    const turnDiffs = await fetchTurnDiffs(
+      baseUrl,
+      credentials,
+      directory,
+      sessionId,
+    );
     if (turnDiffs.length > 0) {
       return { diff: turnDiffs, diffSource: "turns" };
     }
@@ -223,7 +179,7 @@ async function fetchDiffWithFallback(
     // ignore, fall through to working-tree fallback
   }
   try {
-    const vcsRes = await api(baseUrl, directory, "/vcs/status");
+    const vcsRes = await api(baseUrl, credentials, directory, "/vcs/status");
     if (vcsRes.res.ok) {
       const vcsStatus = vcsStatusSchema.parse(JSON.parse(vcsRes.bodyText));
       if (vcsStatus.length > 0) {
@@ -244,42 +200,48 @@ async function fetchDiffWithFallback(
   return { diff, diffSource: "session" };
 }
 
-const messagePartSchema = z
-  .object({ type: z.string(), text: z.string().optional() })
-  .passthrough();
+// --- context validation boundary -------------------------------------------
+// The single gate every exported function calls at entry. zod-parses the
+// injected context (parse COPIES the input, so mutating the caller's roster
+// object after the call cannot retroactively change what core sees) and
+// applies the localhost guard. Internal helpers only ever see the parsed
+// copy below. Never throws — garbage input resolves ok:false.
 
-const messageEnvelopeSchema = z
-  .object({
-    info: z.object({ role: z.string() }).passthrough(),
-    parts: z.array(messagePartSchema),
-  })
-  .passthrough();
+const ALLOWED_HOSTS = new Set(["127.0.0.1", "::1", "[::1]", "localhost"]);
 
-const messageListSchema = z.array(messageEnvelopeSchema);
-
-// --- Path guard --------------------------------------------------------------
-
-// --- config resolution boundary -----------------------------------------
-// getRoster/getProjects (config.ts) throw on missing/invalid roster; every
-// exported function here converts that into a Result so core never throws
-// across the boundary (see AGENTS.md invariant).
-
-function resolveContext(
-  directory?: string,
-): Result<{ baseUrl: string; projects: Project[] }> {
-  try {
-    const manifest = getRoster(directory);
-    const projects = getProjects(manifest);
-    return { ok: true, baseUrl: manifest.server.baseUrl, projects };
-  } catch (e) {
-    return err((e as Error).message);
+function validateContext(context: BusContext): Result<{
+  baseUrl: string;
+  projects: ProjectSchema[];
+  credentials: Credentials;
+}> {
+  const parsed = busContextSchema.safeParse(context);
+  if (!parsed.success) {
+    return err(`space-bus: invalid context: ${parsed.error.message}`);
   }
+  const { roster, credentials } = parsed.data;
+  let hostname: string;
+  try {
+    hostname = new URL(roster.server.baseUrl).hostname;
+  } catch {
+    return err("space-bus: context roster server.baseUrl is not a valid URL");
+  }
+  if (!ALLOWED_HOSTS.has(hostname)) {
+    return err(
+      `space-bus: context roster server.baseUrl must point to localhost (got ${hostname}) — refusing to send credentials off-machine`,
+    );
+  }
+  return {
+    ok: true,
+    baseUrl: roster.server.baseUrl,
+    projects: roster.projects,
+    credentials: credentials ?? {},
+  };
 }
 
 function resolveProjectOrErr(
-  projects: Project[],
+  projects: ProjectSchema[],
   name: string,
-): Result<{ project: Project }> {
+): Result<{ project: ProjectSchema }> {
   const project = findProject(projects, name);
   if (!project) {
     const valid = projects.map((p) => p.name).join(", ");
@@ -287,7 +249,7 @@ function resolveProjectOrErr(
       `space-bus: unknown project "${name}". Valid projects: ${valid}`,
     );
   }
-  if (!existsSync(project.expandedPath)) {
+  if (!project.exists) {
     return err(
       `space-bus: project "${name}" path does not exist on disk: ${project.expandedPath}`,
     );
@@ -308,16 +270,15 @@ export type RosterProject = {
   statusError?: string;
 };
 
-export async function roster(opts?: {
-  directory?: string;
-}): Promise<Result<{ projects: RosterProject[] }>> {
-  const ctx = resolveContext(opts?.directory);
+export async function roster(
+  opts: CoreOpts,
+): Promise<Result<{ projects: RosterProject[] }>> {
+  const ctx = validateContext(opts.context);
   if (!ctx.ok) return ctx;
-  const { baseUrl, projects } = ctx;
+  const { baseUrl, projects, credentials } = ctx;
   const results = await Promise.all(
     projects.map(async (p): Promise<RosterProject> => {
-      const pathExists = existsSync(p.expandedPath);
-      if (!pathExists) {
+      if (!p.exists) {
         return {
           name: p.name,
           path: p.expandedPath,
@@ -327,8 +288,8 @@ export async function roster(opts?: {
       }
       try {
         const [statusRes, listRes] = await Promise.all([
-          api(baseUrl, p.expandedPath, "/session/status"),
-          api(baseUrl, p.expandedPath, "/session?limit=101"),
+          api(baseUrl, credentials, p.expandedPath, "/session/status"),
+          api(baseUrl, credentials, p.expandedPath, "/session?limit=101"),
         ]);
         if (!statusRes.res.ok || !listRes.res.ok) {
           return {
@@ -374,7 +335,8 @@ export async function roster(opts?: {
 
 async function dispatchNew(
   baseUrl: string,
-  projects: Project[],
+  credentials: Credentials,
+  projects: ProjectSchema[],
   project: string,
   prompt: string,
   title?: string,
@@ -384,7 +346,7 @@ async function dispatchNew(
   const directory = resolved.project.expandedPath;
 
   const sessionTitle = title ?? `bus: ${prompt.slice(0, 60)}`;
-  const createRes = await api(baseUrl, directory, "/session", {
+  const createRes = await api(baseUrl, credentials, directory, "/session", {
     method: "POST",
     body: JSON.stringify({ title: sessionTitle }),
   });
@@ -404,6 +366,7 @@ async function dispatchNew(
 
   const promptRes = await api(
     baseUrl,
+    credentials,
     directory,
     `/session/${encodeURIComponent(session.id)}/prompt_async`,
     {
@@ -432,7 +395,6 @@ export type DispatchResult = { sessionId: string; project: string } & (
 export type DispatchArgs = {
   prompt: string;
   title?: string;
-  directory?: string;
 } & (
   | { project: string; sessionId?: undefined }
   | { sessionId: string; project?: string }
@@ -441,13 +403,13 @@ export type DispatchArgs = {
 // Validates the runtime shape once for both adapters (MCP + plugin tool),
 // so neither call site needs an `as DispatchArgs` cast to satisfy the
 // discriminated-union exclusivity above. dispatch() keeps its own guards
-// as defense in depth.
+// as defense in depth. Pure arg-shape validation — no context touched, so
+// adapters can run this before loading config (fail-fast ordering pin).
 export function toDispatchArgs(input: {
   prompt: string;
   title?: string;
   project?: string;
   sessionId?: string;
-  directory?: string;
 }): Result<DispatchArgs> {
   if (input.sessionId !== undefined && input.sessionId === "") {
     return err("space-bus: sessionId must be a non-empty string");
@@ -460,7 +422,6 @@ export function toDispatchArgs(input: {
       ok: true,
       prompt: input.prompt,
       title: input.title,
-      directory: input.directory,
       project: input.project,
     };
   }
@@ -468,7 +429,6 @@ export function toDispatchArgs(input: {
     ok: true,
     prompt: input.prompt,
     title: input.title,
-    directory: input.directory,
     sessionId: input.sessionId,
     project: input.project,
   };
@@ -476,10 +436,11 @@ export function toDispatchArgs(input: {
 
 export async function dispatch(
   args: DispatchArgs,
+  opts: CoreOpts,
 ): Promise<Result<DispatchResult>> {
-  const ctx = resolveContext(args.directory);
+  const ctx = validateContext(opts.context);
   if (!ctx.ok) return ctx;
-  const { baseUrl, projects } = ctx;
+  const { baseUrl, projects, credentials } = ctx;
 
   if (args.sessionId !== undefined && args.sessionId === "") {
     return err("space-bus: sessionId must be a non-empty string");
@@ -491,6 +452,7 @@ export async function dispatch(
     }
     const r = await dispatchNew(
       baseUrl,
+      credentials,
       projects,
       args.project,
       args.prompt,
@@ -506,7 +468,12 @@ export async function dispatch(
     };
   }
 
-  const loc = await findSessionDirectory(baseUrl, projects, args.sessionId);
+  const loc = await findSessionDirectory(
+    baseUrl,
+    credentials,
+    projects,
+    args.sessionId,
+  );
   if (!loc.ok) return loc;
   const { directory, project } = loc;
 
@@ -516,14 +483,22 @@ export async function dispatch(
     );
   }
 
-  return steerSession(baseUrl, args.sessionId, args.prompt, directory, project);
+  return steerSession(
+    baseUrl,
+    credentials,
+    args.sessionId,
+    args.prompt,
+    directory,
+    project,
+  );
 }
 
 // --- session resolution by id (try each project's directory) ------------------
 
 async function findSessionDirectory(
   baseUrl: string,
-  projects: Project[],
+  credentials: Credentials,
+  projects: ProjectSchema[],
   sessionId: string,
 ): Promise<Result<{ directory: string; project: string }>> {
   // Session lookup succeeds regardless of which directory header is sent (the
@@ -531,9 +506,10 @@ async function findSessionDirectory(
   // and trust the returned session's own `directory` field to identify the
   // owning manifest project.
   for (const p of projects) {
-    if (!existsSync(p.expandedPath)) continue;
+    if (!p.exists) continue;
     const { res, bodyText } = await api(
       baseUrl,
+      credentials,
       p.expandedPath,
       `/session/${encodeURIComponent(sessionId)}`,
     );
@@ -575,43 +551,36 @@ export type SessionStatusResult = {
   pendingQuestion?: { preview: string; options: string[] };
 };
 
-const pendingQuestionEntrySchema = z
-  .object({
-    id: z.string(),
-    sessionID: z.string(),
-    questions: z
-      .array(
-        z
-          .object({
-            question: z.string().optional(),
-            options: z
-              .array(z.object({ label: z.string().optional() }).passthrough())
-              .optional(),
-          })
-          .passthrough(),
-      )
-      .optional(),
-  })
-  .passthrough();
-const pendingQuestionListSchema = z.array(pendingQuestionEntrySchema);
+function formatQuestionEntry(
+  entry: z.infer<typeof pendingQuestionListSchema>[number],
+): { sessionId: string; preview: string; options: string[] } {
+  const firstQuestion = entry.questions?.[0];
+  const text = firstQuestion?.question ?? "";
+  const preview = text.length > 140 ? `${text.slice(0, 140)}…` : text;
+  const options = (firstQuestion?.options ?? [])
+    .map((o) => o.label ?? "")
+    .filter((l) => l.length > 0);
+  return { sessionId: entry.sessionID, preview, options };
+}
 
 async function fetchPendingQuestion(
   baseUrl: string,
+  credentials: Credentials,
   directory: string,
   sessionId: string,
 ): Promise<{ preview: string; options: string[] } | undefined> {
   try {
-    const { res, bodyText } = await api(baseUrl, directory, "/question");
+    const { res, bodyText } = await api(
+      baseUrl,
+      credentials,
+      directory,
+      "/question",
+    );
     if (!res.ok) return undefined;
     const entries = pendingQuestionListSchema.parse(JSON.parse(bodyText));
     const entry = entries.find((e) => e.sessionID === sessionId);
     if (!entry) return undefined;
-    const firstQuestion = entry.questions?.[0];
-    const text = firstQuestion?.question ?? "";
-    const preview = text.length > 140 ? `${text.slice(0, 140)}…` : text;
-    const options = (firstQuestion?.options ?? [])
-      .map((o) => o.label ?? "")
-      .filter((l) => l.length > 0);
+    const { preview, options } = formatQuestionEntry(entry);
     return { preview, options };
   } catch {
     return undefined;
@@ -620,23 +589,38 @@ async function fetchPendingQuestion(
 
 export async function status(
   sessionId: string,
-  opts?: { directory?: string },
+  opts: CoreOpts,
 ): Promise<Result<SessionStatusResult>> {
-  const ctx = resolveContext(opts?.directory);
+  const ctx = validateContext(opts.context);
   if (!ctx.ok) return ctx;
-  const { baseUrl, projects } = ctx;
+  const { baseUrl, projects, credentials } = ctx;
 
-  const loc = await findSessionDirectory(baseUrl, projects, sessionId);
+  const loc = await findSessionDirectory(
+    baseUrl,
+    credentials,
+    projects,
+    sessionId,
+  );
   if (!loc.ok) return loc;
   const { directory, project } = loc;
 
   const [sessionRes, statusMapRes, todoRes, diffResult, pendingQuestion] =
     await Promise.all([
-      api(baseUrl, directory, `/session/${encodeURIComponent(sessionId)}`),
-      api(baseUrl, directory, "/session/status"),
-      api(baseUrl, directory, `/session/${encodeURIComponent(sessionId)}/todo`),
-      fetchDiffWithFallback(baseUrl, directory, sessionId),
-      fetchPendingQuestion(baseUrl, directory, sessionId),
+      api(
+        baseUrl,
+        credentials,
+        directory,
+        `/session/${encodeURIComponent(sessionId)}`,
+      ),
+      api(baseUrl, credentials, directory, "/session/status"),
+      api(
+        baseUrl,
+        credentials,
+        directory,
+        `/session/${encodeURIComponent(sessionId)}/todo`,
+      ),
+      fetchDiffWithFallback(baseUrl, credentials, directory, sessionId),
+      fetchPendingQuestion(baseUrl, credentials, directory, sessionId),
     ]);
 
   if (!sessionRes.res.ok) {
@@ -684,19 +668,15 @@ export async function status(
 
 // --- steering (question-reply / follow-up) ------------------------------------
 
-const questionEntrySchema = z
-  .object({ id: z.string(), sessionID: z.string() })
-  .passthrough();
-const questionListSchema = z.array(questionEntrySchema);
-
 async function steerSession(
   baseUrl: string,
+  credentials: Credentials,
   sessionId: string,
   message: string,
   directory: string,
   project: string,
 ): Promise<Result<DispatchResult>> {
-  const questionsRes = await api(baseUrl, directory, "/question");
+  const questionsRes = await api(baseUrl, credentials, directory, "/question");
   if (questionsRes.res.ok) {
     let questions: z.infer<typeof questionListSchema>;
     try {
@@ -708,6 +688,7 @@ async function steerSession(
     if (pending) {
       const replyRes = await api(
         baseUrl,
+        credentials,
         directory,
         `/question/${encodeURIComponent(pending.id)}/reply`,
         {
@@ -726,6 +707,7 @@ async function steerSession(
 
   const promptRes = await api(
     baseUrl,
+    credentials,
     directory,
     `/session/${encodeURIComponent(sessionId)}/prompt_async`,
     {
@@ -758,17 +740,27 @@ export type SessionResultResult = {
 
 export async function result(
   sessionId: string,
-  opts?: { directory?: string },
+  opts: CoreOpts,
 ): Promise<Result<SessionResultResult>> {
-  const ctx = resolveContext(opts?.directory);
+  const ctx = validateContext(opts.context);
   if (!ctx.ok) return ctx;
-  const { baseUrl, projects } = ctx;
+  const { baseUrl, projects, credentials } = ctx;
 
-  const loc = await findSessionDirectory(baseUrl, projects, sessionId);
+  const loc = await findSessionDirectory(
+    baseUrl,
+    credentials,
+    projects,
+    sessionId,
+  );
   if (!loc.ok) return loc;
   const { directory, project } = loc;
 
-  const statusMapRes = await api(baseUrl, directory, "/session/status");
+  const statusMapRes = await api(
+    baseUrl,
+    credentials,
+    directory,
+    "/session/status",
+  );
   if (statusMapRes.res.ok) {
     try {
       const statusMap = sessionStatusMapSchema.parse(
@@ -788,10 +780,11 @@ export async function result(
   const [messageRes, diffResult] = await Promise.all([
     api(
       baseUrl,
+      credentials,
       directory,
       `/session/${encodeURIComponent(sessionId)}/message?limit=50`,
     ),
-    fetchDiffWithFallback(baseUrl, directory, sessionId),
+    fetchDiffWithFallback(baseUrl, credentials, directory, sessionId),
   ]);
 
   if (!messageRes.res.ok) {
@@ -821,4 +814,138 @@ export async function result(
     : "";
 
   return { ok: true, sessionId, project, text, diff, diffSource };
+}
+
+// --- snapshot ------------------------------------------------------------------
+
+export type SnapshotProject = {
+  name: string;
+  path: string;
+  exists: boolean;
+  description?: string;
+  busyCount?: number;
+  sessionCount?: number;
+  sessionCountCapped?: boolean;
+  pendingQuestions?: {
+    sessionId: string;
+    preview: string;
+    options: string[];
+  }[];
+  error?: string;
+};
+
+async function fetchSnapshotProject(
+  baseUrl: string,
+  credentials: Credentials,
+  project: ProjectSchema,
+): Promise<SnapshotProject> {
+  const directory = project.expandedPath;
+  try {
+    const [statusRes, listRes, questionRes] = await Promise.all([
+      api(baseUrl, credentials, directory, "/session/status"),
+      api(baseUrl, credentials, directory, "/session?limit=101"),
+      api(baseUrl, credentials, directory, "/question"),
+    ]);
+    if (!statusRes.res.ok || !listRes.res.ok) {
+      return {
+        name: project.name,
+        path: directory,
+        exists: true,
+        description: project.description,
+        error: `status=${statusRes.res.status}/${listRes.res.status}`,
+      };
+    }
+    const statusMap = sessionStatusMapSchema.parse(
+      JSON.parse(statusRes.bodyText),
+    );
+    const sessions = sessionListSchema.parse(JSON.parse(listRes.bodyText));
+    const busyCount = Object.values(statusMap).filter(
+      (s) => s.type === "busy" || s.type === "retry",
+    ).length;
+    const capped = sessions.length > 100;
+    let pendingQuestions:
+      | { sessionId: string; preview: string; options: string[] }[]
+      | undefined;
+    if (questionRes.res.ok) {
+      try {
+        const entries = pendingQuestionListSchema.parse(
+          JSON.parse(questionRes.bodyText),
+        );
+        pendingQuestions = entries.map((e) => formatQuestionEntry(e));
+      } catch {
+        pendingQuestions = undefined;
+      }
+    }
+    return {
+      name: project.name,
+      path: directory,
+      exists: true,
+      description: project.description,
+      busyCount,
+      sessionCount: capped ? 100 : sessions.length,
+      sessionCountCapped: capped,
+      pendingQuestions,
+    };
+  } catch (e) {
+    return {
+      name: project.name,
+      path: directory,
+      exists: true,
+      description: project.description,
+      error: (e as Error).message,
+    };
+  }
+}
+
+/** Runs `fn` over `items` with at most `concurrency` in flight at once. */
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const limit = Math.max(
+    1,
+    Math.min(
+      Number.isFinite(concurrency) ? Math.floor(concurrency) : 4,
+      items.length,
+    ),
+  );
+  const workers = Array.from({ length: limit }, async () => {
+    while (true) {
+      const i = next++;
+      if (i >= items.length) return;
+      results[i] = await fn(items[i] as T);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+export async function snapshot(
+  opts: CoreOpts & { concurrency?: number },
+): Promise<Result<{ projects: SnapshotProject[] }>> {
+  const ctx = validateContext(opts.context);
+  if (!ctx.ok) return ctx;
+  const { baseUrl, projects, credentials } = ctx;
+  const concurrency = opts.concurrency ?? 4;
+
+  const results = await mapWithConcurrency(
+    projects,
+    concurrency,
+    async (p): Promise<SnapshotProject> => {
+      if (!p.exists) {
+        return {
+          name: p.name,
+          path: p.expandedPath,
+          exists: false,
+          description: p.description,
+        };
+      }
+      return fetchSnapshotProject(baseUrl, credentials, p);
+    },
+  );
+
+  return { ok: true, projects: results };
 }
