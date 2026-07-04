@@ -541,6 +541,18 @@ export type SessionStatusResult = {
   pendingQuestion?: { preview: string; options: string[] };
 };
 
+function formatQuestionEntry(
+  entry: z.infer<typeof pendingQuestionListSchema>[number],
+): { sessionId: string; preview: string; options: string[] } {
+  const firstQuestion = entry.questions?.[0];
+  const text = firstQuestion?.question ?? "";
+  const preview = text.length > 140 ? `${text.slice(0, 140)}…` : text;
+  const options = (firstQuestion?.options ?? [])
+    .map((o) => o.label ?? "")
+    .filter((l) => l.length > 0);
+  return { sessionId: entry.sessionID, preview, options };
+}
+
 async function fetchPendingQuestion(
   baseUrl: string,
   credentials: Credentials,
@@ -558,12 +570,7 @@ async function fetchPendingQuestion(
     const entries = pendingQuestionListSchema.parse(JSON.parse(bodyText));
     const entry = entries.find((e) => e.sessionID === sessionId);
     if (!entry) return undefined;
-    const firstQuestion = entry.questions?.[0];
-    const text = firstQuestion?.question ?? "";
-    const preview = text.length > 140 ? `${text.slice(0, 140)}…` : text;
-    const options = (firstQuestion?.options ?? [])
-      .map((o) => o.label ?? "")
-      .filter((l) => l.length > 0);
+    const { preview, options } = formatQuestionEntry(entry);
     return { preview, options };
   } catch {
     return undefined;
@@ -797,4 +804,134 @@ export async function result(
     : "";
 
   return { ok: true, sessionId, project, text, diff, diffSource };
+}
+
+// --- snapshot ------------------------------------------------------------------
+
+export type SnapshotProject = {
+  name: string;
+  path: string;
+  exists: boolean;
+  description?: string;
+  busyCount?: number;
+  sessionCount?: number;
+  sessionCountCapped?: boolean;
+  pendingQuestions?: {
+    sessionId: string;
+    preview: string;
+    options: string[];
+  }[];
+  error?: string;
+};
+
+async function fetchSnapshotProject(
+  baseUrl: string,
+  credentials: Credentials,
+  project: ProjectSchema,
+): Promise<SnapshotProject> {
+  const directory = project.expandedPath;
+  try {
+    const [statusRes, listRes, questionRes] = await Promise.all([
+      api(baseUrl, credentials, directory, "/session/status"),
+      api(baseUrl, credentials, directory, "/session?limit=101"),
+      api(baseUrl, credentials, directory, "/question"),
+    ]);
+    if (!statusRes.res.ok || !listRes.res.ok) {
+      return {
+        name: project.name,
+        path: directory,
+        exists: true,
+        description: project.description,
+        error: `status=${statusRes.res.status}/${listRes.res.status}`,
+      };
+    }
+    const statusMap = sessionStatusMapSchema.parse(
+      JSON.parse(statusRes.bodyText),
+    );
+    const sessions = sessionListSchema.parse(JSON.parse(listRes.bodyText));
+    const busyCount = Object.values(statusMap).filter(
+      (s) => s.type === "busy" || s.type === "retry",
+    ).length;
+    const capped = sessions.length > 100;
+    let pendingQuestions:
+      | { sessionId: string; preview: string; options: string[] }[]
+      | undefined;
+    if (questionRes.res.ok) {
+      try {
+        const entries = pendingQuestionListSchema.parse(
+          JSON.parse(questionRes.bodyText),
+        );
+        pendingQuestions = entries.map((e) => formatQuestionEntry(e));
+      } catch {
+        pendingQuestions = undefined;
+      }
+    }
+    return {
+      name: project.name,
+      path: directory,
+      exists: true,
+      description: project.description,
+      busyCount,
+      sessionCount: capped ? 100 : sessions.length,
+      sessionCountCapped: capped,
+      pendingQuestions,
+    };
+  } catch (e) {
+    return {
+      name: project.name,
+      path: directory,
+      exists: true,
+      description: project.description,
+      error: (e as Error).message,
+    };
+  }
+}
+
+/** Runs `fn` over `items` with at most `concurrency` in flight at once. */
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const workers = Array.from(
+    { length: Math.max(1, Math.min(concurrency, items.length)) },
+    async () => {
+      while (true) {
+        const i = next++;
+        if (i >= items.length) return;
+        results[i] = await fn(items[i] as T);
+      }
+    },
+  );
+  await Promise.all(workers);
+  return results;
+}
+
+export async function snapshot(
+  opts: CoreOpts & { concurrency?: number },
+): Promise<Result<{ projects: SnapshotProject[] }>> {
+  const ctx = validateContext(opts.context);
+  if (!ctx.ok) return ctx;
+  const { baseUrl, projects, credentials } = ctx;
+  const concurrency = opts.concurrency ?? 4;
+
+  const results = await mapWithConcurrency(
+    projects,
+    concurrency,
+    async (p): Promise<SnapshotProject> => {
+      if (!p.exists) {
+        return {
+          name: p.name,
+          path: p.expandedPath,
+          exists: false,
+          description: p.description,
+        };
+      }
+      return fetchSnapshotProject(baseUrl, credentials, p);
+    },
+  );
+
+  return { ok: true, projects: results };
 }

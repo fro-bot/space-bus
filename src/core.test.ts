@@ -9,6 +9,7 @@ import {
   dispatch,
   result,
   roster,
+  snapshot,
   status,
   toDispatchArgs,
 } from "./core";
@@ -630,6 +631,199 @@ describe("context validation boundary", () => {
     expect(dispatchRes.ok).toBe(false);
     if (!dispatchRes.ok) {
       expect(dispatchRes.error).toContain("does not exist on disk");
+    }
+  });
+});
+
+describe("snapshot()", () => {
+  let dirC: string;
+
+  beforeEach(() => {
+    dirC = mkdtempSync(join(tmpdir(), "space-bus-core-gamma-"));
+  });
+
+  afterEach(() => {
+    rmSync(dirC, { recursive: true, force: true });
+  });
+
+  function threeProjectContext(): CoreOpts {
+    const context = loadContext();
+    context.roster.projects.push({
+      name: "gamma",
+      path: dirC,
+      description: "Gamma project",
+      expandedPath: dirC,
+      exists: true,
+    });
+    return { context };
+  }
+
+  test("happy path: 3-project roster, all present with counts + a pending question on one", async () => {
+    globalThis.fetch = mockFetch({
+      "GET /session/status": (init) => {
+        void init;
+        return { body: { ses_1: { type: "busy" } } };
+      },
+      "GET /session?limit=101": () => ({
+        body: [{ id: "ses_1" }, { id: "ses_2" }],
+      }),
+      "GET /question": () => ({
+        body: [
+          {
+            id: "q1",
+            sessionID: "ses_1",
+            questions: [
+              {
+                question: "pick one",
+                options: [{ label: "a" }, { label: "b" }],
+              },
+            ],
+          },
+        ],
+      }),
+    });
+    const res = await snapshot(threeProjectContext());
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.projects).toHaveLength(3);
+    for (const name of ["alpha", "beta", "gamma"]) {
+      const p = res.projects.find((pr) => pr.name === name);
+      expect(p?.exists).toBe(true);
+      expect(p?.busyCount).toBe(1);
+      expect(p?.sessionCount).toBe(2);
+      expect(p?.sessionCountCapped).toBe(false);
+      expect(p?.pendingQuestions).toEqual([
+        { sessionId: "ses_1", preview: "pick one", options: ["a", "b"] },
+      ]);
+    }
+  });
+
+  test("error path: one project's status fetch rejects, others intact, overall ok:true", async () => {
+    globalThis.fetch = (async (
+      input: string | URL | Request,
+      init?: RequestInit,
+    ) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const directory = (init?.headers as Record<string, string> | undefined)?.[
+        "x-opencode-directory"
+      ];
+      if (directory === dirA) {
+        throw new Error("connect ECONNREFUSED 127.0.0.1:4096");
+      }
+      const path = url.replace("http://127.0.0.1:4096", "");
+      if (path === "/session/status") {
+        return new Response(JSON.stringify({}), { status: 200 });
+      }
+      if (path === "/session?limit=101") {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      if (path === "/question") {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      return new Response(JSON.stringify([]), { status: 404 });
+    }) as typeof fetch;
+
+    const res = await snapshot(threeProjectContext());
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const alpha = res.projects.find((p) => p.name === "alpha");
+    expect(alpha?.error).toBe("status=599/599");
+    const beta = res.projects.find((p) => p.name === "beta");
+    expect(beta?.error).toBeUndefined();
+    expect(beta?.exists).toBe(true);
+    const gamma = res.projects.find((p) => p.name === "gamma");
+    expect(gamma?.error).toBeUndefined();
+  });
+
+  test("edge: exists:false project reported with zero fetches, no requests made for it", async () => {
+    const requestedDirs: string[] = [];
+    globalThis.fetch = (async (input, init) => {
+      const directory = (init?.headers as Record<string, string> | undefined)?.[
+        "x-opencode-directory"
+      ];
+      if (directory) requestedDirs.push(directory);
+      void input;
+      const url = typeof input === "string" ? input : input.toString();
+      const path = url.replace("http://127.0.0.1:4096", "");
+      if (path === "/session/status") {
+        return new Response(JSON.stringify({}), { status: 200 });
+      }
+      if (path === "/session?limit=101") {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      if (path === "/question") {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      return new Response(JSON.stringify([]), { status: 404 });
+    }) as typeof fetch;
+
+    const context = loadContext();
+    const alpha = context.roster.projects.find((p) => p.name === "alpha");
+    if (alpha) alpha.exists = false;
+
+    const res = await snapshot({ context });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const alphaEntry = res.projects.find((p) => p.name === "alpha");
+    expect(alphaEntry?.exists).toBe(false);
+    expect(alphaEntry?.busyCount).toBeUndefined();
+    expect(alphaEntry?.sessionCount).toBeUndefined();
+    expect(requestedDirs).not.toContain(dirA);
+  });
+
+  function emptyRouteResponse(url: string): Response {
+    const path = url.replace("http://127.0.0.1:4096", "");
+    const okPaths = new Set([
+      "/session/status",
+      "/session?limit=101",
+      "/question",
+    ]);
+    const body = path === "/session/status" ? {} : [];
+    return new Response(JSON.stringify(body), {
+      status: okPaths.has(path) ? 200 : 404,
+    });
+  }
+
+  test("edge: concurrency bound honored (max in-flight projects <= 2 when concurrency:2)", async () => {
+    const inFlightDirs = new Set<string>();
+    let maxInFlightProjects = 0;
+    globalThis.fetch = (async (input, init) => {
+      const directory = (init?.headers as Record<string, string> | undefined)?.[
+        "x-opencode-directory"
+      ];
+      if (directory) {
+        inFlightDirs.add(directory);
+        maxInFlightProjects = Math.max(maxInFlightProjects, inFlightDirs.size);
+      }
+      await new Promise((r) => setTimeout(r, 10));
+      if (directory) inFlightDirs.delete(directory);
+      const url = typeof input === "string" ? input : input.toString();
+      return emptyRouteResponse(url);
+    }) as typeof fetch;
+
+    const opts = threeProjectContext();
+    const res = await snapshot({ ...opts, concurrency: 2 });
+    expect(res.ok).toBe(true);
+    expect(maxInFlightProjects).toBeLessThanOrEqual(2);
+  });
+
+  test("sentinel: credential value never appears in any error entry", async () => {
+    const SENTINEL = "SENTINEL_SNAPSHOT";
+    const context = loadContext();
+    context.credentials = { username: "opencode", password: SENTINEL };
+    context.roster.projects.push({
+      name: "gamma",
+      path: dirC,
+      description: "Gamma project",
+      expandedPath: dirC,
+      exists: true,
+    });
+    globalThis.fetch = rejectingFetch("network down");
+    const res = await snapshot({ context });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    for (const p of res.projects) {
+      if (p.error) expect(p.error).not.toContain(SENTINEL);
     }
   });
 });
