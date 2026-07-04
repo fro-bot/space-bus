@@ -1,6 +1,20 @@
 import { existsSync } from "node:fs";
-import { z } from "zod";
+import type { z } from "zod";
 import { getProjects, getRoster, type Project } from "./config";
+import {
+  type DiffEntrySchema,
+  diffSchema,
+  messageListSchema,
+  pendingQuestionListSchema,
+  questionListSchema,
+  sessionListSchema,
+  sessionSchema,
+  sessionStatusMapSchema,
+  sessionSummarySchema,
+  todoSchema,
+  turnMessageListSchema,
+  vcsStatusSchema,
+} from "./contract";
 
 function findProject(projects: Project[], name: string): Project | undefined {
   return projects.find((p) => p.name === name);
@@ -56,96 +70,7 @@ async function api(
   }
 }
 
-// --- Loose response schemas (parse only fields we consume) -----------------
-
-const sessionSchema = z
-  .object({
-    id: z.string(),
-    directory: z.string().optional(),
-    title: z.string().optional(),
-  })
-  .passthrough();
-
-const sessionListSchema = z.array(sessionSchema);
-
-const sessionStatusMapSchema = z.record(
-  z.string(),
-  z.object({ type: z.string() }).passthrough(),
-);
-
-const todoSchema = z
-  .array(
-    z
-      .object({ content: z.string(), status: z.string(), priority: z.string() })
-      .passthrough(),
-  )
-  .default([]);
-
-const diffEntrySchema = z
-  .object({
-    file: z.string().optional(),
-    additions: z.number(),
-    deletions: z.number(),
-    status: z.string().optional(),
-  })
-  .passthrough();
-
-const diffSchema = z.array(diffEntrySchema).default([]);
-
-const vcsStatusEntrySchema = z
-  .object({
-    file: z.string(),
-    additions: z.number(),
-    deletions: z.number(),
-    status: z.string().optional(),
-  })
-  .passthrough();
-
-const vcsStatusSchema = z.array(vcsStatusEntrySchema).default([]);
-
 export type DiffSource = "session" | "turns" | "working-tree";
-
-// Loose schema for per-turn diffs embedded on user messages
-// (info.summary.diffs). Upstream opencode #30127 (v1.16.0) zeroes
-// session-level diff summaries, so /session/{id}/diff returns [] even
-// though per-turn diffs on messages remain intact (including untracked
-// files). We aggregate those as a fallback, last-turn-wins per file —
-// same semantics as upstream PR #33444.
-const turnDiffEntrySchema = diffEntrySchema;
-
-const turnMessageSchema = z
-  .object({
-    info: z
-      .object({
-        role: z.string(),
-        summary: z
-          .object({
-            diffs: z.array(turnDiffEntrySchema).optional(),
-          })
-          .passthrough()
-          .optional(),
-      })
-      .passthrough(),
-  })
-  .passthrough();
-
-const turnMessageListSchema = z.array(turnMessageSchema);
-
-// Session-level summary populated by harness builds carrying upstream
-// #33444 (e.g. 1.17.13+harness.ee55e157). GET /session/{id}.summary.diffs
-// mirrors the same per-file shape as the per-turn diffs above; when
-// present it's equivalent fidelity to /session/{id}/diff, so it reports
-// diffSource "session" too. Optional/absent on stock 1.16+ binaries.
-const sessionSummarySchema = z
-  .object({
-    summary: z
-      .object({
-        diffs: z.array(turnDiffEntrySchema).optional(),
-      })
-      .passthrough()
-      .optional(),
-  })
-  .passthrough();
 
 async function fetchTurnDiffs(
   baseUrl: string,
@@ -164,7 +89,7 @@ async function fetchTurnDiffs(
   } catch {
     return [];
   }
-  const byFile = new Map<string, z.infer<typeof diffEntrySchema>>();
+  const byFile = new Map<string, DiffEntrySchema>();
   for (const m of messages) {
     if (m.info.role !== "user") continue;
     const diffs = m.info.summary?.diffs;
@@ -243,19 +168,6 @@ async function fetchDiffWithFallback(
   }
   return { diff, diffSource: "session" };
 }
-
-const messagePartSchema = z
-  .object({ type: z.string(), text: z.string().optional() })
-  .passthrough();
-
-const messageEnvelopeSchema = z
-  .object({
-    info: z.object({ role: z.string() }).passthrough(),
-    parts: z.array(messagePartSchema),
-  })
-  .passthrough();
-
-const messageListSchema = z.array(messageEnvelopeSchema);
 
 // --- Path guard --------------------------------------------------------------
 
@@ -575,26 +487,6 @@ export type SessionStatusResult = {
   pendingQuestion?: { preview: string; options: string[] };
 };
 
-const pendingQuestionEntrySchema = z
-  .object({
-    id: z.string(),
-    sessionID: z.string(),
-    questions: z
-      .array(
-        z
-          .object({
-            question: z.string().optional(),
-            options: z
-              .array(z.object({ label: z.string().optional() }).passthrough())
-              .optional(),
-          })
-          .passthrough(),
-      )
-      .optional(),
-  })
-  .passthrough();
-const pendingQuestionListSchema = z.array(pendingQuestionEntrySchema);
-
 async function fetchPendingQuestion(
   baseUrl: string,
   directory: string,
@@ -683,11 +575,6 @@ export async function status(
 }
 
 // --- steering (question-reply / follow-up) ------------------------------------
-
-const questionEntrySchema = z
-  .object({ id: z.string(), sessionID: z.string() })
-  .passthrough();
-const questionListSchema = z.array(questionEntrySchema);
 
 async function steerSession(
   baseUrl: string,
