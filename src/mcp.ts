@@ -4,6 +4,7 @@ import { z } from "zod";
 import { loadContext } from "./config";
 import { dispatch, result, roster, status, toDispatchArgs } from "./core";
 import {
+  dispatchMetadata,
   formatDispatch,
   formatResult,
   formatRoster,
@@ -97,7 +98,10 @@ server.registerTool(
     const r = await dispatch(dispatchArgs, { context });
     if (!r.ok)
       return { content: [{ type: "text", text: r.error }], isError: true };
-    return { content: [{ type: "text", text: formatDispatch(r) }] };
+    return {
+      content: [{ type: "text", text: formatDispatch(r) }],
+      structuredContent: dispatchMetadata(r),
+    };
   },
 );
 
