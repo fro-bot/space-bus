@@ -1,3 +1,7 @@
+/**
+ * @experimental
+ * Experimental — shapes may change in minor releases.
+ */
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
