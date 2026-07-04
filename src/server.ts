@@ -122,8 +122,12 @@ function redactedReadinessError(
 /**
  * Kills a spawned child. Prefers identity-verified signaling; if identity
  * capture failed (e.g. `ps` unavailable on this platform), falls back to
- * signaling the pid directly — safe here because the pid is from our own
- * spawn moments ago, not an arbitrary long-lived pid recycling risk.
+ * signaling the pid directly. That direct-kill fallback is only safe when
+ * the caller can vouch the pid is fresh (e.g. a child we just spawned
+ * ourselves moments ago) — callers dealing with older/persisted records
+ * (see reapOrphanedProvisional) must not rely on this fallback, since the
+ * pid may have been recycled to an unrelated process by the time we get
+ * to it.
  */
 function killIdentifiedProcess(
   pid: number,
@@ -139,7 +143,8 @@ function killIdentifiedProcess(
       if (verifyIdentity(pid, identity)) process.kill(pid, "SIGTERM");
       return;
     }
-    // No identity available — best-effort direct kill on our own fresh pid.
+    // No identity available — best-effort direct kill. Only safe for a
+    // pid the caller knows is fresh (see doc comment above).
     process.kill(pid, "SIGTERM");
   } catch {
     // already gone — fine.
@@ -309,12 +314,28 @@ async function waitForReadiness(
   );
 }
 
+// A provisional record with an empty/missing identity is only safe to
+// direct-kill (no identity to verify) if it's fresh enough that the pid is
+// still overwhelmingly likely to be the process we spawned, not something
+// the OS recycled the pid to later. A just-spawned child that failed
+// readiness is always well under this window; a provisional record left
+// behind by a long-dead parent and reaped much later may not be.
+const PROVISIONAL_FRESH_WINDOW_MS = 5_000;
+
 /**
  * Reaps a leftover provisional-spawn record left by a parent that died
  * between spawn and writing full discovery (finding 7). If the recorded
  * pid+identity still verifies live, it's killed (best-effort) before we
  * proceed to spawn a fresh child; either way the stale provisional record
  * is removed so it can't wedge future ensures.
+ *
+ * Safety: an empty/missing identity means we can't verify the pid before
+ * killing it. That's acceptable for a pid known to be fresh (see
+ * killIdentifiedProcess's readiness-path caller) but not here — this
+ * record may be arbitrarily old (parent died, and reaping happens on the
+ * next ensure, possibly much later), so an unverifiable pid is skipped
+ * unless `since` shows it's still within the fresh window. Leaking a rare
+ * orphan process is safer than killing a recycled, unrelated one.
  */
 function reapOrphanedProvisional(rosterPath: string): void {
   const provisional = readProvisional(rosterPath);
@@ -333,7 +354,14 @@ function reapOrphanedProvisional(rosterPath: string): void {
     removeProvisional(rosterPath);
     return;
   }
-  killIdentifiedProcess(provisional.pid, provisional.identity);
+  const hasIdentity =
+    provisional.identity !== null &&
+    provisional.identity !== undefined &&
+    provisional.identity !== "";
+  const isFresh = Date.now() - provisional.since < PROVISIONAL_FRESH_WINDOW_MS;
+  if (hasIdentity || isFresh) {
+    killIdentifiedProcess(provisional.pid, provisional.identity);
+  }
   removeProvisional(rosterPath);
 }
 

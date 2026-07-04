@@ -452,6 +452,76 @@ describe("server lifecycle", () => {
     expect(existsSync(provisionalFilePath(rosterPath))).toBe(false);
   }, 15_000);
 
+  // --- Recycled-pid safety: stale unidentifiable provisional isn't blind-killed --
+
+  test("a stale provisional record with empty identity is NOT killed (only removed) when unidentifiable", async () => {
+    // Simulate: captureIdentity failed at spawn time (identity="") AND the
+    // record is old (parent died long ago, reaped much later) — the pid
+    // may have been recycled to an unrelated live process by now. We can't
+    // prove recycling in a test, but we can prove the fix doesn't blind-
+    // kill an old, unidentifiable record's pid: spawn an unrelated live
+    // process, record its pid with identity="" and a backdated `since`,
+    // and confirm it survives the reap while the stale record is removed.
+    const { spawn } = await import("node:child_process");
+    const bystander = spawn("sleep", ["30"], {
+      detached: true,
+      stdio: "ignore",
+    });
+    bystander.unref();
+    const bystanderPid = bystander.pid as number;
+    spawnedPids.push(bystanderPid);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(isAlive(bystanderPid)).toBe(true);
+
+    writeProvisional(rosterPath, {
+      pid: bystanderPid,
+      identity: "",
+      password: "stale-password",
+      since: Date.now() - 60_000, // well outside the fresh window
+    });
+    expect(existsSync(provisionalFilePath(rosterPath))).toBe(true);
+
+    const handle = await ensureServer(rosterPath, { readinessBudgetMs: 5000 });
+    spawnedPids.push(handle.pid);
+
+    // The bystander must NOT have been killed — it's unrelated, and the
+    // record was too old/unidentifiable to safely direct-kill.
+    expect(isAlive(bystanderPid)).toBe(true);
+    // The stale provisional record is still removed so it can't wedge
+    // future ensures.
+    expect(existsSync(provisionalFilePath(rosterPath))).toBe(false);
+  }, 15_000);
+
+  test("a fresh provisional record with empty identity IS killed (readiness-path freshness still works)", async () => {
+    const { spawn } = await import("node:child_process");
+    const child = spawn("bun", STUB_COMMAND.slice(1), {
+      cwd: REPO_ROOT,
+      detached: true,
+      stdio: "ignore",
+      env: { ...process.env, STUB_NO_READY: "1" },
+    });
+    child.unref();
+    const orphanPid = child.pid as number;
+    spawnedPids.push(orphanPid);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(isAlive(orphanPid)).toBe(true);
+
+    writeProvisional(rosterPath, {
+      pid: orphanPid,
+      identity: "",
+      password: "fresh-password",
+      since: Date.now(), // fresh — within the window
+    });
+    expect(existsSync(provisionalFilePath(rosterPath))).toBe(true);
+
+    const handle = await ensureServer(rosterPath, { readinessBudgetMs: 5000 });
+    spawnedPids.push(handle.pid);
+
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(isAlive(orphanPid)).toBe(false);
+    expect(existsSync(provisionalFilePath(rosterPath))).toBe(false);
+  }, 15_000);
+
   // --- Finding 8: crashed child fails fast, well under the budget --------
 
   test("a child that exits immediately after spawn fails fast, well under the readiness budget", async () => {
