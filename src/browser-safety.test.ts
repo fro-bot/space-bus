@@ -4,9 +4,10 @@ import type { BunPlugin } from "bun";
 // CI-enforced browser-safety guard: the public browser-facing subpaths
 // (core, contract, format) must bundle cleanly for a browser target with
 // Node builtins forbidden, and their module graphs must never reach
-// src/config.ts (the Node-only boundary). Mirrors the build-based
-// version-injection test pattern — runs a real Bun.build rather than
-// reimplementing bundler logic.
+// src/config.ts, src/server.ts, src/discovery.ts, or src/cli.ts (the
+// Node-only boundary, including the managed-server lifecycle modules).
+// Mirrors the build-based version-injection test pattern — runs a real
+// Bun.build rather than reimplementing bundler logic.
 //
 // Bun's browser target silently stubs Node builtins (e.g. `node:fs`
 // resolves to an empty module) instead of failing the build — so a plain
@@ -24,6 +25,15 @@ const BROWSER_ENTRYPOINTS = [
 // Distinctive string that only appears in src/config.ts's source. If this
 // shows up in a browser bundle, config.ts leaked into the graph.
 const CONFIG_ONLY_MARKER = "SPACE_BUS_CONFIG must be an absolute path";
+
+// Distinctive strings unique to the other Node-only lifecycle modules. If
+// any of these show up in a browser bundle, that module leaked into the
+// graph — server.ts/discovery.ts/cli.ts are Node-only by construction and
+// must never be reachable from core/contract/format.
+const SERVER_ONLY_MARKER =
+  "ensureServer called on an externally-managed roster";
+const DISCOVERY_ONLY_MARKER = "discovery.json";
+const CLI_ONLY_MARKER = "thin CLI for the managed OpenCode bus server";
 
 // Node-only constructs that must never appear in these browser-safe bundles.
 // Word-boundary regexes keep this pragmatic (avoid false positives inside
@@ -73,6 +83,12 @@ describe("browser-safety: core/contract/format bundle for browser target", () =>
 
       // config.ts must never be reachable from these browser-safe graphs.
       expect(text).not.toContain(CONFIG_ONLY_MARKER);
+
+      // Node-only lifecycle modules (server.ts/discovery.ts/cli.ts) must
+      // never be reachable from these browser-safe graphs either.
+      expect(text).not.toContain(SERVER_ONLY_MARKER);
+      expect(text).not.toContain(DISCOVERY_ONLY_MARKER);
+      expect(text).not.toContain(CLI_ONLY_MARKER);
 
       // Node-only APIs (Buffer, process.env, require()) must never survive
       // into a browser bundle — this is what catches e.g. authHeader()

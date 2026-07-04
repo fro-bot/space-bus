@@ -67,6 +67,44 @@ Set `SPACE_BUS_CONFIG` to override roster discovery — it must be an absolute p
 - `bus_status` — Report a space-bus session's status plus a summary of its latest todo and diff. Also reports when the session is blocked on an interactive question awaiting a reply.
 - `bus_result` — Return a completed space-bus session's final assistant message and diff. Errors if the session is still running — use `bus_status` to check first.
 
+## Managed server
+
+Two roster modes for `server`, mutually exclusive:
+
+- `server.baseUrl` — externally-managed, attach-only. Today's default behavior: you start `opencode serve`/`harness serve` yourself; the plugin just connects.
+- `server.managed` — plugin-managed lifecycle. The plugin spawns and supervises the server for you.
+
+```json
+{
+  "server": {
+    "managed": {
+      "command": ["harness", "serve"],
+      "cwd": "~/src/my-workspace",
+      "port": 0
+    }
+  },
+  "projects": [{ "name": "my-project", "path": "~/src/my-project" }]
+}
+```
+
+`command`, `cwd`, and `port` are all optional (defaults: `harness serve`/`opencode serve`, the roster's directory, an ephemeral port).
+
+First-caller-spawns: whichever consumer touches the managed roster first spawns the server on demand — a generated password and a 0600 discovery file land under the state dir (`$XDG_STATE_HOME|~/.local/state/space-bus/<hash>/discovery.json`), every subsequent caller attaches to the same instance. It's a persistent daemon, not a request-scoped process — it outlives the caller and there's no auto-restart if it dies; the next `ensure` call notices the stale discovery file and heals by spawning fresh.
+
+CLI (`space-bus`, wraps the same lifecycle):
+
+```sh
+space-bus serve [--foreground] [--json] [--config <path>]
+space-bus status [--json] [--config <path>]
+space-bus stop [--json] [--config <path>]
+```
+
+MCP is attach-only by default — it never spawns. Set `SPACE_BUS_MCP_SPAWN=1` in the MCP server's env to opt it into ensuring a managed roster's server on startup.
+
+Security posture: each spawn gets a freshly generated password (never reused, never in argv, never logged); the loopback guard travels with the discovery handshake, so an attached endpoint is re-validated as localhost-only regardless of source. Same-user process compromise is out of scope — anyone who can read your state dir or ptrace the child already has what they need.
+
+Programmatic consumers (e.g. Mothership) that want to drive the lifecycle directly without the CLI can import `@fro.bot/space-bus/server` (Node-only; `ensureServer`/`serverStatus`/`stopServer`).
+
 ## Library surface
 
 Experimental subpath exports expose the bus's semantics directly — the same functions the four tools run on — for renderers and other consumers that want structured state instead of formatted strings. Subpaths are experimental: shapes may change in minor releases; pin the version if you adopt them.
