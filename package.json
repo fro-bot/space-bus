@@ -57,7 +57,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",
-    "zod": "^3.25.76"
+    "zod": "^4.4.3"
   },
   "peerDependencies": {
     "@opencode-ai/plugin": ">=1.17.13 <2"

@@ -9,7 +9,7 @@ import { z } from "zod";
 import type { BusContext } from "./contract";
 
 export const manifestSchema = z.object({
-  server: z.object({ baseUrl: z.string().url() }),
+  server: z.object({ baseUrl: z.url() }),
   projects: z.array(
     z.object({
       name: z.string(),
