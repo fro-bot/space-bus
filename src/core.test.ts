@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { dispatch, result, roster, status } from "./core";
+import { dispatch, result, roster, status, toDispatchArgs } from "./core";
 
 const ORIGINAL_ENV = process.env["SPACE_BUS_CONFIG"];
 const ORIGINAL_FETCH = globalThis.fetch;
@@ -108,6 +108,55 @@ describe("roster()", () => {
       expect(p.statusError).toBe("status=599/599");
       expect(p.busyCount).toBeUndefined();
     }
+  });
+});
+
+describe("toDispatchArgs", () => {
+  test("empty-string sessionId -> ok:false, distinct from missing project", () => {
+    const res = toDispatchArgs({
+      prompt: "hi",
+      sessionId: "",
+      project: "alpha",
+    });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.error).toBe("space-bus: sessionId must be a non-empty string");
+  });
+
+  test("neither project nor sessionId -> ok:false, project-required error", () => {
+    const res = toDispatchArgs({ prompt: "hi" });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.error).toBe(
+      "space-bus: project is required when starting a new session",
+    );
+  });
+
+  test("valid new-session shape ({prompt, project}) -> ok:true, project narrowed", () => {
+    const res = toDispatchArgs({ prompt: "hi", project: "alpha" });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.project).toBe("alpha");
+    expect(res.prompt).toBe("hi");
+  });
+
+  test("valid steer shape ({prompt, sessionId}) -> ok:true", () => {
+    const res = toDispatchArgs({ prompt: "hi", sessionId: "ses_1" });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.sessionId).toBe("ses_1");
+  });
+
+  test("sessionId + project both present -> ok:true (mismatch guard is dispatch's job, not the validator's)", () => {
+    const res = toDispatchArgs({
+      prompt: "hi",
+      sessionId: "ses_1",
+      project: "beta",
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.sessionId).toBe("ses_1");
+    expect(res.project).toBe("beta");
   });
 });
 
