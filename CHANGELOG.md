@@ -1,5 +1,11 @@
 # @fro.bot/space-bus
 
+## 0.4.0
+
+### Minor Changes
+
+- 5fda974: bus_task results now carry structured metadata (`{sessionId, project, mode}`) alongside the formatted text — plugin `ToolResult.metadata` / MCP `structuredContent`. Text output unchanged.
+
 ## 0.3.0
 
 ### Minor Changes
