@@ -80,7 +80,9 @@ server.registerTool(
     },
     outputSchema: {
       sessionId: z.string().describe("The dispatched or steered session ID"),
-      project: z.string().describe("Manifest project name that owns the session"),
+      project: z
+        .string()
+        .describe("Manifest project name that owns the session"),
       mode: z
         .enum(["new", "question-reply", "follow-up"])
         .describe("How the prompt was delivered"),
