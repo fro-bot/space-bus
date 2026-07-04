@@ -253,6 +253,53 @@ describe("server lifecycle", () => {
     }
   });
 
+  test("a loser fails fast (well under lockWaitBudgetMs) when the winner's spawn/readiness fails", async () => {
+    writeRoster(
+      makeRoster({
+        managed: {
+          command: STUB_COMMAND,
+          cwd: REPO_ROOT,
+          port: 0,
+        },
+      }),
+    );
+    // Force the winner's stub to never print the readiness line, so its
+    // spawnAndWaitReady rejects, releasing the lock without ever writing
+    // discovery.
+    const originalEnv = process.env["STUB_NO_READY"];
+    process.env["STUB_NO_READY"] = "1";
+    try {
+      const start = Date.now();
+      const results = await Promise.allSettled([
+        ensureServer(rosterPath, { readinessBudgetMs: 1000 }),
+        // Give the winner a head start acquiring the lock, then let the
+        // loser poll in via waitForDiscoveryOrFail with a large budget —
+        // it must NOT wait out the full budget once the winner's lock is
+        // released with no discovery file.
+        (async () => {
+          await new Promise((r) => setTimeout(r, 50));
+          return ensureServer(rosterPath, { lockWaitBudgetMs: 15_000 });
+        })(),
+      ]);
+      const elapsed = Date.now() - start;
+
+      for (const result of results) {
+        expect(result.status).toBe("rejected");
+      }
+      const loserResult = results[1];
+      if (loserResult.status === "rejected") {
+        expect(loserResult.reason.message).toMatch(
+          /failed before it could finish|readiness|regression/i,
+        );
+      }
+      // Must fail fast, well under the 15s lock-wait budget.
+      expect(elapsed).toBeLessThan(5000);
+    } finally {
+      if (originalEnv === undefined) delete process.env["STUB_NO_READY"];
+      else process.env["STUB_NO_READY"] = originalEnv;
+    }
+  });
+
   test("auth failure with our own generated password fails immediately without retry", async () => {
     const originalEnv = process.env["STUB_FORCE_401"];
     process.env["STUB_FORCE_401"] = "1";

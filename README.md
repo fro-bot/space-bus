@@ -87,7 +87,7 @@ Two roster modes for `server`, mutually exclusive:
 }
 ```
 
-`command`, `cwd`, and `port` are all optional (defaults: `harness serve`/`opencode serve`, the roster's directory, an ephemeral port).
+`command`, `cwd`, and `port` are all optional (defaults: `harness serve` — set `managed.command` for a custom command such as `opencode serve` — the roster's directory, and an ephemeral port, respectively).
 
 First-caller-spawns: whichever consumer touches the managed roster first spawns the server on demand — a generated password and a 0600 discovery file land under the state dir (`$XDG_STATE_HOME|~/.local/state/space-bus/<hash>/discovery.json`), every subsequent caller attaches to the same instance. It's a persistent daemon, not a request-scoped process — it outlives the caller and there's no auto-restart if it dies; the next `ensure` call notices the stale discovery file and heals by spawning fresh.
 

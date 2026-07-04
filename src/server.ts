@@ -167,12 +167,30 @@ async function waitForDiscoveryOrFail(
   budgetMs: number,
 ): Promise<ServerHandle> {
   const deadline = Date.now() + budgetMs;
+  const lockPath = lockFilePath(rosterPath);
   while (Date.now() < deadline) {
+    // Check discovery first: the winner writes discovery BEFORE releasing
+    // the lock on the success path (see spawnAndWaitReady/ensureServer), so
+    // checking discovery ahead of the lock-liveness check below can't
+    // false-fast-fail a winner that just succeeded.
     const handle = attachServer(rosterPath);
     if (handle) return handle;
+
+    const lockInfo = readLockFile(lockPath);
+    const winnerAlive =
+      lockInfo !== null && verifyIdentity(lockInfo.pid, lockInfo.startTime);
+    if (!winnerAlive) {
+      // The lock is gone (winner released it, e.g. after a failed spawn or
+      // readiness timeout) or its recorded owner is dead, and still no
+      // discovery file appeared — the winner failed. Don't wait out the
+      // full budget for something that will never arrive.
+      throw new Error(
+        `space-bus: the process starting the managed server for roster ${rosterPath} failed before it could finish (lock released without a discovery file) — check its log for details`,
+      );
+    }
     await sleep(POLL_INTERVAL_MS);
   }
-  const lockInfo = readLockFile(lockFilePath(rosterPath));
+  const lockInfo = readLockFile(lockPath);
   const holder = lockInfo ? `pid ${lockInfo.pid}` : "an unknown holder";
   throw new Error(
     `space-bus: timed out after ${budgetMs}ms waiting for ${holder} to finish starting the managed server for roster ${rosterPath}`,
