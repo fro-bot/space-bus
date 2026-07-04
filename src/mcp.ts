@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { type DispatchArgs, dispatch, result, roster, status } from "./core";
+import { dispatch, result, roster, status, toDispatchArgs } from "./core";
 import {
   formatDispatch,
   formatResult,
@@ -67,10 +67,13 @@ server.registerTool(
     },
   },
   async (args) => {
-    // Tool inputSchema is runtime-validated but loosely typed (all optional
-    // fields); the discriminated-union exclusivity in DispatchArgs is
-    // enforced by dispatch()'s runtime guard, not by this cast.
-    const r = await dispatch(args as DispatchArgs);
+    const dispatchArgs = toDispatchArgs(args);
+    if (!dispatchArgs.ok)
+      return {
+        content: [{ type: "text", text: dispatchArgs.error }],
+        isError: true,
+      };
+    const r = await dispatch(dispatchArgs);
     if (!r.ok)
       return { content: [{ type: "text", text: r.error }], isError: true };
     return { content: [{ type: "text", text: formatDispatch(r) }] };

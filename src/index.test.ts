@@ -24,4 +24,24 @@ describe("SpaceBusPlugin", () => {
       void name;
     }
   });
+
+  test("bus_task execute throws fail-fast on missing project/sessionId before touching config", async () => {
+    const hooks = await SpaceBusPlugin(
+      // biome-ignore lint: minimal stub, only `directory` is consumed
+      { directory: "/tmp/space-bus-index-test" } as any,
+    );
+    const busTask = hooks.tool?.bus_task;
+    expect(busTask).toBeDefined();
+    // No SPACE_BUS_CONFIG/roster is set up here — if toDispatchArgs didn't
+    // fail first, this would instead throw a roster/config resolution error.
+    await expect(
+      busTask?.execute(
+        { prompt: "x" },
+        // biome-ignore lint: minimal stub, only `directory` is consumed
+        { directory: "/tmp" } as any,
+      ),
+    ).rejects.toThrow(
+      "space-bus: project is required when starting a new session",
+    );
+  });
 });

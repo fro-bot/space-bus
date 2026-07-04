@@ -1,5 +1,5 @@
 import { type ToolDefinition, tool } from "@opencode-ai/plugin";
-import { type DispatchArgs, dispatch } from "../core";
+import { dispatch, toDispatchArgs } from "../core";
 import { formatDispatch } from "../format";
 
 export const BUS_TASK_DESCRIPTION =
@@ -32,14 +32,12 @@ export function makeBusTask(defaultDirectory?: string): ToolDefinition {
         ),
     },
     async execute(args, ctx) {
-      // Tool args schema is runtime-validated but loosely typed (all
-      // optional fields); the discriminated-union exclusivity in
-      // DispatchArgs is enforced by dispatch()'s runtime guard, not by
-      // this cast.
-      const r = await dispatch({
+      const dispatchArgs = toDispatchArgs({
         ...args,
         directory: ctx.directory ?? defaultDirectory,
-      } as DispatchArgs);
+      });
+      if (!dispatchArgs.ok) throw new Error(dispatchArgs.error);
+      const r = await dispatch(dispatchArgs);
       if (!r.ok) throw new Error(r.error);
       return formatDispatch(r);
     },
