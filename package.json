@@ -1,6 +1,6 @@
 {
   "name": "@fro.bot/space-bus",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Space Bus — workspace agent bus for OpenCode. One control agent tasking per-project agents over the OpenCode server API, with an MCP facade for Claude Desktop.",
   "type": "module",
   "license": "MIT",
