@@ -4,4 +4,4 @@ node_modules/
 .context/
 .cortexkit/
 dist/
-fixtures/
+/fixtures/

@@ -9,7 +9,10 @@ This is the source repo for the `@fro.bot/space-bus` OpenCode plugin: four `bus_
 - `src/core.ts` — all bus logic (roster lookups, dispatch, status, result, `snapshot()` composite). Discriminated-union returns, no throwing. Browser-safe: takes an injected `BusContext` (`{ roster, credentials? }`) per call instead of resolving one itself.
 - `src/config.ts` — `spacebus.json` roster resolution: `resolveRosterPath`/`getRoster`/`getProjects`, `SPACE_BUS_CONFIG` override, localhost guard. Node-only. `loadContext(directory?)` is the Node-side loader producing a `BusContext` for core.
 - `src/contract.ts` — zod schemas + inferred types for the OpenCode API and `BusContext`; zod-only imports, no Node deps. Core imports from contract, never the reverse.
-- `src/mcp.ts` — stdio MCP facade; also the package `bin` (`space-bus-mcp`) entry.
+- `src/mcp.ts` — stdio MCP facade; also the package `bin` (`space-bus-mcp`) entry. Attach-only by default; spawns for a managed roster only when `SPACE_BUS_MCP_SPAWN` is set.
+- `src/discovery.ts` — Node-only: discovery-file read/write/validate, per-roster state-dir resolution, spawn lock primitives, pid identity verification. Imported by both `config.ts` and `server.ts`; must never be imported by core/contract/format.
+- `src/server.ts` — Node-only: managed-server lifecycle (`ensureServer`/`serverStatus`/`stopServer`) — spawn, readiness polling, identity-verified stop.
+- `src/cli.ts` — Node-only `space-bus` CLI (`serve|status|stop`, `--json`); thin wrapper over `server.ts`. Package `bin` (`space-bus`) entry.
 
 ## Invariants
 
@@ -21,6 +24,10 @@ This is the source repo for the `@fro.bot/space-bus` OpenCode plugin: four `bus_
 - **Core never throws across the boundary:** `src/core.ts` functions return discriminated unions (`{ ok: true, ... } | { ok: false, error }`); tool adapters convert `ok:false` to a thrown error (plugin tools) or an `isError` content block (MCP).
 - **Browser-safety is CI-enforced:** `src/browser-safety.test.ts` bundles `src/core.ts`, `src/contract.ts`, `src/format.ts` for a browser target and asserts no `node:*` imports and no path into `src/config.ts` — config stays Node-only by construction.
 - **Context is validated per call:** every exported `core.ts` function validates its injected `BusContext` at a single internal gate on entry (zod parse of a copy, plus the localhost guard) — validate-then-mutate on the caller's object can't bypass it, and errors never carry the context object (credentials stay unprintable).
+- **Managed-server lifecycle is Node-only and CI-guarded:** `server.ts`/`discovery.ts`/`cli.ts` join config's Node-only lane; `browser-safety.test.ts` asserts they're unreachable from the core/contract/format bundle graph, browser-unsafe by construction.
+- **Discovery file is locked down:** the discovery file is written 0600 with a freshly generated per-spawn password; never reused across spawns, never in argv, never logged.
+- **Localhost guard travels to discovery:** an attached endpoint from the discovery file is re-validated against the loopback guard regardless of source — a tampered discovery file can't bypass it.
+- **MCP attach-only by default:** `mcp.ts` never calls `ensureServer` unless `SPACE_BUS_MCP_SPAWN` is set.
 
 ## Dev loop
 

@@ -2,7 +2,17 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { getRoster, loadContext, resolveRosterPath } from "./config";
+import {
+  getRoster,
+  isManagedRoster,
+  loadContext,
+  resolveRosterPath,
+} from "./config";
+import { removeDiscovery } from "./discovery";
+import { ensureServer, stopServer } from "./server";
+
+const STUB_COMMAND = ["bun", "test/fixtures/stub-server.ts"];
+const REPO_ROOT = process.cwd();
 
 const ORIGINAL_ENV = process.env["SPACE_BUS_CONFIG"];
 
@@ -105,6 +115,30 @@ describe("config", () => {
     expect(() => getRoster(dir)).toThrow(/localhost/);
   });
 
+  test("server block with both baseUrl and managed is rejected with an actionable message", () => {
+    writeRoster(dir, {
+      server: {
+        baseUrl: "http://127.0.0.1:4096",
+        managed: { command: ["harness", "serve"] },
+      },
+    });
+    expect(() => getRoster(dir)).toThrow(/exactly one of.*not both/);
+  });
+
+  test("server block with neither baseUrl nor managed is rejected with an actionable message", () => {
+    writeRoster(dir, { server: {} });
+    expect(() => getRoster(dir)).toThrow(/neither was present/);
+  });
+
+  test("managed-only server block parses", () => {
+    writeRoster(dir, {
+      server: { managed: { command: ["harness", "serve"], port: 0 } },
+    });
+    const manifest = getRoster(dir);
+    expect(manifest.server.managed?.command).toEqual(["harness", "serve"]);
+    expect(manifest.server.baseUrl).toBeUndefined();
+  });
+
   test("import purity: importing config and core performs no roster read", async () => {
     delete process.env["SPACE_BUS_CONFIG"];
     // Dynamic import with a cache-busting query so it re-evaluates the
@@ -147,5 +181,61 @@ describe("config", () => {
         delete process.env["OPENCODE_SERVER_USERNAME"];
       else process.env["OPENCODE_SERVER_USERNAME"] = ORIGINAL_USER;
     }
+  });
+
+  test("isManagedRoster: true for managed rosters, false for baseUrl rosters", () => {
+    writeRoster(dir);
+    expect(isManagedRoster(dir)).toBe(false);
+
+    const managedDir = mkdtempSync(join(tmpdir(), "space-bus-config-managed-"));
+    try {
+      writeRoster(managedDir, {
+        server: { managed: { command: STUB_COMMAND } },
+      });
+      expect(isManagedRoster(managedDir)).toBe(true);
+    } finally {
+      rmSync(managedDir, { recursive: true, force: true });
+    }
+  });
+
+  describe("managed roster loadContext", () => {
+    let managedDir: string;
+    let rosterPath: string;
+
+    beforeEach(() => {
+      managedDir = mkdtempSync(join(tmpdir(), "space-bus-config-managed-"));
+      writeRoster(managedDir, {
+        server: { managed: { command: STUB_COMMAND, cwd: REPO_ROOT } },
+      });
+      // loadContext resolves through realpathSync (resolveRosterPath), which
+      // canonicalizes symlinked temp dirs (e.g. /var -> /private/var on
+      // macOS); ensureServer must key the discovery file off the same
+      // resolved path or the two calls disagree on which discovery file to
+      // read/write.
+      rosterPath = resolveRosterPath(managedDir);
+    });
+
+    afterEach(async () => {
+      await stopServer(rosterPath);
+      removeDiscovery(rosterPath);
+      rmSync(managedDir, { recursive: true, force: true });
+    });
+
+    test("managed roster + nothing running: loadContext throws the actionable error", () => {
+      expect(() => loadContext(managedDir)).toThrow(
+        /managed server not running.*ensureServer\(\)|space-bus serve/,
+      );
+    });
+
+    test("managed roster + live stub: loadContext returns discovery-sourced baseUrl+credentials", async () => {
+      const handle = await ensureServer(rosterPath);
+      try {
+        const context = loadContext(managedDir);
+        expect(context.roster.server.baseUrl).toBe(handle.baseUrl);
+        expect(context.credentials).toEqual(handle.credentials);
+      } finally {
+        await stopServer(rosterPath);
+      }
+    });
   });
 });

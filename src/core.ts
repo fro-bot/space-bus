@@ -8,6 +8,7 @@ import {
   busContextSchema,
   type DiffEntrySchema,
   diffSchema,
+  LOOPBACK_HOSTS,
   messageListSchema,
   type ProjectSchema,
   pendingQuestionListSchema,
@@ -207,8 +208,6 @@ async function fetchDiffWithFallback(
 // applies the localhost guard. Internal helpers only ever see the parsed
 // copy below. Never throws — garbage input resolves ok:false.
 
-const ALLOWED_HOSTS = new Set(["127.0.0.1", "::1", "[::1]", "localhost"]);
-
 function validateContext(context: BusContext): Result<{
   baseUrl: string;
   projects: ProjectSchema[];
@@ -225,7 +224,7 @@ function validateContext(context: BusContext): Result<{
   } catch {
     return err("space-bus: context roster server.baseUrl is not a valid URL");
   }
-  if (!ALLOWED_HOSTS.has(hostname)) {
+  if (!LOOPBACK_HOSTS.has(hostname)) {
     return err(
       `space-bus: context roster server.baseUrl must point to localhost (got ${hostname}) — refusing to send credentials off-machine`,
     );

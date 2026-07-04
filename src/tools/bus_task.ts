@@ -1,7 +1,7 @@
 import { type ToolDefinition, tool } from "@opencode-ai/plugin";
-import { loadContext } from "../config";
 import { dispatch, toDispatchArgs } from "../core";
 import { dispatchMetadata, formatDispatch } from "../format";
+import { ensureAndLoadContext } from "./shared";
 
 export const BUS_TASK_DESCRIPTION =
   "Dispatch a prompt to an agent in the given space-bus manifest project, or steer an existing session by passing sessionId (answers its pending question, else sends a follow-up prompt). Returns immediately; does not wait for completion.";
@@ -38,9 +38,9 @@ export function makeBusTask(defaultDirectory?: string): ToolDefinition {
       const dispatchArgs = toDispatchArgs(args);
       if (!dispatchArgs.ok) throw new Error(dispatchArgs.error);
       const directory = ctx.directory ?? defaultDirectory;
-      let context: ReturnType<typeof loadContext>;
+      let context: Awaited<ReturnType<typeof ensureAndLoadContext>>;
       try {
-        context = loadContext(directory);
+        context = await ensureAndLoadContext(directory);
       } catch (e) {
         throw new Error((e as Error).message);
       }

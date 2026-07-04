@@ -27,10 +27,15 @@
     "./format": {
       "types": "./dist/format.d.ts",
       "import": "./dist/format.js"
+    },
+    "./server": {
+      "types": "./dist/server.d.ts",
+      "import": "./dist/server.js"
     }
   },
   "bin": {
-    "space-bus-mcp": "./dist/mcp.js"
+    "space-bus-mcp": "./dist/mcp.js",
+    "space-bus": "./dist/cli.js"
   },
   "files": [
     "dist",
@@ -43,7 +48,7 @@
   "scripts": {
     "clean": "rm -rf dist",
     "build": "bun run clean && bun run build.ts && tsc -p tsconfig.build.json --emitDeclarationOnly",
-    "dev": "bun build ./src/index.ts ./src/mcp.ts ./src/core.ts ./src/config.ts ./src/contract.ts ./src/format.ts --outdir dist --target node --external @opencode-ai/plugin --external @modelcontextprotocol/sdk --external zod --watch",
+    "dev": "bun build ./src/index.ts ./src/mcp.ts ./src/cli.ts ./src/core.ts ./src/config.ts ./src/contract.ts ./src/format.ts ./src/server.ts --outdir dist --target node --external @opencode-ai/plugin --external @modelcontextprotocol/sdk --external zod --watch",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
     "fix": "biome check --write .",

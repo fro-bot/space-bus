@@ -12,10 +12,12 @@ const result = await Bun.build({
   entrypoints: [
     "./src/index.ts",
     "./src/mcp.ts",
+    "./src/cli.ts",
     "./src/core.ts",
     "./src/config.ts",
     "./src/contract.ts",
     "./src/format.ts",
+    "./src/server.ts",
   ],
   outdir: "./dist",
   target: "node",
@@ -33,11 +35,14 @@ if (!result.success) {
   process.exit(1);
 }
 
-// dist/mcp.js is the package `bin` entry — it must be directly executable
-// under node with a shebang, and bun build doesn't add one.
-const mcpOut = result.outputs.find((o) => o.path.endsWith("mcp.js"));
-if (mcpOut) {
-  const path = mcpOut.path;
+// dist/mcp.js and dist/cli.js are the package `bin` entries — they must be
+// directly executable under node with a shebang, and bun build doesn't add
+// one.
+const BIN_FILENAMES = ["mcp.js", "cli.js"];
+for (const filename of BIN_FILENAMES) {
+  const out = result.outputs.find((o) => o.path.endsWith(filename));
+  if (!out) continue;
+  const path = out.path;
   const contents = await Bun.file(path).text();
   if (!contents.startsWith("#!/usr/bin/env node")) {
     await Bun.write(path, `#!/usr/bin/env node\n${contents}`);

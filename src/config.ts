@@ -7,9 +7,51 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import type { BusContext } from "./contract";
+import { LOOPBACK_HOSTS } from "./contract";
+import { attachLive } from "./discovery";
+
+export const managedServerConfigSchema = z.object({
+  command: z.array(z.string()).optional(),
+  cwd: z.string().optional(),
+  port: z.number().int().nonnegative().optional(),
+});
+
+export type ManagedServerConfig = z.infer<typeof managedServerConfigSchema>;
+
+/**
+ * Roster `server` block: exactly one of `baseUrl` (externally-managed,
+ * today's behavior) or `managed` (plugin-spawned lifecycle) must be
+ * present. Modeled as both-optional plus a superRefine (rather than a
+ * z.union of strict variants) so both/neither present yields one clear,
+ * actionable message instead of zod's generic union-mismatch error.
+ */
+export const serverConfigSchema = z
+  .object({
+    baseUrl: z.url().optional(),
+    managed: managedServerConfigSchema.optional(),
+  })
+  .superRefine((val, ctx) => {
+    const hasBaseUrl = val.baseUrl !== undefined;
+    const hasManaged = val.managed !== undefined;
+    if (hasBaseUrl && hasManaged) {
+      ctx.addIssue({
+        code: "custom",
+        message:
+          "space-bus: roster's server block must specify exactly one of `baseUrl` or `managed`, not both",
+      });
+    } else if (!hasBaseUrl && !hasManaged) {
+      ctx.addIssue({
+        code: "custom",
+        message:
+          "space-bus: roster's server block must specify one of `baseUrl` (externally-managed) or `managed` (plugin-spawned) — neither was present",
+      });
+    }
+  });
+
+export type ServerConfig = z.infer<typeof serverConfigSchema>;
 
 export const manifestSchema = z.object({
-  server: z.object({ baseUrl: z.url() }),
+  server: serverConfigSchema,
   projects: z.array(
     z.object({
       name: z.string(),
@@ -91,13 +133,14 @@ export function getRoster(directory?: string): Manifest {
       `space-bus: roster at ${manifestPath} failed schema validation: ${parsed.error.message}`,
     );
   }
-  const url = new URL(parsed.data.server.baseUrl);
-  const hostname = url.hostname;
-  const allowedHosts = new Set(["127.0.0.1", "::1", "[::1]", "localhost"]);
-  if (!allowedHosts.has(hostname)) {
-    throw new Error(
-      `space-bus: spacebus.json baseUrl must point to localhost (got ${hostname}) — refusing to send credentials off-machine`,
-    );
+  if (parsed.data.server.baseUrl !== undefined) {
+    const url = new URL(parsed.data.server.baseUrl);
+    const hostname = url.hostname;
+    if (!LOOPBACK_HOSTS.has(hostname)) {
+      throw new Error(
+        `space-bus: spacebus.json baseUrl must point to localhost (got ${hostname}) — refusing to send credentials off-machine`,
+      );
+    }
   }
   return parsed.data;
 }
@@ -134,10 +177,36 @@ export function getCredentials(): { username?: string; password?: string } {
  * discriminated-union Result at the core boundary.
  */
 export function loadContext(directory?: string): BusContext {
+  const rosterPath = resolveRosterPath(directory);
   const manifest = getRoster(directory);
   const projects = getProjects(manifest);
+  if (manifest.server.baseUrl === undefined) {
+    // Managed roster: attach-only, never spawn. Spawning is ensureServer()'s
+    // job, called by adapters (plugin tools / MCP with opt-in) before
+    // loadContext when the roster is managed.
+    const live = attachLive(rosterPath);
+    if (!live) {
+      throw new Error(
+        `space-bus: managed server not running for ${rosterPath} — call ensureServer() or run \`space-bus serve\``,
+      );
+    }
+    return {
+      roster: { server: { baseUrl: live.baseUrl }, projects },
+      credentials: live.credentials,
+    };
+  }
   return {
-    roster: { server: manifest.server, projects },
+    roster: { server: { baseUrl: manifest.server.baseUrl }, projects },
     credentials: getCredentials(),
   };
+}
+
+/**
+ * Cheap check for whether a roster is managed (spawn-eligible) vs.
+ * externally-managed (baseUrl) — reads the manifest once. Adapters use this
+ * to decide whether to call `ensureServer()` before `loadContext()`.
+ */
+export function isManagedRoster(directory?: string): boolean {
+  const manifest = getRoster(directory);
+  return manifest.server.managed !== undefined;
 }

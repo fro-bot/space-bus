@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { loadContext } from "./config";
+import { isManagedRoster, loadContext, resolveRosterPath } from "./config";
 import { dispatch, result, roster, status, toDispatchArgs } from "./core";
 import {
   dispatchMetadata,
@@ -10,10 +10,25 @@ import {
   formatRoster,
   formatStatus,
 } from "./format";
+import { ensureServer } from "./server";
 import { BUS_RESULT_DESCRIPTION } from "./tools/bus_result";
 import { BUS_ROSTER_DESCRIPTION } from "./tools/bus_roster";
 import { BUS_STATUS_DESCRIPTION } from "./tools/bus_status";
 import { BUS_TASK_DESCRIPTION } from "./tools/bus_task";
+
+/**
+ * MCP is attach-only by default (never spawns) — set SPACE_BUS_MCP_SPAWN
+ * (any truthy value) to opt in to ensure-on-demand, matching the plugin
+ * tools' behavior. MCP is single-directory-per-process: directory
+ * resolution rides SPACE_BUS_CONFIG alone (no process.cwd() threading).
+ */
+async function mcpLoadContext(): Promise<ReturnType<typeof loadContext>> {
+  if (process.env["SPACE_BUS_MCP_SPAWN"] && isManagedRoster()) {
+    const rosterPath = resolveRosterPath();
+    await ensureServer(rosterPath);
+  }
+  return loadContext();
+}
 
 // Injected at build time via build.ts's Bun.build `define` (reads
 // package.json's version). Falls back to "dev" when running directly from
@@ -35,11 +50,11 @@ server.registerTool(
     inputSchema: {},
   },
   async () => {
-    let context: ReturnType<typeof loadContext>;
+    let context: Awaited<ReturnType<typeof mcpLoadContext>>;
     try {
       // MCP is single-directory-per-process: no per-call directory exists, so
       // resolution rides SPACE_BUS_CONFIG alone. Do not thread process.cwd() in.
-      context = loadContext();
+      context = await mcpLoadContext();
     } catch (e) {
       return {
         content: [{ type: "text", text: (e as Error).message }],
@@ -95,9 +110,9 @@ server.registerTool(
         content: [{ type: "text", text: dispatchArgs.error }],
         isError: true,
       };
-    let context: ReturnType<typeof loadContext>;
+    let context: Awaited<ReturnType<typeof mcpLoadContext>>;
     try {
-      context = loadContext();
+      context = await mcpLoadContext();
     } catch (e) {
       return {
         content: [{ type: "text", text: (e as Error).message }],
@@ -123,9 +138,9 @@ server.registerTool(
     },
   },
   async (args) => {
-    let context: ReturnType<typeof loadContext>;
+    let context: Awaited<ReturnType<typeof mcpLoadContext>>;
     try {
-      context = loadContext();
+      context = await mcpLoadContext();
     } catch (e) {
       return {
         content: [{ type: "text", text: (e as Error).message }],
@@ -148,9 +163,9 @@ server.registerTool(
     },
   },
   async (args) => {
-    let context: ReturnType<typeof loadContext>;
+    let context: Awaited<ReturnType<typeof mcpLoadContext>>;
     try {
-      context = loadContext();
+      context = await mcpLoadContext();
     } catch (e) {
       return {
         content: [{ type: "text", text: (e as Error).message }],
