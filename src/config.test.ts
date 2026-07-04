@@ -2,7 +2,17 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { getRoster, loadContext, resolveRosterPath } from "./config";
+import {
+  getRoster,
+  isManagedRoster,
+  loadContext,
+  resolveRosterPath,
+} from "./config";
+import { removeDiscovery } from "./discovery";
+import { ensureServer, stopServer } from "./server";
+
+const STUB_COMMAND = ["bun", "test/fixtures/stub-server.ts"];
+const REPO_ROOT = process.cwd();
 
 const ORIGINAL_ENV = process.env["SPACE_BUS_CONFIG"];
 
@@ -171,5 +181,61 @@ describe("config", () => {
         delete process.env["OPENCODE_SERVER_USERNAME"];
       else process.env["OPENCODE_SERVER_USERNAME"] = ORIGINAL_USER;
     }
+  });
+
+  test("isManagedRoster: true for managed rosters, false for baseUrl rosters", () => {
+    writeRoster(dir);
+    expect(isManagedRoster(dir)).toBe(false);
+
+    const managedDir = mkdtempSync(join(tmpdir(), "space-bus-config-managed-"));
+    try {
+      writeRoster(managedDir, {
+        server: { managed: { command: STUB_COMMAND } },
+      });
+      expect(isManagedRoster(managedDir)).toBe(true);
+    } finally {
+      rmSync(managedDir, { recursive: true, force: true });
+    }
+  });
+
+  describe("managed roster loadContext", () => {
+    let managedDir: string;
+    let rosterPath: string;
+
+    beforeEach(() => {
+      managedDir = mkdtempSync(join(tmpdir(), "space-bus-config-managed-"));
+      writeRoster(managedDir, {
+        server: { managed: { command: STUB_COMMAND, cwd: REPO_ROOT } },
+      });
+      // loadContext resolves through realpathSync (resolveRosterPath), which
+      // canonicalizes symlinked temp dirs (e.g. /var -> /private/var on
+      // macOS); ensureServer must key the discovery file off the same
+      // resolved path or the two calls disagree on which discovery file to
+      // read/write.
+      rosterPath = resolveRosterPath(managedDir);
+    });
+
+    afterEach(() => {
+      stopServer(rosterPath);
+      removeDiscovery(rosterPath);
+      rmSync(managedDir, { recursive: true, force: true });
+    });
+
+    test("managed roster + nothing running: loadContext throws the actionable error", () => {
+      expect(() => loadContext(managedDir)).toThrow(
+        /managed server not running.*ensureServer\(\)|space-bus serve/,
+      );
+    });
+
+    test("managed roster + live stub: loadContext returns discovery-sourced baseUrl+credentials", async () => {
+      const handle = await ensureServer(rosterPath);
+      try {
+        const context = loadContext(managedDir);
+        expect(context.roster.server.baseUrl).toBe(handle.baseUrl);
+        expect(context.credentials).toEqual(handle.credentials);
+      } finally {
+        stopServer(rosterPath);
+      }
+    });
   });
 });

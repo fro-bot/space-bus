@@ -127,6 +127,47 @@ export function removeDiscovery(rosterPath: string): void {
   }
 }
 
+// --- Live endpoint attach (pure read-path, used by config.ts and server.ts) --
+
+const ALLOWED_HOSTS = new Set(["127.0.0.1", "::1", "[::1]", "localhost"]);
+
+export function loopbackOk(baseUrl: string): boolean {
+  try {
+    const url = new URL(baseUrl);
+    return ALLOWED_HOSTS.has(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
+export interface LiveEndpoint {
+  baseUrl: string;
+  credentials: { username?: string; password?: string };
+  pid: number;
+  port: number;
+}
+
+/**
+ * Attach-only: reads the discovery file, verifies the recorded pid is alive
+ * with a matching identity, and that the discovered baseUrl passes the
+ * loopback guard. Never spawns. Lives here (not server.ts) so `config.ts`
+ * can attach to a managed roster without importing `server.ts` — server.ts
+ * already imports config.ts (for manifestSchema), so config->server would
+ * be a cycle. `config.ts` and `server.ts` both import this instead.
+ */
+export function attachLive(rosterPath: string): LiveEndpoint | null {
+  const discovery = readDiscovery(rosterPath);
+  if (!discovery) return null;
+  if (!loopbackOk(discovery.baseUrl)) return null;
+  if (!verifyIdentity(discovery.pid, discovery.identity)) return null;
+  return {
+    baseUrl: discovery.baseUrl,
+    credentials: { username: "opencode", password: discovery.password },
+    pid: discovery.pid,
+    port: discovery.port,
+  };
+}
+
 // --- PID identity --------------------------------------------------------
 
 /**

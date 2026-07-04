@@ -7,6 +7,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import type { BusContext } from "./contract";
+import { attachLive } from "./discovery";
 
 export const managedServerConfigSchema = z.object({
   command: z.array(z.string()).optional(),
@@ -176,16 +177,36 @@ export function getCredentials(): { username?: string; password?: string } {
  * discriminated-union Result at the core boundary.
  */
 export function loadContext(directory?: string): BusContext {
+  const rosterPath = resolveRosterPath(directory);
   const manifest = getRoster(directory);
   const projects = getProjects(manifest);
   if (manifest.server.baseUrl === undefined) {
-    // Managed-roster attach (discovery-sourced baseUrl) lands in Unit 3.
-    throw new Error(
-      "space-bus: managed roster support is not yet wired into loadContext (coming in a later unit)",
-    );
+    // Managed roster: attach-only, never spawn. Spawning is ensureServer()'s
+    // job, called by adapters (plugin tools / MCP with opt-in) before
+    // loadContext when the roster is managed.
+    const live = attachLive(rosterPath);
+    if (!live) {
+      throw new Error(
+        `space-bus: managed server not running for ${rosterPath} — call ensureServer() or run \`space-bus serve\``,
+      );
+    }
+    return {
+      roster: { server: { baseUrl: live.baseUrl }, projects },
+      credentials: live.credentials,
+    };
   }
   return {
     roster: { server: { baseUrl: manifest.server.baseUrl }, projects },
     credentials: getCredentials(),
   };
+}
+
+/**
+ * Cheap check for whether a roster is managed (spawn-eligible) vs.
+ * externally-managed (baseUrl) — reads the manifest once. Adapters use this
+ * to decide whether to call `ensureServer()` before `loadContext()`.
+ */
+export function isManagedRoster(directory?: string): boolean {
+  const manifest = getRoster(directory);
+  return manifest.server.managed !== undefined;
 }

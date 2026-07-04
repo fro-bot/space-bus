@@ -132,4 +132,35 @@ describe("mcp.ts source-text parity guard", () => {
       "bus_task",
     ]);
   });
+
+  test("ensureServer is gated on SPACE_BUS_MCP_SPAWN — never called unconditionally", () => {
+    // Attach-only-by-default posture: mcp.ts must only call ensureServer()
+    // inside a conditional that checks SPACE_BUS_MCP_SPAWN.
+    expect(mcpSource).toContain("SPACE_BUS_MCP_SPAWN");
+    const fnMatch = mcpSource.match(
+      /async function mcpLoadContext[\s\S]*?\n\}/,
+    );
+    expect(fnMatch).not.toBeNull();
+    const fnBody = fnMatch?.[0] ?? "";
+    const gateMatch = fnBody.match(
+      /if\s*\(\s*process\.env\["SPACE_BUS_MCP_SPAWN"\][\s\S]*?\)\s*\{[\s\S]*?ensureServer[\s\S]*?\}/,
+    );
+    expect(gateMatch).not.toBeNull();
+    // ensureServer must not appear anywhere outside mcpLoadContext.
+    const outsideFn = mcpSource.replace(fnBody, "");
+    expect(outsideFn).not.toContain("ensureServer(");
+  });
+
+  test("all four handlers route through the shared mcpLoadContext helper, not loadContext() directly", () => {
+    // Every registerTool handler must call mcpLoadContext(), not
+    // loadContext() bare — otherwise the SPACE_BUS_MCP_SPAWN gate would be
+    // bypassed for that handler.
+    const bareLoadContextCalls = mcpSource.match(/[^.\w]loadContext\(\)/g);
+    expect(bareLoadContextCalls).not.toBeNull();
+    // Only the one call inside mcpLoadContext() itself should invoke the
+    // bare loadContext().
+    expect(bareLoadContextCalls).toHaveLength(1);
+    const mcpLoadContextCalls = mcpSource.match(/mcpLoadContext\(\)/g);
+    expect(mcpLoadContextCalls?.length).toBeGreaterThanOrEqual(4);
+  });
 });

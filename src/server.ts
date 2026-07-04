@@ -19,8 +19,8 @@ import { dirname } from "node:path";
 import { type ManagedServerConfig, manifestSchema } from "./config";
 import {
   acquireLock,
+  attachLive,
   captureIdentity,
-  type DiscoveryFile,
   type LockHandle,
   lockFilePath,
   logFilePath,
@@ -43,8 +43,6 @@ export interface EnsureServerOptions {
   lockWaitBudgetMs?: number;
 }
 
-const ALLOWED_HOSTS = new Set(["127.0.0.1", "::1", "[::1]", "localhost"]);
-
 export interface ServerHandle {
   baseUrl: string;
   credentials: { username?: string; password?: string };
@@ -61,24 +59,6 @@ export interface ServerStatus {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function loopbackOk(baseUrl: string): boolean {
-  try {
-    const url = new URL(baseUrl);
-    return ALLOWED_HOSTS.has(url.hostname);
-  } catch {
-    return false;
-  }
-}
-
-function toHandle(discovery: DiscoveryFile): ServerHandle {
-  return {
-    baseUrl: discovery.baseUrl,
-    credentials: { username: "opencode", password: discovery.password },
-    pid: discovery.pid,
-    port: discovery.port,
-  };
 }
 
 function readManifest(rosterPath: string) {
@@ -123,14 +103,12 @@ function killIdentifiedProcess(pid: number, identity: string | null): void {
 /**
  * Attach-only: reads discovery, verifies the recorded pid is alive with a
  * matching identity, and that the discovered baseUrl passes the loopback
- * guard. Never spawns.
+ * guard. Never spawns. Delegates to discovery.ts's pure read-path (also
+ * used directly by config.ts's managed loadContext, to avoid a
+ * config->server->config cycle since server.ts imports config.ts already).
  */
 export function attachServer(rosterPath: string): ServerHandle | null {
-  const discovery = readDiscovery(rosterPath);
-  if (!discovery) return null;
-  if (!loopbackOk(discovery.baseUrl)) return null;
-  if (!verifyIdentity(discovery.pid, discovery.identity)) return null;
-  return toHandle(discovery);
+  return attachLive(rosterPath);
 }
 
 async function waitForDiscoveryOrFail(
