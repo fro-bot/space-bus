@@ -8,7 +8,7 @@
 
 [![npm version](https://img.shields.io/npm/v/@fro.bot/space-bus?style=for-the-badge&labelColor=0D0216&color=00BCD4)](https://www.npmjs.com/package/@fro.bot/space-bus) [![Build Status](https://img.shields.io/github/actions/workflow/status/fro-bot/space-bus/ci.yaml?style=for-the-badge&label=Build&labelColor=0D0216&color=00BCD4)](https://github.com/fro-bot/space-bus/actions) [![License](https://img.shields.io/badge/License-MIT-FFC107?style=for-the-badge&labelColor=0D0216&color=FFC107)](LICENSE)
 
-[What it is](#what-it-is) · [Install](#install) · [Configure](#configure) · [Tools](#tools) · [Claude Desktop](#claude-desktop) · [Development](#development)
+[What it is](#what-it-is) · [Install](#install) · [Configure](#configure) · [Tools](#tools) · [Library surface](#library-surface) · [Claude Desktop](#claude-desktop) · [Development](#development)
 
 </div>
 
@@ -66,6 +66,32 @@ Set `SPACE_BUS_CONFIG` to override roster discovery — it must be an absolute p
 - `bus_task` — Dispatch a prompt to an agent in the given space-bus manifest project, or steer an existing session by passing `sessionId` (answers its pending question, else sends a follow-up prompt). Returns immediately; does not wait for completion.
 - `bus_status` — Report a space-bus session's status plus a summary of its latest todo and diff. Also reports when the session is blocked on an interactive question awaiting a reply.
 - `bus_result` — Return a completed space-bus session's final assistant message and diff. Errors if the session is still running — use `bus_status` to check first.
+
+## Library surface
+
+Experimental subpath exports expose the bus's semantics directly — the same functions the four tools run on — for renderers and other consumers that want structured state instead of formatted strings. Subpaths are experimental: shapes may change in minor releases; pin the version if you adopt them.
+
+- `@fro.bot/space-bus/core` — browser-safe; no Node builtins, no ambient env reads. Every exported function takes a `context: BusContext` (`{ roster, credentials? }`) that you build yourself and pass in — core never resolves it for you. Includes `snapshot()`, a one-call composite of roster + per-project status + pending questions with bounded fan-out.
+- `@fro.bot/space-bus/config` — Node-only. `loadContext(directory?)` reads `spacebus.json` (honoring `SPACE_BUS_CONFIG` the same as the plugin) and returns a ready-to-use `BusContext`, with per-project `exists` flags and env-derived credentials attached. Build a fresh context per call; it's per-call/short-lived by contract, not meant to be cached across filesystem changes.
+- `@fro.bot/space-bus/contract` — the zod schemas (and inferred types) behind the OpenCode API and `BusContext`, for consumers hitting the server directly and wanting the same shapes.
+- `@fro.bot/space-bus/format` — the pure formatters the tools use to render output, for tool-identical text.
+
+Node example (`/config` + `/core`):
+
+```ts
+import { loadContext } from "@fro.bot/space-bus/config";
+import { snapshot } from "@fro.bot/space-bus/core";
+
+const context = loadContext(); // reads spacebus.json for the current directory
+const result = await snapshot({ context });
+if (result.ok) {
+  for (const project of result.projects) {
+    console.log(project.name, project.exists);
+  }
+}
+```
+
+Browser consumers: `/core`, `/contract`, and `/format` are browser-safe (their module graphs are bundle-tested in CI to exclude `node:*` imports and never reach `/config`). `/config` is Node-only — browser code can't call `loadContext`, so credentials must be injected explicitly by whatever server-side process builds the `BusContext` (never read ambiently by core). The localhost guard travels with the context: it's re-checked at core's single validation gate on every call, so a context built from a non-local `baseUrl` is rejected there, not just at config's load time.
 
 ## Claude Desktop
 
