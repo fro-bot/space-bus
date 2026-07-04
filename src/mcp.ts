@@ -36,6 +36,8 @@ server.registerTool(
   async () => {
     let context: ReturnType<typeof loadContext>;
     try {
+      // MCP is single-directory-per-process: no per-call directory exists, so
+      // resolution rides SPACE_BUS_CONFIG alone. Do not thread process.cwd() in.
       context = loadContext();
     } catch (e) {
       return {

@@ -82,7 +82,7 @@ Node example (`/config` + `/core`):
 import { loadContext } from "@fro.bot/space-bus/config";
 import { snapshot } from "@fro.bot/space-bus/core";
 
-const context = loadContext(); // reads spacebus.json for the current directory
+const context = loadContext(); // resolves spacebus.json from SPACE_BUS_CONFIG or a directory you pass — no cwd fallback
 const result = await snapshot({ context });
 if (result.ok) {
   for (const project of result.projects) {
