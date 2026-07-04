@@ -39,9 +39,7 @@ describe("contract schemas", () => {
       ses_2: { type: "idle", extra: "field" },
     });
     expect(parsed["ses_1"]?.type).toBe("busy");
-    expect((parsed["ses_2"] as Record<string, unknown>)["extra"]).toBe(
-      "field",
-    );
+    expect((parsed["ses_2"] as Record<string, unknown>)["extra"]).toBe("field");
   });
 
   test("turnMessageSchema parses info.summary.diffs", () => {
@@ -113,9 +111,7 @@ describe("contract schemas", () => {
       deletions: 1,
       commitHash: "deadbeef",
     });
-    expect((parsed as Record<string, unknown>)["commitHash"]).toBe(
-      "deadbeef",
-    );
+    expect((parsed as Record<string, unknown>)["commitHash"]).toBe("deadbeef");
   });
 });
 

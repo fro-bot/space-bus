@@ -9,8 +9,7 @@
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { expandHome, getRoster } from "../src/config";
-import { authHeader } from "../src/core";
+import { loadContext } from "../src/config";
 
 // Reads SPACE_BUS_CONFIG, defaulting to fixtures/dev-workspace/spacebus.json
 // (see plan Unit 1 "Smoke roster contract" / Unit 6 cutover).
@@ -28,10 +27,23 @@ if (
   process.exit(1);
 }
 
-const roster = getRoster(fixtureDir);
+// Same context an adapter would load per call — the smoke canary now proves
+// the new boundary too (Unit 2's final flip, same commit as the suite going
+// green on it).
+const context = loadContext(fixtureDir);
 
-const BASE_URL = roster.server.baseUrl;
-const PROJECTS = roster.projects.slice(0, 2).map((p) => expandHome(p.path));
+const BASE_URL = context.roster.server.baseUrl;
+const PROJECTS = context.roster.projects.slice(0, 2).map((p) => p.expandedPath);
+const CREDENTIALS = context.credentials ?? {};
+
+function authHeader(): Record<string, string> {
+  if (!CREDENTIALS.password) return {};
+  const username = CREDENTIALS.username ?? "opencode";
+  const token = Buffer.from(`${username}:${CREDENTIALS.password}`).toString(
+    "base64",
+  );
+  return { Authorization: `Basic ${token}` };
+}
 
 const POLL_INTERVAL_MS = 2_000;
 const POLL_TIMEOUT_MS = 180_000;

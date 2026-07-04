@@ -2,8 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { getRoster, resolveRosterPath } from "./config";
-import { roster } from "./core";
+import { getRoster, loadContext, resolveRosterPath } from "./config";
 
 const ORIGINAL_ENV = process.env["SPACE_BUS_CONFIG"];
 
@@ -117,13 +116,36 @@ describe("config", () => {
   test("never-throw contract: roster() with no spacebus.json resolves ok:false naming spacebus.json", async () => {
     const emptyDir = mkdtempSync(join(tmpdir(), "space-bus-noroster-"));
     try {
-      const res = await roster({ directory: emptyDir });
-      expect(res.ok).toBe(false);
-      if (!res.ok) {
-        expect(res.error).toMatch(/spacebus\.json/);
-      }
+      // loadContext() throws (no roster); the adapter would catch and
+      // surface a config-resolution error here — roster() itself can't
+      // even be reached without a context, so we just assert the throw.
+      expect(() => loadContext(emptyDir)).toThrow(/spacebus\.json/);
     } finally {
       rmSync(emptyDir, { recursive: true, force: true });
+    }
+  });
+
+  test("loadContext: happy path computes exists flags and env credentials", () => {
+    writeRoster(dir);
+    const ORIGINAL_PW = process.env["OPENCODE_SERVER_PASSWORD"];
+    const ORIGINAL_USER = process.env["OPENCODE_SERVER_USERNAME"];
+    process.env["OPENCODE_SERVER_PASSWORD"] = "test-password";
+    process.env["OPENCODE_SERVER_USERNAME"] = "test-user";
+    try {
+      const context = loadContext(dir);
+      expect(context.roster.projects).toHaveLength(1);
+      expect(context.roster.projects[0]?.exists).toBe(false); // ~/demo-project unlikely to exist
+      expect(context.credentials).toEqual({
+        username: "test-user",
+        password: "test-password",
+      });
+    } finally {
+      if (ORIGINAL_PW === undefined)
+        delete process.env["OPENCODE_SERVER_PASSWORD"];
+      else process.env["OPENCODE_SERVER_PASSWORD"] = ORIGINAL_PW;
+      if (ORIGINAL_USER === undefined)
+        delete process.env["OPENCODE_SERVER_USERNAME"];
+      else process.env["OPENCODE_SERVER_USERNAME"] = ORIGINAL_USER;
     }
   });
 });

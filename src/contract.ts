@@ -157,3 +157,49 @@ export type QuestionEntrySchema = z.infer<typeof questionEntrySchema>;
 
 export const questionListSchema = z.array(questionEntrySchema);
 export type QuestionListSchema = z.infer<typeof questionListSchema>;
+
+// --- Bus context (injected roster + credentials boundary) ------------------
+//
+// These schemas back core's single validation gate: consumer-supplied
+// context objects are zod-parsed (parse copies — validate-then-mutate can't
+// bypass the guard) before core trusts anything in them. Kept here (not in
+// core.ts) so contract stays the zod-only, dependency-pure module and core
+// never needs to duplicate schema shape.
+
+export const projectSchema = z
+  .object({
+    name: z.string(),
+    path: z.string(),
+    description: z.string(),
+    expandedPath: z.string(),
+    exists: z.boolean(),
+  })
+  .passthrough();
+export type ProjectSchema = z.infer<typeof projectSchema>;
+
+export const rosterSchema = z.object({
+  server: z.object({ baseUrl: z.string().url() }),
+  projects: z.array(projectSchema),
+});
+export type RosterSchema = z.infer<typeof rosterSchema>;
+
+export const credentialsSchema = z.object({
+  username: z.string().optional(),
+  password: z.string().optional(),
+});
+export type CredentialsSchema = z.infer<typeof credentialsSchema>;
+
+/**
+ * @experimental
+ * Per-call/short-lived context for core's exported functions: a roster
+ * (with per-project `exists` flags computed at load time) plus optional
+ * credentials. Build a fresh one per call via `/config`'s `loadContext` —
+ * do not cache across filesystem changes; a cached context's `exists` flags
+ * and credentials can go stale, same class of staleness as any snapshot.
+ * Never log or serialize a BusContext (credentials must stay unprintable).
+ */
+export const busContextSchema = z.object({
+  roster: rosterSchema,
+  credentials: credentialsSchema.optional(),
+});
+export type BusContext = z.infer<typeof busContextSchema>;

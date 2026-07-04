@@ -2,7 +2,16 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { dispatch, result, roster, status, toDispatchArgs } from "./core";
+import { loadContext } from "./config";
+import {
+  type CoreOpts,
+  type DispatchArgs,
+  dispatch,
+  result,
+  roster,
+  status,
+  toDispatchArgs,
+} from "./core";
 
 const ORIGINAL_ENV = process.env["SPACE_BUS_CONFIG"];
 const ORIGINAL_FETCH = globalThis.fetch;
@@ -24,6 +33,28 @@ function writeRoster(): void {
     }),
   );
   process.env["SPACE_BUS_CONFIG"] = rosterPath;
+}
+
+/** Fresh per-call context built from the current test roster (mirrors what
+ * an adapter would get from config's loadContext per call). */
+function ctx(): CoreOpts {
+  return { context: loadContext() };
+}
+
+async function callRoster() {
+  return roster(ctx());
+}
+
+async function callDispatch(args: DispatchArgs) {
+  return dispatch(args, ctx());
+}
+
+async function callStatus(sessionId: string) {
+  return status(sessionId, ctx());
+}
+
+async function callResult(sessionId: string) {
+  return result(sessionId, ctx());
 }
 
 /** Route table keyed by "METHOD path" (path is whatever follows baseUrl). Values
@@ -86,7 +117,7 @@ describe("roster()", () => {
         body: [{ id: "ses_1" }, { id: "ses_2" }],
       }),
     });
-    const res = await roster();
+    const res = await callRoster();
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     expect(res.projects).toHaveLength(2);
@@ -99,7 +130,7 @@ describe("roster()", () => {
 
   test("network refused: still ok:true, statusError set per-project (fail soft)", async () => {
     globalThis.fetch = rejectingFetch("connect ECONNREFUSED 127.0.0.1:4096");
-    const res = await roster();
+    const res = await callRoster();
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     expect(res.projects).toHaveLength(2);
@@ -166,7 +197,7 @@ describe("dispatch() new-session", () => {
       "POST /session": () => ({ body: { id: "ses_new_1" } }),
       "POST /session/ses_new_1/prompt_async": () => ({ status: 204 }),
     });
-    const res = await dispatch({ project: "alpha", prompt: "hello" });
+    const res = await callDispatch({ project: "alpha", prompt: "hello" });
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     expect(res.sessionId).toBe("ses_new_1");
@@ -176,7 +207,7 @@ describe("dispatch() new-session", () => {
 
   test("unknown project: ok:false naming valid projects", async () => {
     globalThis.fetch = mockFetch({});
-    const res = await dispatch({ project: "nonexistent", prompt: "hi" });
+    const res = await callDispatch({ project: "nonexistent", prompt: "hi" });
     expect(res.ok).toBe(false);
     if (res.ok) return;
     expect(res.error).toContain('unknown project "nonexistent"');
@@ -186,7 +217,7 @@ describe("dispatch() new-session", () => {
 
   test("empty-string sessionId: ok:false distinct from missing project", async () => {
     globalThis.fetch = mockFetch({});
-    const res = await dispatch({
+    const res = await callDispatch({
       project: "alpha",
       sessionId: "",
       prompt: "hi",
@@ -211,7 +242,7 @@ describe("dispatch() steering", () => {
       }),
       "POST /question/q_1/reply": () => ({ status: 200, body: {} }),
     });
-    const res = await dispatch({ sessionId: "ses_steer", prompt: "yes" });
+    const res = await callDispatch({ sessionId: "ses_steer", prompt: "yes" });
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     expect(res.mode).toBe("question-reply");
@@ -225,7 +256,7 @@ describe("dispatch() steering", () => {
       "GET /question": () => ({ body: [] }),
       "POST /session/ses_steer/prompt_async": () => ({ status: 204 }),
     });
-    const res = await dispatch({ sessionId: "ses_steer", prompt: "more" });
+    const res = await callDispatch({ sessionId: "ses_steer", prompt: "more" });
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     expect(res.mode).toBe("follow-up");
@@ -235,7 +266,7 @@ describe("dispatch() steering", () => {
     globalThis.fetch = mockFetch({
       "GET /session/ses_steer": mockSessionLookup("alpha"),
     });
-    const res = await dispatch({
+    const res = await callDispatch({
       sessionId: "ses_steer",
       project: "beta",
       prompt: "hi",
@@ -268,7 +299,7 @@ describe("status()", () => {
       }),
       "GET /vcs/status": () => ({ body: [] }),
     });
-    const res = await status("ses_1");
+    const res = await callStatus("ses_1");
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     expect(res.busy).toBe(true);
@@ -278,7 +309,7 @@ describe("status()", () => {
 
   test("fetch throwing resolves ok:false (never rejects)", async () => {
     globalThis.fetch = rejectingFetch("network down");
-    await expect(status("ses_1")).resolves.toEqual(
+    await expect(callStatus("ses_1")).resolves.toEqual(
       expect.objectContaining({ ok: false }),
     );
   });
@@ -292,7 +323,7 @@ describe("result()", () => {
       }),
       "GET /session/status": () => ({ body: { ses_1: { type: "busy" } } }),
     });
-    const res = await result("ses_1");
+    const res = await callResult("ses_1");
     expect(res.ok).toBe(false);
     if (res.ok) return;
     expect(res.error).toContain("still running");
@@ -319,7 +350,7 @@ describe("result()", () => {
       "GET /session/ses_1/diff": () => ({ body: [] }),
       "GET /vcs/status": () => ({ body: [] }),
     });
-    const res = await result("ses_1");
+    const res = await callResult("ses_1");
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     expect(res.text).toBe("Done!");
@@ -336,7 +367,7 @@ describe("result()", () => {
         body: [{ file: "a.ts", additions: 1, deletions: 0 }],
       }),
     });
-    const res = await result("ses_1");
+    const res = await callResult("ses_1");
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     expect(res.diffSource).toBe("session");
@@ -365,7 +396,7 @@ describe("result()", () => {
       "GET /session/ses_1/message?limit=50": () => ({ body: [] }),
       "GET /session/ses_1/diff": () => ({ body: [] }),
     });
-    const res = await result("ses_1");
+    const res = await callResult("ses_1");
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     expect(res.diffSource).toBe("session");
@@ -403,7 +434,7 @@ describe("result()", () => {
       "GET /session/ses_1/diff": () => ({ body: [] }),
       "GET /vcs/status": () => ({ body: [] }),
     });
-    const res = await result("ses_1");
+    const res = await callResult("ses_1");
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     expect(res.diffSource).toBe("turns");
@@ -422,7 +453,7 @@ describe("result()", () => {
         body: [{ file: "d.ts", additions: 1, deletions: 1, status: "M" }],
       }),
     });
-    const res = await result("ses_1");
+    const res = await callResult("ses_1");
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     expect(res.diffSource).toBe("working-tree");
@@ -444,17 +475,161 @@ describe("never-throw contract", () => {
   test("every exported function resolves {ok:false} when fetch hard-rejects", async () => {
     globalThis.fetch = rejectingFetch("hard rejection");
 
-    await expect(roster()).resolves.toEqual(
+    await expect(callRoster()).resolves.toEqual(
       expect.objectContaining({ ok: true }), // roster fails soft per-project
     );
-    await expect(dispatch({ project: "alpha", prompt: "hi" })).resolves.toEqual(
+    await expect(
+      callDispatch({ project: "alpha", prompt: "hi" }),
+    ).resolves.toEqual(expect.objectContaining({ ok: false }));
+    await expect(callStatus("ses_x")).resolves.toEqual(
       expect.objectContaining({ ok: false }),
     );
-    await expect(status("ses_x")).resolves.toEqual(
+    await expect(callResult("ses_x")).resolves.toEqual(
       expect.objectContaining({ ok: false }),
     );
-    await expect(result("ses_x")).resolves.toEqual(
+  });
+});
+
+describe("context validation boundary", () => {
+  test("non-localhost baseUrl -> ok:false citing the localhost rule, no fetch attempted", async () => {
+    let fetchCalled = false;
+    globalThis.fetch = (async () => {
+      fetchCalled = true;
+      return new Response(null, { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const badContext = {
+      roster: {
+        server: { baseUrl: "http://example.com:4096" },
+        projects: [
+          {
+            name: "alpha",
+            path: dirA,
+            description: "Alpha",
+            expandedPath: dirA,
+            exists: true,
+          },
+        ],
+      },
+    };
+
+    const res = await roster({ context: badContext });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.error).toContain("localhost");
+    expect(fetchCalled).toBe(false);
+  });
+
+  test("malformed roster (missing projects, wrong types) -> ok:false, never throws", async () => {
+    const malformed = {
+      roster: {
+        server: { baseUrl: "http://127.0.0.1:4096" },
+        // projects omitted entirely, and later a wrong-typed variant
+      },
+    };
+    await expect(roster({ context: malformed as never })).resolves.toEqual(
       expect.objectContaining({ ok: false }),
     );
+
+    const wrongTypes = {
+      roster: {
+        server: { baseUrl: "http://127.0.0.1:4096" },
+        projects: "not-an-array",
+      },
+    };
+    await expect(roster({ context: wrongTypes as never })).resolves.toEqual(
+      expect.objectContaining({ ok: false }),
+    );
+  });
+
+  test("validate-then-mutate: mutating the roster object after passing it does not affect core's behavior", async () => {
+    globalThis.fetch = mockFetch({
+      "GET /session/status": () => ({ body: {} }),
+      "GET /session?limit=101": () => ({ body: [] }),
+    });
+
+    const context = loadContext();
+    const call = roster({ context }); // core parses (copies) synchronously at entry
+    // Mutate the caller's object immediately after passing it in.
+    context.roster.projects = [];
+    (context.roster.server as { baseUrl: string }).baseUrl =
+      "http://evil.example.com";
+
+    const res = await call;
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.projects).toHaveLength(2); // unaffected by post-call mutation
+  });
+
+  test("sentinel credential leak check: no error string anywhere contains the sentinel password", async () => {
+    const SENTINEL = "SENTINEL_XYZ";
+    const context = loadContext();
+    context.credentials = { username: "opencode", password: SENTINEL };
+
+    // Bad project name (arg-shape error path).
+    globalThis.fetch = mockFetch({});
+    const r1 = await dispatch(
+      { project: "nonexistent", prompt: "hi" },
+      {
+        context,
+      },
+    );
+    expect(r1.ok).toBe(false);
+    if (!r1.ok) expect(r1.error).not.toContain(SENTINEL);
+
+    // Fetch rejection (never-throw / hard failure path).
+    globalThis.fetch = rejectingFetch("network down");
+    const r2 = await dispatch({ project: "alpha", prompt: "hi" }, { context });
+    expect(r2.ok).toBe(false);
+    if (!r2.ok) expect(r2.error).not.toContain(SENTINEL);
+
+    const r3 = await status("ses_x", { context });
+    expect(r3.ok).toBe(false);
+    if (!r3.ok) expect(r3.error).not.toContain(SENTINEL);
+
+    const r4 = await result("ses_x", { context });
+    expect(r4.ok).toBe(false);
+    if (!r4.ok) expect(r4.error).not.toContain(SENTINEL);
+
+    // Non-localhost context error path.
+    const localhostViolation = {
+      roster: {
+        server: { baseUrl: "http://example.com:4096" },
+        projects: [],
+      },
+      credentials: { username: "opencode", password: SENTINEL },
+    };
+    const r5 = await roster({ context: localhostViolation });
+    expect(r5.ok).toBe(false);
+    if (!r5.ok) expect(r5.error).not.toContain(SENTINEL);
+  });
+
+  test("project with exists:false behaves as the old existsSync-miss did", async () => {
+    const context = loadContext();
+    const missing = context.roster.projects.find((p) => p.name === "alpha");
+    if (missing) missing.exists = false;
+
+    globalThis.fetch = mockFetch({
+      "GET /session/status": () => ({ body: {} }),
+      "GET /session?limit=101": () => ({ body: [] }),
+    });
+
+    // roster(): skipped in probing, reported as pathExists:false.
+    const rosterRes = await roster({ context });
+    expect(rosterRes.ok).toBe(true);
+    if (!rosterRes.ok) return;
+    const alpha = rosterRes.projects.find((p) => p.name === "alpha");
+    expect(alpha?.pathExists).toBe(false);
+    expect(alpha?.busyCount).toBeUndefined();
+
+    // dispatch(): actionable error naming the missing path.
+    const dispatchRes = await dispatch(
+      { project: "alpha", prompt: "hi" },
+      { context },
+    );
+    expect(dispatchRes.ok).toBe(false);
+    if (!dispatchRes.ok) {
+      expect(dispatchRes.error).toContain("does not exist on disk");
+    }
   });
 });

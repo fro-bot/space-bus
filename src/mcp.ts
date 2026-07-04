@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { loadContext } from "./config";
 import { dispatch, result, roster, status, toDispatchArgs } from "./core";
 import {
   formatDispatch,
@@ -33,7 +34,16 @@ server.registerTool(
     inputSchema: {},
   },
   async () => {
-    const r = await roster({});
+    let context: ReturnType<typeof loadContext>;
+    try {
+      context = loadContext();
+    } catch (e) {
+      return {
+        content: [{ type: "text", text: (e as Error).message }],
+        isError: true,
+      };
+    }
+    const r = await roster({ context });
     if (!r.ok)
       return { content: [{ type: "text", text: r.error }], isError: true };
     return { content: [{ type: "text", text: formatRoster(r.projects) }] };
@@ -73,7 +83,16 @@ server.registerTool(
         content: [{ type: "text", text: dispatchArgs.error }],
         isError: true,
       };
-    const r = await dispatch(dispatchArgs);
+    let context: ReturnType<typeof loadContext>;
+    try {
+      context = loadContext();
+    } catch (e) {
+      return {
+        content: [{ type: "text", text: (e as Error).message }],
+        isError: true,
+      };
+    }
+    const r = await dispatch(dispatchArgs, { context });
     if (!r.ok)
       return { content: [{ type: "text", text: r.error }], isError: true };
     return { content: [{ type: "text", text: formatDispatch(r) }] };
@@ -89,7 +108,16 @@ server.registerTool(
     },
   },
   async (args) => {
-    const r = await status(args.sessionId, {});
+    let context: ReturnType<typeof loadContext>;
+    try {
+      context = loadContext();
+    } catch (e) {
+      return {
+        content: [{ type: "text", text: (e as Error).message }],
+        isError: true,
+      };
+    }
+    const r = await status(args.sessionId, { context });
     if (!r.ok)
       return { content: [{ type: "text", text: r.error }], isError: true };
     return { content: [{ type: "text", text: formatStatus(r) }] };
@@ -105,7 +133,16 @@ server.registerTool(
     },
   },
   async (args) => {
-    const r = await result(args.sessionId, {});
+    let context: ReturnType<typeof loadContext>;
+    try {
+      context = loadContext();
+    } catch (e) {
+      return {
+        content: [{ type: "text", text: (e as Error).message }],
+        isError: true,
+      };
+    }
+    const r = await result(args.sessionId, { context });
     if (!r.ok)
       return { content: [{ type: "text", text: r.error }], isError: true };
     return { content: [{ type: "text", text: formatResult(r) }] };
