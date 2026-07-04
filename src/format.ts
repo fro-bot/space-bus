@@ -33,6 +33,20 @@ export function formatDispatch(r: DispatchResult): string {
   }
 }
 
+/** Machine-readable dispatch metadata, shared verbatim by both surfaces
+ * (plugin ToolResult.metadata and MCP structuredContent) so the shapes
+ * can't drift. `sessionId` and `project` are always populated on
+ * DispatchResult (new sessions and both steering modes resolve a project). */
+export type DispatchMetadata = {
+  sessionId: string;
+  project: string;
+  mode: DispatchResult["mode"];
+};
+
+export function dispatchMetadata(r: DispatchResult): DispatchMetadata {
+  return { sessionId: r.sessionId, project: r.project, mode: r.mode };
+}
+
 export function formatStatus(r: SessionStatusResult): string {
   const todoLines = r.todos.length
     ? r.todos

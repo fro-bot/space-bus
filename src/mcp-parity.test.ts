@@ -95,6 +95,18 @@ function isOptionalZod(schema: unknown): boolean {
   return parseable.safeParse(undefined).success;
 }
 
+describe("bus_task metadata parity", () => {
+  test("both surfaces derive dispatch metadata via the shared dispatchMetadata helper", () => {
+    const mcpSource = readFileSync(join(__dirname, "mcp.ts"), "utf8");
+    const busTaskSource = readFileSync(
+      join(__dirname, "tools", "bus_task.ts"),
+      "utf8",
+    );
+    expect(mcpSource).toContain("dispatchMetadata(r)");
+    expect(busTaskSource).toContain("dispatchMetadata(r)");
+  });
+});
+
 describe("mcp.ts source-text parity guard", () => {
   const mcpSource = readFileSync(join(__dirname, "mcp.ts"), "utf8");
 

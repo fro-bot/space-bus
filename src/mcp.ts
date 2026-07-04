@@ -4,6 +4,7 @@ import { z } from "zod";
 import { loadContext } from "./config";
 import { dispatch, result, roster, status, toDispatchArgs } from "./core";
 import {
+  dispatchMetadata,
   formatDispatch,
   formatResult,
   formatRoster,
@@ -77,6 +78,15 @@ server.registerTool(
           "Existing session ID to steer instead of starting a new session",
         ),
     },
+    outputSchema: {
+      sessionId: z.string().describe("The dispatched or steered session ID"),
+      project: z
+        .string()
+        .describe("Manifest project name that owns the session"),
+      mode: z
+        .enum(["new", "question-reply", "follow-up"])
+        .describe("How the prompt was delivered"),
+    },
   },
   async (args) => {
     const dispatchArgs = toDispatchArgs(args);
@@ -97,7 +107,10 @@ server.registerTool(
     const r = await dispatch(dispatchArgs, { context });
     if (!r.ok)
       return { content: [{ type: "text", text: r.error }], isError: true };
-    return { content: [{ type: "text", text: formatDispatch(r) }] };
+    return {
+      content: [{ type: "text", text: formatDispatch(r) }],
+      structuredContent: dispatchMetadata(r),
+    };
   },
 );
 
