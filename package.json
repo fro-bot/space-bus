@@ -31,6 +31,10 @@
     "./server": {
       "types": "./dist/server.d.ts",
       "import": "./dist/server.js"
+    },
+    "./attach": {
+      "types": "./dist/attach.d.ts",
+      "import": "./dist/attach.js"
     }
   },
   "bin": {
@@ -48,7 +52,7 @@
   "scripts": {
     "clean": "rm -rf dist",
     "build": "bun run clean && bun run build.ts && tsc -p tsconfig.build.json --emitDeclarationOnly",
-    "dev": "bun build ./src/index.ts ./src/mcp.ts ./src/cli.ts ./src/core.ts ./src/config.ts ./src/contract.ts ./src/format.ts ./src/server.ts --outdir dist --target node --external @opencode-ai/plugin --external @modelcontextprotocol/sdk --external zod --watch",
+    "dev": "bun build ./src/index.ts ./src/mcp.ts ./src/cli.ts ./src/core.ts ./src/config.ts ./src/contract.ts ./src/format.ts ./src/server.ts --outdir dist --target node --external @opencode-ai/plugin --external @modelcontextprotocol/sdk --external zod --watch & bun build ./src/attach.ts --outdir dist --target node --external @opencode-ai/plugin --external @modelcontextprotocol/sdk --external zod --watch & wait",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
     "fix": "biome check --write .",

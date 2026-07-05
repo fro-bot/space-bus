@@ -20,6 +20,7 @@ const BROWSER_ENTRYPOINTS = [
   "./src/core.ts",
   "./src/contract.ts",
   "./src/format.ts",
+  "./src/attach.ts",
 ];
 
 // Distinctive string that only appears in src/config.ts's source. If this
@@ -32,7 +33,12 @@ const CONFIG_ONLY_MARKER = "SPACE_BUS_CONFIG must be an absolute path";
 // must never be reachable from core/contract/format.
 const SERVER_ONLY_MARKER =
   "ensureServer called on an externally-managed roster";
-const DISCOVERY_ONLY_MARKER = "discovery.json";
+// Note: "discovery.json" itself is NOT usable as this marker — attach.ts
+// legitimately references that filename literal by design (it reads the
+// same on-disk file discovery.ts writes). Use a string unique to
+// discovery.ts's Node-only code path instead (the provisional-spawn-record
+// filename, never referenced by attach.ts).
+const DISCOVERY_ONLY_MARKER = "spawn.provisional.json";
 const CLI_ONLY_MARKER = "thin CLI for the managed OpenCode bus server";
 
 // Node-only constructs that must never appear in these browser-safe bundles.

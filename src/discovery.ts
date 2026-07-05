@@ -24,7 +24,17 @@ import {
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
-import { LOOPBACK_HOSTS } from "./contract";
+import {
+  discoveryFileSchema,
+  LOOPBACK_HOSTS,
+  managedSpawnConfigSchema,
+} from "./contract";
+
+// Re-exported for existing Node-side importers (config.ts, server.ts) — the
+// canonical definitions now live in contract.ts (zod-only, browser-safe) so
+// attach.ts (browser-safe) can share them without pulling in this module's
+// node:fs/os/path/crypto/child_process imports.
+export { discoveryFileSchema, managedSpawnConfigSchema };
 
 // --- State dir resolution ---------------------------------------------------
 
@@ -57,21 +67,8 @@ export function logFilePath(rosterPath: string): string {
 }
 
 // --- Discovery file ----------------------------------------------------------
-
-export const managedSpawnConfigSchema = z.object({
-  command: z.array(z.string()).optional(),
-  cwd: z.string().optional(),
-  port: z.number().int().nonnegative().optional(),
-});
-
-export const discoveryFileSchema = z.object({
-  port: z.number().int().nonnegative(),
-  pid: z.number().int().positive(),
-  identity: z.string(),
-  password: z.string(),
-  spawnConfig: managedSpawnConfigSchema,
-  baseUrl: z.url(),
-});
+// Schemas moved to contract.ts (see re-export above); DiscoveryFile stays
+// here for existing Node-side consumers.
 
 export type DiscoveryFile = z.infer<typeof discoveryFileSchema>;
 

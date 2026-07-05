@@ -205,3 +205,28 @@ export const busContextSchema = z.object({
   credentials: credentialsSchema.optional(),
 });
 export type BusContext = z.infer<typeof busContextSchema>;
+
+// --- Managed-server discovery file (moved from discovery.ts) ---------------
+//
+// zod-only, browser-safe: these schemas describe the on-disk discovery.json
+// contract shared between the Node-only writer (discovery.ts, spawn side)
+// and the browser-safe reader (attach.ts, external-attacher side, e.g. a
+// Tauri webview). Living here — not discovery.ts — lets attach.ts import
+// them without pulling in any node:fs/os/path/crypto/child_process.
+// discovery.ts re-exports both names unchanged so its existing Node-side
+// imports (config.ts, server.ts) keep working without modification.
+
+export const managedSpawnConfigSchema = z.object({
+  command: z.array(z.string()).optional(),
+  cwd: z.string().optional(),
+  port: z.number().int().nonnegative().optional(),
+});
+
+export const discoveryFileSchema = z.object({
+  port: z.number().int().nonnegative(),
+  pid: z.number().int().positive(),
+  identity: z.string(),
+  password: z.string(),
+  spawnConfig: managedSpawnConfigSchema,
+  baseUrl: z.url(),
+});
