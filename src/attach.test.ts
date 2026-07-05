@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { AttachSeams } from "./attach";
-import { resolveManagedServer } from "./attach";
+import { posixJoin, resolveManagedServer } from "./attach";
 import { discoveryFilePath } from "./discovery";
 
 async function sha256Hex16(input: string): Promise<string> {
@@ -298,5 +298,40 @@ describe("attach.ts <-> discovery.ts discovery-path parity", () => {
         process.env["HOME"] = originalHome;
       }
     }
+  });
+});
+
+describe("posixJoin", () => {
+  test("preserves leading slash from first part, strips trailing slashes", () => {
+    expect(posixJoin("/home/marcus", ".local", "state")).toBe(
+      "/home/marcus/.local/state",
+    );
+  });
+
+  test("strips leading and trailing slashes on non-first parts", () => {
+    expect(posixJoin("/a/", "/b/", "c")).toBe("/a/b/c");
+  });
+
+  test("collapses runs of slashes without regex backtracking", () => {
+    expect(posixJoin("/a///", "//b//c", "d")).toBe("/a/b/c/d");
+  });
+
+  test("filters out empty segments", () => {
+    expect(posixJoin("/a", "", "/b", "///", "c")).toBe("/a/b/c");
+  });
+
+  test("produces relative path when first part has no leading slash", () => {
+    expect(posixJoin("a", "b/", "/c")).toBe("a/b/c");
+  });
+
+  test("matches discovery.json path shape", () => {
+    expect(
+      posixJoin(
+        "/home/marcus/.state",
+        "space-bus",
+        "deadbeefcafef00d",
+        "discovery.json",
+      ),
+    ).toBe("/home/marcus/.state/space-bus/deadbeefcafef00d/discovery.json");
   });
 });

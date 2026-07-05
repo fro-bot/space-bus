@@ -70,14 +70,16 @@ export interface ResolvedManagedServer {
 // --- pure helpers (browser-safe: no node:path, no node:crypto) -------------
 
 /** Pure posix path join — avoids node:path in a browser-safe module. */
-function posixJoin(...parts: string[]): string {
-  return parts
-    .map((p, i) => {
-      if (i === 0) return p.replace(/\/+$/, "");
-      return p.replace(/^\/+/, "").replace(/\/+$/, "");
-    })
-    .filter((p) => p.length > 0)
-    .join("/");
+export function posixJoin(...parts: string[]): string {
+  const isAbsolute = (parts[0] ?? "").startsWith("/");
+  const segments: string[] = [];
+  for (const part of parts) {
+    for (const segment of part.split("/")) {
+      if (segment.length > 0) segments.push(segment);
+    }
+  }
+  const joined = segments.join("/");
+  return isAbsolute ? `/${joined}` : joined;
 }
 
 /** First 16 hex chars of sha256(input), via Web Crypto (no node:crypto). */
