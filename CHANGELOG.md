@@ -1,5 +1,11 @@
 # @fro.bot/space-bus
 
+## 0.7.0
+
+### Minor Changes
+
+- f9f74fa: Add browser-safe managed-server resolver (@fro.bot/space-bus/attach) for external attachers.
+
 ## 0.6.1
 
 ### Patch Changes
