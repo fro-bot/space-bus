@@ -1,5 +1,11 @@
 # @fro.bot/space-bus
 
+## 0.6.1
+
+### Patch Changes
+
+- f338abb: Test isolation: the suite no longer writes managed-server state directories into the real ~/.local/state — tests now run under an isolated XDG_STATE_HOME.
+
 ## 0.6.0
 
 ### Minor Changes
