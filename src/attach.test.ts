@@ -226,6 +226,25 @@ describe("resolveManagedServer", () => {
       expect(result.error).toContain("absolute filesystem path");
     }
   });
+
+  test("no spacebus.json at candidate path -> ok:false, actionable error", async () => {
+    const seams = makeSeams({ realpath: async () => null });
+    const result = await resolveManagedServer("/home/marcus/proj", seams);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("no spacebus.json");
+    }
+  });
+
+  test("non-401 non-2xx probe response -> ok:false, 'not answering' message", async () => {
+    stubFetch(async () => new Response(null, { status: 500 }));
+    const seams = makeSeams();
+    const result = await resolveManagedServer("/home/marcus/proj", seams);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("not answering");
+    }
+  });
 });
 
 describe("attach.ts <-> discovery.ts discovery-path parity", () => {

@@ -26,7 +26,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import {
   discoveryFileSchema,
-  LOOPBACK_HOSTS,
+  loopbackOk,
   managedSpawnConfigSchema,
 } from "./contract";
 
@@ -128,14 +128,9 @@ export function removeDiscovery(rosterPath: string): void {
 
 // --- Live endpoint attach (pure read-path, used by config.ts and server.ts) --
 
-export function loopbackOk(baseUrl: string): boolean {
-  try {
-    const url = new URL(baseUrl);
-    return LOOPBACK_HOSTS.has(url.hostname);
-  } catch {
-    return false;
-  }
-}
+// Re-exported for existing Node-side importers (config.ts, server.ts) — the
+// canonical definition now lives in contract.ts (zod-only, browser-safe).
+export { loopbackOk };
 
 export interface LiveEndpoint {
   baseUrl: string;

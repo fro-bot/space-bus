@@ -40,7 +40,7 @@
  *   of an opaque status. This is what replaces the generic core.ts `599`
  *   for this one call site.
  */
-import { discoveryFileSchema, LOOPBACK_HOSTS } from "./contract";
+import { discoveryFileSchema, loopbackOk } from "./contract";
 
 type Ok<T> = { ok: true } & T;
 type Err = { ok: false; error: string };
@@ -102,15 +102,6 @@ function authHeader(password: string): Record<string, string> {
   return { Authorization: `Basic ${token}` };
 }
 
-function loopbackOk(baseUrl: string): boolean {
-  try {
-    const url = new URL(baseUrl);
-    return LOOPBACK_HOSTS.has(url.hostname);
-  } catch {
-    return false;
-  }
-}
-
 // --- roster path resolution (mirrors config.ts's resolveRosterPath) -------
 
 async function resolveRosterPath(
@@ -125,6 +116,9 @@ async function resolveRosterPath(
         `space-bus: SPACE_BUS_CONFIG needs an absolute filesystem path or a ~-prefixed path, not a URL (got: ${override})`,
       );
     }
+    // Only the "~/" prefix expands here (unlike config.ts's expandHome,
+    // which also treats a bare "~" as home) — a bare "~" falls through to
+    // the absolute-path rejection below; inconsequential in practice.
     const expanded = override.startsWith("~/")
       ? posixJoin(await seams.homeDir(), override.slice(2))
       : override;

@@ -162,6 +162,20 @@ export const LOOPBACK_HOSTS = new Set([
   "localhost",
 ]);
 
+/**
+ * Shared loopback-hostname check, used identically by attach.ts (browser-safe
+ * reader) and discovery.ts (Node-only writer/re-validator) — both need the
+ * exact same `new URL(baseUrl).hostname` + LOOPBACK_HOSTS membership check,
+ * so it lives here once rather than duplicated in each.
+ */
+export function loopbackOk(baseUrl: string): boolean {
+  try {
+    return LOOPBACK_HOSTS.has(new URL(baseUrl).hostname);
+  } catch {
+    return false;
+  }
+}
+
 // --- Bus context (injected roster + credentials boundary) ------------------
 //
 // These schemas back core's single validation gate: consumer-supplied
