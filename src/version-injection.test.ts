@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 // E2E check that build.ts's Bun.build `define` actually substitutes
@@ -47,4 +47,35 @@ describe("dist/mcp.js version injection (e2e build)", () => {
     expect(mcpJs).toContain(`"${version}"`);
     expect(mcpJs).not.toContain("__SPACE_BUS_VERSION__");
   }, 60_000);
+
+  test("flat dist/ layout: attach.js/attach.d.ts exist, importable, no nested dist/src/", () => {
+    const bunPath = Bun.which("bun");
+    if (!bunPath) {
+      console.warn("bun not found on PATH, skipping build e2e test");
+      return;
+    }
+
+    const build = Bun.spawnSync(["bun", "run", "build"], {
+      cwd: projectRoot,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    if (build.exitCode !== 0) {
+      const stdout = build.stdout.toString();
+      const stderr = build.stderr.toString();
+      throw new Error(
+        `bun run build failed (exit ${build.exitCode}):\n${stdout}\n${stderr}`,
+      );
+    }
+
+    expect(existsSync(join(projectRoot, "dist/attach.js"))).toBe(true);
+    expect(existsSync(join(projectRoot, "dist/attach.d.ts"))).toBe(true);
+    expect(existsSync(join(projectRoot, "dist/src"))).toBe(false);
+  }, 60_000);
+
+  test("dist/attach.js is importable and exports resolveManagedServer", async () => {
+    const attachModule = await import(join(projectRoot, "dist/attach.js"));
+    expect(typeof attachModule.resolveManagedServer).toBe("function");
+  }, 30_000);
 });

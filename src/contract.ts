@@ -162,6 +162,20 @@ export const LOOPBACK_HOSTS = new Set([
   "localhost",
 ]);
 
+/**
+ * Shared loopback-hostname check, used identically by attach.ts (browser-safe
+ * reader) and discovery.ts (Node-only writer/re-validator) — both need the
+ * exact same `new URL(baseUrl).hostname` + LOOPBACK_HOSTS membership check,
+ * so it lives here once rather than duplicated in each.
+ */
+export function loopbackOk(baseUrl: string): boolean {
+  try {
+    return LOOPBACK_HOSTS.has(new URL(baseUrl).hostname);
+  } catch {
+    return false;
+  }
+}
+
 // --- Bus context (injected roster + credentials boundary) ------------------
 //
 // These schemas back core's single validation gate: consumer-supplied
@@ -205,3 +219,28 @@ export const busContextSchema = z.object({
   credentials: credentialsSchema.optional(),
 });
 export type BusContext = z.infer<typeof busContextSchema>;
+
+// --- Managed-server discovery file (moved from discovery.ts) ---------------
+//
+// zod-only, browser-safe: these schemas describe the on-disk discovery.json
+// contract shared between the Node-only writer (discovery.ts, spawn side)
+// and the browser-safe reader (attach.ts, external-attacher side, e.g. a
+// Tauri webview). Living here — not discovery.ts — lets attach.ts import
+// them without pulling in any node:fs/os/path/crypto/child_process.
+// discovery.ts re-exports both names unchanged so its existing Node-side
+// imports (config.ts, server.ts) keep working without modification.
+
+export const managedSpawnConfigSchema = z.object({
+  command: z.array(z.string()).optional(),
+  cwd: z.string().optional(),
+  port: z.number().int().nonnegative().optional(),
+});
+
+export const discoveryFileSchema = z.object({
+  port: z.number().int().nonnegative(),
+  pid: z.number().int().positive(),
+  identity: z.string(),
+  password: z.string(),
+  spawnConfig: managedSpawnConfigSchema,
+  baseUrl: z.url(),
+});

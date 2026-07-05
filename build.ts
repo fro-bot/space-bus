@@ -35,6 +35,30 @@ if (!result.success) {
   process.exit(1);
 }
 
+// attach.ts is built in its own Bun.build call, separate from the entries
+// above: bundling it alongside contract.ts (and the other entries that
+// import contract.ts) makes Bun's chunk-splitting nest ALL outputs under
+// dist/src/* instead of dist/*.js (observed empirically — Bun picks a
+// shared-ancestor-dir naming scheme once enough entries share an
+// intermediate chunk). That would break every other subpath export
+// (./core, ./config, etc.), which all assume a flat dist/<name>.js layout.
+// Building it standalone keeps attach.ts's own import of contract.ts
+// inlined (no cross-entry chunk) and leaves the rest of dist/ flat.
+const attachResult = await Bun.build({
+  entrypoints: ["./src/attach.ts"],
+  outdir: "./dist",
+  target: "node",
+  format: "esm",
+  external: ["@opencode-ai/plugin", "@modelcontextprotocol/sdk", "zod"],
+});
+
+if (!attachResult.success) {
+  for (const message of attachResult.logs) {
+    console.error(message);
+  }
+  process.exit(1);
+}
+
 // dist/mcp.js and dist/cli.js are the package `bin` entries — they must be
 // directly executable under node with a shebang, and bun build doesn't add
 // one.
@@ -49,4 +73,6 @@ for (const filename of BIN_FILENAMES) {
   }
 }
 
-console.log(`build: wrote ${result.outputs.length} file(s) to dist/`);
+console.log(
+  `build: wrote ${result.outputs.length + attachResult.outputs.length} file(s) to dist/`,
+);
