@@ -28,6 +28,9 @@ const port =
 
 const child = spawn("bun", [stubPath, "--port", port], {
   stdio: ["ignore", "inherit", "inherit"],
+  // Forwards STUB_IGNORE_SIGTERM (if set) so tests can model a child that
+  // ignores SIGTERM even while the wrapper itself still exits on it —
+  // forcing stopServer's group-SIGKILL escalation path.
   env: { ...process.env },
 });
 

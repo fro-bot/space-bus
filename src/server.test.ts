@@ -625,6 +625,52 @@ describe("server lifecycle", () => {
     expect(readDiscovery(rosterPath)).toBeNull();
   }, 15_000);
 
+  test("stopServer escalates to group SIGKILL when the wrapper dies on SIGTERM but its child ignores it", async () => {
+    writeRoster(
+      makeRoster({
+        managed: {
+          command: WRAPPER_COMMAND,
+          cwd: REPO_ROOT,
+        },
+      }),
+    );
+
+    const originalEnv = process.env["STUB_IGNORE_SIGTERM"];
+    process.env["STUB_IGNORE_SIGTERM"] = "1";
+    try {
+      const handle = await ensureServer(rosterPath, {
+        readinessBudgetMs: 5000,
+      });
+      spawnedPids.push(handle.pid); // wrapper pid (recorded in discovery)
+
+      const childPid = readWrapperChildPid(logFilePath(rosterPath));
+      expect(childPid).not.toBeNull();
+      const childPidValue = childPid as number;
+      spawnedPids.push(childPidValue);
+
+      expect(isAlive(handle.pid)).toBe(true);
+      expect(isAlive(childPidValue)).toBe(true);
+
+      const { stopped } = await stopServer(rosterPath);
+      expect(stopped).toBe(true);
+
+      // The wrapper dies fast on SIGTERM (it always forwards it to
+      // itself — see wrapper-server.ts), but the child ignores SIGTERM
+      // (STUB_IGNORE_SIGTERM=1), so this can only pass if stopServer
+      // polled GROUP liveness (waitForGroupDeath) rather than the
+      // wrapper's own pid — a wrapper-pid-only check (waitForDeath) would
+      // see the wrapper die on SIGTERM and report stopped:true WITHOUT
+      // ever escalating to SIGKILL, leaving the child alive and the port
+      // held.
+      expect(isAlive(handle.pid)).toBe(false);
+      expect(isAlive(childPidValue)).toBe(false);
+      expect(readDiscovery(rosterPath)).toBeNull();
+    } finally {
+      if (originalEnv === undefined) delete process.env["STUB_IGNORE_SIGTERM"];
+      else process.env["STUB_IGNORE_SIGTERM"] = originalEnv;
+    }
+  }, 15_000);
+
   // --- Finding 8: crashed child fails fast, well under the budget --------
 
   test("a child that exits immediately after spawn fails fast, well under the readiness budget", async () => {
