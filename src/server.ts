@@ -717,7 +717,10 @@ export async function stopServer(
       // are covered by the existing group-stop tests.
       return { stopped: false };
     }
-    // ESRCH: already gone between verify and signal — treat as stopped.
+    // signalGroup only rethrows EPERM; any other throw is unexpected here —
+    // treat as already-gone (safe fallback). The genuine "already gone
+    // between verify and signal" case is absorbed inside signalGroup and
+    // surfaces as a dead read from waitForCompletion below, not here.
     removeDiscovery(rosterPath);
     return { stopped: true };
   }
@@ -733,6 +736,7 @@ export async function stopServer(
     if (isEpermError(err)) {
       return { stopped: false };
     }
+    // Unexpected non-EPERM throw (see the SIGTERM branch above).
     removeDiscovery(rosterPath);
     return { stopped: true };
   }
