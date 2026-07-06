@@ -50,3 +50,7 @@ The working guard (`src/browser-safety.test.ts`):
 ## When to Apply
 
 Any package publishing browser-consumable subpaths from a Node codebase; any refactor that turns ambient state into injected parameters; any test claiming a bundle property (verify the test fails on a violation before trusting it).
+
+## Related
+
+- [browser-safe-discovery-contract-parity-2026-07-05.md](./browser-safe-discovery-contract-parity-2026-07-05.md) — the cross-boundary sequel: when a browser-safe module and a Node module must both implement one on-disk convention (path derivation + schema) that can't be shared as code, pin them with a parity test and a shared browser-safe schema.
