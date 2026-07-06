@@ -1,7 +1,7 @@
 ---
 title: Isolate env/home-derived filesystem paths in tests, not just the hashed input
 date: 2026-07-05
-category: docs/solutions/best-practices/
+category: best-practices
 module: space-bus
 problem_type: best_practice
 component: testing_framework

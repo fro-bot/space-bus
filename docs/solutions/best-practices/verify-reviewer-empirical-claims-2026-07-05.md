@@ -1,7 +1,7 @@
 ---
 title: Verify a reviewer's empirically-checkable claims before acting on them
 date: 2026-07-05
-category: docs/solutions/best-practices/
+category: best-practices
 module: space-bus
 problem_type: best_practice
 component: development_workflow

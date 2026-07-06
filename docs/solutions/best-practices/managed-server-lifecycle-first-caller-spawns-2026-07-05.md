@@ -1,7 +1,7 @@
 ---
 title: Managed local-server lifecycle — first-caller-spawns, everyone-attaches
 date: 2026-07-05
-category: docs/solutions/best-practices/
+category: best-practices
 module: space-bus
 problem_type: best_practice
 component: tooling
