@@ -120,6 +120,36 @@ function redactedReadinessError(
 }
 
 /**
+ * Signals a spawned managed server's whole process GROUP, not just the
+ * recorded pid. `harness serve` (and `opencode serve`) is a thin wrapper
+ * process that spawns the real opencode server as a CHILD — the child, not
+ * the wrapper, holds the port. Because spawnAndWaitReady spawns with
+ * `detached: true`, the wrapper becomes a process-group LEADER (its pgid
+ * equals its pid) and the child inherits that same pgid. Signaling only the
+ * bare wrapper pid kills the wrapper while the child survives as an
+ * untracked orphan still holding the port. Signaling the negative pid
+ * (`-pid`) targets the entire process group, cascading to the child too.
+ *
+ * Falls back to a bare-pid signal if group-signaling fails (ESRCH/EPERM/
+ * etc — e.g. a non-detached spawn where the pid isn't a group leader), and
+ * treats "already gone" as a no-op either way.
+ */
+function signalGroup(pid: number, sig: NodeJS.Signals): void {
+  try {
+    process.kill(-pid, sig);
+    return;
+  } catch {
+    // Not a group leader, group already gone, or no permission — fall back
+    // to signaling the bare pid.
+  }
+  try {
+    process.kill(pid, sig);
+  } catch {
+    // Already gone — fine.
+  }
+}
+
+/**
  * Kills a spawned child. Prefers identity-verified signaling; if identity
  * capture failed (e.g. `ps` unavailable on this platform), falls back to
  * signaling the pid directly. That direct-kill fallback is only safe when
@@ -140,12 +170,12 @@ function killIdentifiedProcess(
     // to verify) rather than failing verifyIdentity and silently skipping
     // the kill.
     if (identity !== null && identity !== undefined && identity !== "") {
-      if (verifyIdentity(pid, identity)) process.kill(pid, "SIGTERM");
+      if (verifyIdentity(pid, identity)) signalGroup(pid, "SIGTERM");
       return;
     }
     // No identity available — best-effort direct kill. Only safe for a
     // pid the caller knows is fresh (see doc comment above).
-    process.kill(pid, "SIGTERM");
+    signalGroup(pid, "SIGTERM");
   } catch {
     // already gone — fine.
   }
@@ -619,7 +649,7 @@ export async function stopServer(
   const { pid } = discovery;
 
   try {
-    process.kill(pid, "SIGTERM");
+    signalGroup(pid, "SIGTERM");
   } catch {
     // Already gone between verify and signal — treat as stopped.
     removeDiscovery(rosterPath);
@@ -632,7 +662,7 @@ export async function stopServer(
   }
 
   try {
-    process.kill(pid, "SIGKILL");
+    signalGroup(pid, "SIGKILL");
   } catch {
     removeDiscovery(rosterPath);
     return { stopped: true };

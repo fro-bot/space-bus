@@ -1,12 +1,19 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
   captureIdentity,
   isAlive,
+  logFilePath,
   provisionalFilePath,
   readDiscovery,
   writeDiscovery,
@@ -21,7 +28,19 @@ import {
 } from "./server";
 
 const STUB_COMMAND = ["bun", "test/fixtures/stub-server.ts"];
+const WRAPPER_COMMAND = ["bun", "test/fixtures/wrapper-server.ts"];
 const REPO_ROOT = process.cwd();
+
+/** Reads the child pid printed by wrapper-server.ts's marker line. */
+function readWrapperChildPid(logPath: string): number | null {
+  try {
+    const content = readFileSync(logPath, "utf8");
+    const match = /wrapper-server: child pid (\d+)/.exec(content);
+    return match?.[1] ? Number.parseInt(match[1], 10) : null;
+  } catch {
+    return null;
+  }
+}
 
 let dir: string;
 let rosterPath: string;
@@ -567,6 +586,43 @@ describe("server lifecycle", () => {
     await new Promise((resolve) => setTimeout(resolve, 300));
     expect(isAlive(orphanPid)).toBe(false);
     expect(existsSync(provisionalFilePath(rosterPath))).toBe(false);
+  }, 15_000);
+
+  // --- Process-group stop: wrapper/child split (harness serve shape) ------
+
+  test("stopServer kills BOTH the wrapper and its port-holder child (group signal), not just the wrapper", async () => {
+    writeRoster(
+      makeRoster({
+        managed: {
+          command: WRAPPER_COMMAND,
+          cwd: REPO_ROOT,
+        },
+      }),
+    );
+
+    const handle = await ensureServer(rosterPath, { readinessBudgetMs: 5000 });
+    spawnedPids.push(handle.pid); // wrapper pid (recorded in discovery)
+
+    const childPid = readWrapperChildPid(logFilePath(rosterPath));
+    expect(childPid).not.toBeNull();
+    const childPidValue = childPid as number;
+    spawnedPids.push(childPidValue);
+
+    expect(isAlive(handle.pid)).toBe(true);
+    expect(isAlive(childPidValue)).toBe(true);
+
+    const { stopped } = await stopServer(rosterPath);
+    expect(stopped).toBe(true);
+
+    // The wrapper (group leader, recorded pid) must be dead.
+    expect(isAlive(handle.pid)).toBe(false);
+    // The port-holder CHILD must ALSO be dead — this is the regression:
+    // a bare `process.kill(pid, "SIGTERM")` on the wrapper only kills the
+    // wrapper, leaking the child as an orphan still holding the port.
+    // Only group-signaling (signalGroup: `process.kill(-pid, sig)`) tears
+    // down both.
+    expect(isAlive(childPidValue)).toBe(false);
+    expect(readDiscovery(rosterPath)).toBeNull();
   }, 15_000);
 
   // --- Finding 8: crashed child fails fast, well under the budget --------
