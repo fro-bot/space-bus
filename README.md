@@ -107,12 +107,14 @@ Programmatic consumers (e.g. Mothership) that want to drive the lifecycle direct
 
 ## Library surface
 
-Experimental subpath exports expose the bus's semantics directly — the same functions the four tools run on — for renderers and other consumers that want structured state instead of formatted strings. Subpaths are experimental: shapes may change in minor releases; pin the version if you adopt them.
+Experimental subpath exports expose the bus's internals directly — the functions the four tools run on, plus the managed-server lifecycle and the attach resolver — for renderers and other consumers that want structured state instead of formatted strings. Subpaths are experimental: shapes may change in minor releases; pin the version if you adopt them.
 
 - `@fro.bot/space-bus/core` — browser-safe; no Node builtins, no ambient env reads. Every exported function takes a `context: BusContext` (`{ roster, credentials? }`) that you build yourself and pass in — core never resolves it for you. Includes `snapshot()`, a one-call composite of roster + per-project status + pending questions with bounded fan-out.
 - `@fro.bot/space-bus/config` — Node-only. `loadContext(directory?)` reads `spacebus.json` (honoring `SPACE_BUS_CONFIG` the same as the plugin) and returns a ready-to-use `BusContext`, with per-project `exists` flags and env-derived credentials attached. Build a fresh context per call; it's per-call/short-lived by contract, not meant to be cached across filesystem changes.
 - `@fro.bot/space-bus/contract` — the zod schemas (and inferred types) behind the OpenCode API and `BusContext`, for consumers hitting the server directly and wanting the same shapes. Schemas are zod v4.
 - `@fro.bot/space-bus/format` — the pure formatters the tools use to render output, for tool-identical text.
+- `@fro.bot/space-bus/server` — Node-only. The managed-server lifecycle (`ensureServer`/`serverStatus`/`stopServer`) for consumers driving spawn/attach/stop directly — see [Managed server](#managed-server).
+- `@fro.bot/space-bus/attach` — browser-safe. `resolveManagedServer(workspaceDir, seams)` resolves a managed roster's running endpoint by reading the discovery file through injected filesystem/env/crypto seams — re-checking the localhost guard and probing liveness — so an external attacher such as a Tauri webview can attach without any `node:*` imports or reimplementing the discovery contract. Returns `{ baseUrl, credentials, alive }` or an actionable error.
 
 Node example (`/config` + `/core`):
 
@@ -129,7 +131,7 @@ if (result.ok) {
 }
 ```
 
-Browser consumers: `/core`, `/contract`, and `/format` are browser-safe (their module graphs are bundle-tested in CI to exclude `node:*` imports and never reach `/config`). `/config` is Node-only — browser code can't call `loadContext`, so credentials must be injected explicitly by whatever server-side process builds the `BusContext` (never read ambiently by core). The localhost guard travels with the context: it's re-checked at core's single validation gate on every call, so a context built from a non-local `baseUrl` is rejected there, not just at config's load time.
+Browser consumers: `/core`, `/contract`, `/format`, and `/attach` are browser-safe (their module graphs are bundle-tested in CI to exclude `node:*` imports and never reach `/config`). `/config` is Node-only — browser code can't call `loadContext`, so credentials must be injected explicitly by whatever server-side process builds the `BusContext` (never read ambiently by core). The localhost guard travels with the context: it's re-checked at core's single validation gate on every call, so a context built from a non-local `baseUrl` is rejected there, not just at config's load time.
 
 ## Claude Desktop
 
