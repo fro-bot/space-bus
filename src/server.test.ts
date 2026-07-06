@@ -1,12 +1,19 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
   captureIdentity,
   isAlive,
+  logFilePath,
   provisionalFilePath,
   readDiscovery,
   writeDiscovery,
@@ -21,11 +28,41 @@ import {
 } from "./server";
 
 const STUB_COMMAND = ["bun", "test/fixtures/stub-server.ts"];
+const WRAPPER_COMMAND = ["bun", "test/fixtures/wrapper-server.ts"];
 const REPO_ROOT = process.cwd();
+
+/** Reads the child pid printed by wrapper-server.ts's marker line. */
+function readWrapperChildPid(logPath: string): number | null {
+  try {
+    const content = readFileSync(logPath, "utf8");
+    const match = /wrapper-server: child pid (\d+)/.exec(content);
+    return match?.[1] ? Number.parseInt(match[1], 10) : null;
+  } catch {
+    return null;
+  }
+}
 
 let dir: string;
 let rosterPath: string;
 const spawnedPids: number[] = [];
+
+/**
+ * Polls isAlive(pid) until it reports dead or the budget expires.
+ *
+ * A signaled process can briefly remain a reapable zombie (`kill(pid, 0)`
+ * still succeeds) until its new parent (init/reparenting) reaps it — this
+ * is kernel bookkeeping, not liveness. Waiting here (instead of asserting
+ * death instantly) removes that race while still failing hard if the
+ * process genuinely never dies (a real product regression).
+ */
+async function waitUntilDead(pid: number, budgetMs = 3000): Promise<boolean> {
+  const start = Date.now();
+  while (Date.now() - start < budgetMs) {
+    if (!isAlive(pid)) return true;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return !isAlive(pid);
+}
 
 function makeRoster(overrides: Record<string, unknown> = {}): unknown {
   return {
@@ -567,6 +604,89 @@ describe("server lifecycle", () => {
     await new Promise((resolve) => setTimeout(resolve, 300));
     expect(isAlive(orphanPid)).toBe(false);
     expect(existsSync(provisionalFilePath(rosterPath))).toBe(false);
+  }, 15_000);
+
+  // --- Process-group stop: wrapper/child split (harness serve shape) ------
+
+  test("stopServer kills BOTH the wrapper and its port-holder child (group signal), not just the wrapper", async () => {
+    writeRoster(
+      makeRoster({
+        managed: {
+          command: WRAPPER_COMMAND,
+          cwd: REPO_ROOT,
+        },
+      }),
+    );
+
+    const handle = await ensureServer(rosterPath, { readinessBudgetMs: 5000 });
+    spawnedPids.push(handle.pid); // wrapper pid (recorded in discovery)
+
+    const childPid = readWrapperChildPid(logFilePath(rosterPath));
+    expect(childPid).not.toBeNull();
+    const childPidValue = childPid as number;
+    spawnedPids.push(childPidValue);
+
+    expect(isAlive(handle.pid)).toBe(true);
+    expect(isAlive(childPidValue)).toBe(true);
+
+    const { stopped } = await stopServer(rosterPath);
+    expect(stopped).toBe(true);
+
+    // The wrapper (group leader, recorded pid) must be dead.
+    expect(await waitUntilDead(handle.pid)).toBe(true);
+    // The port-holder CHILD must ALSO be dead — this is the regression:
+    // a bare `process.kill(pid, "SIGTERM")` on the wrapper only kills the
+    // wrapper, leaking the child as an orphan still holding the port.
+    // Only group-signaling (signalGroup: `process.kill(-pid, sig)`) tears
+    // down both.
+    expect(await waitUntilDead(childPidValue)).toBe(true);
+    expect(readDiscovery(rosterPath)).toBeNull();
+  }, 15_000);
+
+  test("stopServer escalates to group SIGKILL when the wrapper dies on SIGTERM but its child ignores it", async () => {
+    writeRoster(
+      makeRoster({
+        managed: {
+          command: WRAPPER_COMMAND,
+          cwd: REPO_ROOT,
+        },
+      }),
+    );
+
+    const originalEnv = process.env["STUB_IGNORE_SIGTERM"];
+    process.env["STUB_IGNORE_SIGTERM"] = "1";
+    try {
+      const handle = await ensureServer(rosterPath, {
+        readinessBudgetMs: 5000,
+      });
+      spawnedPids.push(handle.pid); // wrapper pid (recorded in discovery)
+
+      const childPid = readWrapperChildPid(logFilePath(rosterPath));
+      expect(childPid).not.toBeNull();
+      const childPidValue = childPid as number;
+      spawnedPids.push(childPidValue);
+
+      expect(isAlive(handle.pid)).toBe(true);
+      expect(isAlive(childPidValue)).toBe(true);
+
+      const { stopped } = await stopServer(rosterPath);
+      expect(stopped).toBe(true);
+
+      // The wrapper dies fast on SIGTERM (it always forwards it to
+      // itself — see wrapper-server.ts), but the child ignores SIGTERM
+      // (STUB_IGNORE_SIGTERM=1), so this can only pass if stopServer
+      // polled GROUP liveness (waitForGroupDeath) rather than the
+      // wrapper's own pid — a wrapper-pid-only check (waitForDeath) would
+      // see the wrapper die on SIGTERM and report stopped:true WITHOUT
+      // ever escalating to SIGKILL, leaving the child alive and the port
+      // held.
+      expect(await waitUntilDead(handle.pid)).toBe(true);
+      expect(await waitUntilDead(childPidValue)).toBe(true);
+      expect(readDiscovery(rosterPath)).toBeNull();
+    } finally {
+      if (originalEnv === undefined) delete process.env["STUB_IGNORE_SIGTERM"];
+      else process.env["STUB_IGNORE_SIGTERM"] = originalEnv;
+    }
   }, 15_000);
 
   // --- Finding 8: crashed child fails fast, well under the budget --------

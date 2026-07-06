@@ -212,7 +212,9 @@ export function verifyIdentity(pid: number, storedIdentity: string): boolean {
 // --- Spawn lock ------------------------------------------------------------
 
 export const lockFileSchema = z.object({
-  pid: z.number().int().positive(),
+  // min(2), not .positive(): see discoveryFileSchema in contract.ts — a
+  // pid of 0/1 must never reach a process-group signal.
+  pid: z.number().int().min(2),
   startTime: z.string(),
   since: z.number(),
 });
@@ -393,7 +395,9 @@ export function provisionalFilePath(rosterPath: string): string {
 }
 
 export const provisionalFileSchema = z.object({
-  pid: z.number().int().positive(),
+  // min(2), not .positive(): see discoveryFileSchema in contract.ts — a
+  // pid of 0/1 must never reach a process-group signal.
+  pid: z.number().int().min(2),
   identity: z.string(),
   password: z.string(),
   since: z.number(),

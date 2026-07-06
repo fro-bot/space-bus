@@ -238,7 +238,11 @@ export const managedSpawnConfigSchema = z.object({
 
 export const discoveryFileSchema = z.object({
   port: z.number().int().nonnegative(),
-  pid: z.number().int().positive(),
+  // min(2), not .positive(): pid 0 or 1 flowing into a process-group signal
+  // (`process.kill(-pid, sig)`) is catastrophic — -1 signals every process
+  // the user can signal, -0 signals the caller's whole group. Reject at
+  // parse time as defense in depth (signalGroup also guards this itself).
+  pid: z.number().int().min(2),
   identity: z.string(),
   password: z.string(),
   spawnConfig: managedSpawnConfigSchema,

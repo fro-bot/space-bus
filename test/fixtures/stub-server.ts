@@ -55,7 +55,14 @@ if (!suppressReadinessLine) {
   console.log(`opencode server listening on http://127.0.0.1:${server.port}`);
 }
 
-if (process.env["STUB_IGNORE_SIGTERM"] !== "1") {
+if (process.env["STUB_IGNORE_SIGTERM"] === "1") {
+  // Registering a no-op handler is required to actually ignore SIGTERM —
+  // simply not registering any handler leaves Node's DEFAULT SIGTERM
+  // action in effect, which still terminates the process. Only an
+  // explicit handler that doesn't exit truly models a process that
+  // survives SIGTERM (forcing callers to escalate to SIGKILL).
+  process.on("SIGTERM", () => {});
+} else {
   process.on("SIGTERM", () => {
     server.stop(true);
     process.exit(0);
