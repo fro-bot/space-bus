@@ -46,6 +46,24 @@ let dir: string;
 let rosterPath: string;
 const spawnedPids: number[] = [];
 
+/**
+ * Polls isAlive(pid) until it reports dead or the budget expires.
+ *
+ * A signaled process can briefly remain a reapable zombie (`kill(pid, 0)`
+ * still succeeds) until its new parent (init/reparenting) reaps it — this
+ * is kernel bookkeeping, not liveness. Waiting here (instead of asserting
+ * death instantly) removes that race while still failing hard if the
+ * process genuinely never dies (a real product regression).
+ */
+async function waitUntilDead(pid: number, budgetMs = 3000): Promise<boolean> {
+  const start = Date.now();
+  while (Date.now() - start < budgetMs) {
+    if (!isAlive(pid)) return true;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return !isAlive(pid);
+}
+
 function makeRoster(overrides: Record<string, unknown> = {}): unknown {
   return {
     server: {
@@ -615,13 +633,13 @@ describe("server lifecycle", () => {
     expect(stopped).toBe(true);
 
     // The wrapper (group leader, recorded pid) must be dead.
-    expect(isAlive(handle.pid)).toBe(false);
+    expect(await waitUntilDead(handle.pid)).toBe(true);
     // The port-holder CHILD must ALSO be dead — this is the regression:
     // a bare `process.kill(pid, "SIGTERM")` on the wrapper only kills the
     // wrapper, leaking the child as an orphan still holding the port.
     // Only group-signaling (signalGroup: `process.kill(-pid, sig)`) tears
     // down both.
-    expect(isAlive(childPidValue)).toBe(false);
+    expect(await waitUntilDead(childPidValue)).toBe(true);
     expect(readDiscovery(rosterPath)).toBeNull();
   }, 15_000);
 
@@ -662,8 +680,8 @@ describe("server lifecycle", () => {
       // see the wrapper die on SIGTERM and report stopped:true WITHOUT
       // ever escalating to SIGKILL, leaving the child alive and the port
       // held.
-      expect(isAlive(handle.pid)).toBe(false);
-      expect(isAlive(childPidValue)).toBe(false);
+      expect(await waitUntilDead(handle.pid)).toBe(true);
+      expect(await waitUntilDead(childPidValue)).toBe(true);
       expect(readDiscovery(rosterPath)).toBeNull();
     } finally {
       if (originalEnv === undefined) delete process.env["STUB_IGNORE_SIGTERM"];

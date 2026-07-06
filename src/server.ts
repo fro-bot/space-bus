@@ -147,8 +147,35 @@ function redactedReadinessError(
  *   signal to the caller. Rethrow so the caller's try/catch treats it as a
  *   genuine failure instead of a false "handled" state.
  * - ESRCH on the bare-pid fallback means "already gone" — a no-op.
+ *
+ * Belt-and-suspenders pid guard: `process.kill(-1, sig)` signals EVERY
+ * process the caller can signal, and `process.kill(-0, sig)` signals the
+ * caller's own whole process group — either is catastrophic. The schemas
+ * feeding this function already reject pid<2 at parse time, but this guard
+ * makes the function itself safe even if a caller is ever added that
+ * bypasses that validation: pid<=1 skips the group form entirely and goes
+ * straight to a bare-pid signal.
  */
+/** Robust EPERM check for a caught value that may or may not be a real
+ * Node errno error (e.g. it could be a non-Error thrown value). */
+function isEpermError(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    "code" in err &&
+    (err as { code?: unknown }).code === "EPERM"
+  );
+}
+
 function signalGroup(pid: number, sig: NodeJS.Signals): boolean {
+  if (pid <= 1) {
+    try {
+      process.kill(pid, sig);
+    } catch {
+      // Already gone — fine.
+    }
+    return false;
+  }
   try {
     process.kill(-pid, sig);
     return true;
@@ -183,9 +210,14 @@ function killIdentifiedProcess(
       if (verifyIdentity(pid, identity)) signalGroup(pid, "SIGTERM");
       return;
     }
-    // No identity available — best-effort direct kill. Only safe for a
-    // pid the caller knows is fresh (see doc comment above).
-    signalGroup(pid, "SIGTERM");
+    // No identity to verify — this pid might be a RECYCLED one now
+    // belonging to an unrelated process. Group-signaling it would risk
+    // SIGTERM-ing that unrelated process's entire subtree (worse blast
+    // radius than the old bare-pid kill). Fall back to a narrow bare-pid
+    // signal instead — only safe for a pid the caller knows is fresh (see
+    // doc comment above), and even then the blast radius stays bounded to
+    // the single pid.
+    process.kill(pid, "SIGTERM");
   } catch {
     // Best-effort: already gone, or signalGroup rethrew EPERM (group
     // exists but we lack permission to signal it) — either way this is a
@@ -669,8 +701,23 @@ export async function stopServer(
 
   try {
     groupSignaled = signalGroup(pid, "SIGTERM");
-  } catch {
-    // Already gone between verify and signal — treat as stopped.
+  } catch (err) {
+    if (isEpermError(err)) {
+      // The group EXISTS (server is ALIVE and may still hold the port) but
+      // we lack permission to signal it — this is NOT a successful stop.
+      // Leave the discovery file (and its credentials) intact rather than
+      // discarding them for a server we never actually stopped.
+      //
+      // Test gap: reliably forcing a real EPERM here (e.g. signaling
+      // another user's process group) needs privilege manipulation not
+      // available in this test environment, and signalGroup isn't
+      // separately exported/injectable for a stub. Covered by manual
+      // reasoning + this comment rather than a brittle/over-engineered
+      // test harness; the ESRCH ("already gone") and success paths below
+      // are covered by the existing group-stop tests.
+      return { stopped: false };
+    }
+    // ESRCH: already gone between verify and signal — treat as stopped.
     removeDiscovery(rosterPath);
     return { stopped: true };
   }
@@ -682,7 +729,10 @@ export async function stopServer(
 
   try {
     groupSignaled = signalGroup(pid, "SIGKILL");
-  } catch {
+  } catch (err) {
+    if (isEpermError(err)) {
+      return { stopped: false };
+    }
     removeDiscovery(rosterPath);
     return { stopped: true };
   }
@@ -716,7 +766,9 @@ async function waitForDeath(pid: number, budgetMs: number): Promise<boolean> {
  * actually applied the group form (see signalGroup's return value) — for
  * a non-leader pid, `process.kill(-pid, 0)` throws ESRCH immediately
  * regardless of whether the bare pid is alive, which would falsely report
- * "dead".
+ * "dead". Assumes children stay in the spawned process group (true for
+ * harness/opencode); a child that re-`setpgid`'s itself out of the group
+ * would escape this liveness check — not handled, not expected in practice.
  */
 async function waitForGroupDeath(
   pid: number,
