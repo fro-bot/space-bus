@@ -770,6 +770,52 @@ describe("server lifecycle", () => {
     await expect(reapSurvivingGroup(deadPid)).resolves.toBeUndefined();
   });
 
+  test("reapSurvivingGroup escalates to SIGKILL when the group leader is dead but the surviving child ignores SIGTERM", async () => {
+    writeRoster(
+      makeRoster({
+        managed: {
+          command: WRAPPER_COMMAND,
+          cwd: REPO_ROOT,
+        },
+      }),
+    );
+
+    const originalEnv = process.env["STUB_IGNORE_SIGTERM"];
+    process.env["STUB_IGNORE_SIGTERM"] = "1";
+    try {
+      const handle = await ensureServer(rosterPath, {
+        readinessBudgetMs: 5000,
+      });
+      spawnedPids.push(handle.pid);
+
+      const childPid = readWrapperChildPid(logFilePath(rosterPath));
+      expect(childPid).not.toBeNull();
+      const childPidValue = childPid as number;
+      spawnedPids.push(childPidValue);
+
+      expect(isAlive(handle.pid)).toBe(true);
+      expect(isAlive(childPidValue)).toBe(true);
+
+      // Kill ONLY the wrapper (bare pid, not the group) so the child is
+      // orphaned but stays alive under the now-dead leader's pgid.
+      process.kill(handle.pid, "SIGKILL");
+      expect(await waitUntilDead(handle.pid)).toBe(true);
+      // Give the child a moment — it must still be alive (the orphan bug).
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(isAlive(childPidValue)).toBe(true);
+
+      // The child ignores SIGTERM (STUB_IGNORE_SIGTERM=1), so this can
+      // only pass if reapSurvivingGroup escalates to SIGKILL after the
+      // grace period — a SIGTERM-only reap would leave the child alive.
+      await reapSurvivingGroup(handle.pid);
+
+      expect(await waitUntilDead(childPidValue)).toBe(true);
+    } finally {
+      if (originalEnv === undefined) delete process.env["STUB_IGNORE_SIGTERM"];
+      else process.env["STUB_IGNORE_SIGTERM"] = originalEnv;
+    }
+  }, 15_000);
+
   test("reapSurvivingGroup never signals a live pid (recycle safety) — bystander untouched", async () => {
     const { spawn } = await import("node:child_process");
     const bystander = spawn("sleep", ["30"], {
@@ -848,6 +894,16 @@ describe("server lifecycle", () => {
     });
 
     test("death (crash): status reports running:false on tick 2 -> {reason:'died'}", async () => {
+      // Also proves the died-path wiring: superviseTick's died branch calls
+      // `reapSurvivingGroup(tick.handle.pid)` (fakeHandle.pid: 12345, a
+      // bogus/non-existent pid here) before returning the outcome. Since
+      // 12345 isn't a real process, reapSurvivingGroup's isAlive/group-ESRCH
+      // guards make it a safe no-op — this test doesn't assert the reap's
+      // side effects directly (that needs a real process; see the
+      // `reapSurvivingGroup` describe block's integration tests below,
+      // including the SIGKILL-escalation test), but it does prove the died
+      // outcome is still reached (i.e. the reap call doesn't throw or hang
+      // the died path even when there's nothing to reap).
       let tick = 0;
       let stopCalls = 0;
       const outcome = await superviseServer(rosterPath, fakeHandle, {
