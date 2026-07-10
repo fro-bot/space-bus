@@ -16,6 +16,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { openSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
+
 import { type ManagedServerConfig, manifestSchema } from "./config";
 import {
   acquireLock,
@@ -31,6 +32,7 @@ import {
   readProvisional,
   releaseLock,
   removeDiscovery,
+  removeDiscoveryIfMatches,
   removeProvisional,
   verifyIdentity,
   writeDiscovery,
@@ -639,7 +641,14 @@ export async function ensureServer(
  */
 export function serverStatus(rosterPath: string): ServerStatus {
   const discovery = readDiscovery(rosterPath);
-  if (!discovery || !verifyIdentity(discovery.pid, discovery.identity)) {
+  if (!discovery) {
+    return { running: false };
+  }
+  if (!verifyIdentity(discovery.pid, discovery.identity)) {
+    removeDiscoveryIfMatches(rosterPath, {
+      pid: discovery.pid,
+      identity: discovery.identity,
+    });
     return { running: false };
   }
 

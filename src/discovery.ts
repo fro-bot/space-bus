@@ -126,6 +126,34 @@ export function removeDiscovery(rosterPath: string): void {
   }
 }
 
+/**
+ * Compare-and-delete: removes the discovery file only if the record still
+ * on disk matches the stale `{ pid, identity }` that was previously read.
+ * Guards against deleting a fresh record written by a concurrent respawn
+ * in the window between reading a stale record and acting on it. Never
+ * throws across the boundary — `readDiscovery` already returns null on any
+ * read error, and `removeDiscovery` swallows ENOENT; the try/catch here is
+ * a defensive belt-and-suspenders mirror of the best-effort swallow used
+ * by `removeDiscovery`/`removeProvisional`.
+ */
+export function removeDiscoveryIfMatches(
+  rosterPath: string,
+  expected: { pid: number; identity: string },
+): void {
+  try {
+    const current = readDiscovery(rosterPath);
+    if (
+      current &&
+      current.pid === expected.pid &&
+      current.identity === expected.identity
+    ) {
+      removeDiscovery(rosterPath);
+    }
+  } catch {
+    // best-effort — never throw over a caller's dead-pid handling.
+  }
+}
+
 // --- Live endpoint attach (pure read-path, used by config.ts and server.ts) --
 
 // Re-exported for existing Node-side importers (config.ts, server.ts) — the
@@ -151,7 +179,13 @@ export function attachLive(rosterPath: string): LiveEndpoint | null {
   const discovery = readDiscovery(rosterPath);
   if (!discovery) return null;
   if (!loopbackOk(discovery.baseUrl)) return null;
-  if (!verifyIdentity(discovery.pid, discovery.identity)) return null;
+  if (!verifyIdentity(discovery.pid, discovery.identity)) {
+    removeDiscoveryIfMatches(rosterPath, {
+      pid: discovery.pid,
+      identity: discovery.identity,
+    });
+    return null;
+  }
   return {
     baseUrl: discovery.baseUrl,
     credentials: { username: "opencode", password: discovery.password },
