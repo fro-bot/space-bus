@@ -127,14 +127,14 @@ export function removeDiscovery(rosterPath: string): void {
 }
 
 /**
- * Compare-and-delete: removes the discovery file only if the record still
- * on disk matches the stale `{ pid, identity }` that was previously read.
- * Guards against deleting a fresh record written by a concurrent respawn
- * in the window between reading a stale record and acting on it. Never
- * throws across the boundary — `readDiscovery` already returns null on any
- * read error, and `removeDiscovery` swallows ENOENT; the try/catch here is
- * a defensive belt-and-suspenders mirror of the best-effort swallow used
- * by `removeDiscovery`/`removeProvisional`.
+ * Compare-and-delete: re-reads the record and unlinks only if the on-disk
+ * pid+identity still match the ones passed in, so a fresh record written
+ * by a concurrent respawn is (practically) preserved. A vanishingly small
+ * window remains between the re-read and the unlink; a respawn's atomic
+ * rename landing in that window could still be removed — accepted as
+ * best-effort, consistent with the discovery layer's other best-effort
+ * operations, and self-heals (the orphaned daemon is reaped on the next
+ * ensure).
  */
 export function removeDiscoveryIfMatches(
   rosterPath: string,
@@ -150,7 +150,11 @@ export function removeDiscoveryIfMatches(
       removeDiscovery(rosterPath);
     }
   } catch {
-    // best-effort — never throw over a caller's dead-pid handling.
+    // Swallows all errors — cleanup is best-effort and must never
+    // propagate over the caller's dead-pid handling. (Broader than
+    // removeDiscovery's ENOENT-only swallow: a stale-record cleanup
+    // failure, e.g. EACCES, must not turn a not-running result into a
+    // throw.)
   }
 }
 

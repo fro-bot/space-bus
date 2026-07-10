@@ -274,7 +274,7 @@ describe("discovery", () => {
     expect(existsSync(discoveryFilePath(rosterPath))).toBe(true);
   });
 
-  test("attachLive's cleanup does not delete a fresh concurrent respawn record (compare-and-delete race guard)", () => {
+  test("removeDiscoveryIfMatches preserves a record whose identity differs from the stale expected key", () => {
     // Simulate: a stale dead-pid record was read, but by the time cleanup
     // runs the on-disk file has already been overwritten by a fresh
     // respawn with a different identity. We can't hit the exact race

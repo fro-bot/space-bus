@@ -410,7 +410,13 @@ describe("server lifecycle", () => {
     const handle = await ensureServer(rosterPath, { readinessBudgetMs: 5000 });
     spawnedPids.push(handle.pid);
 
-    expect(serverStatus(rosterPath).running).toBe(true);
+    expect(serverStatus(rosterPath)).toEqual(
+      expect.objectContaining({
+        running: true,
+        port: expect.any(Number),
+        pid: expect.any(Number),
+      }),
+    );
     expect(existsSync(discoveryFilePath(rosterPath))).toBe(true);
   });
 
