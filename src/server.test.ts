@@ -764,6 +764,50 @@ describe("server lifecycle", () => {
     expect(await waitUntilDead(childPidValue)).toBe(true);
   }, 15_000);
 
+  // --- stopServer: dead-wrapper branch parity (issue #63 Half 1) --------
+
+  test("stopServer reaps a surviving orphaned child when the recorded wrapper has already died", async () => {
+    writeRoster(
+      makeRoster({
+        managed: {
+          command: WRAPPER_COMMAND,
+          cwd: REPO_ROOT,
+        },
+      }),
+    );
+
+    const handle = await ensureServer(rosterPath, { readinessBudgetMs: 5000 });
+    spawnedPids.push(handle.pid);
+
+    const childPid = readWrapperChildPid(logFilePath(rosterPath));
+    expect(childPid).not.toBeNull();
+    const childPidValue = childPid as number;
+    spawnedPids.push(childPidValue);
+
+    expect(isAlive(handle.pid)).toBe(true);
+    expect(isAlive(childPidValue)).toBe(true);
+
+    // Kill ONLY the wrapper (bare pid, not the group) so the child is
+    // orphaned but stays alive under the now-dead leader's pgid. This
+    // makes verifyIdentity fail on the next stopServer call (the recorded
+    // wrapper pid is gone/recycled), driving the dead-wrapper branch.
+    process.kill(handle.pid, "SIGKILL");
+    expect(await waitUntilDead(handle.pid)).toBe(true);
+    // Give the child a moment — it must still be alive (the orphan bug).
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(isAlive(childPidValue)).toBe(true);
+
+    const { stopped } = await stopServer(rosterPath);
+
+    // The verified-stop contract is unchanged: we didn't cleanly stop a
+    // server we verified — the wrapper was already gone. Reaping the
+    // orphan is best-effort cleanup, not a verified stop.
+    expect(stopped).toBe(false);
+    // But the surviving orphaned child must now be reaped.
+    expect(await waitUntilDead(childPidValue)).toBe(true);
+    expect(readDiscovery(rosterPath)).toBeNull();
+  }, 15_000);
+
   test("reapSurvivingGroup is a no-op when the whole group is already dead (clean crash)", async () => {
     // A pid whose group is fully gone — never a real process.
     const deadPid = 2_147_483_000;
