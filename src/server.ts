@@ -211,6 +211,24 @@ function signalGroup(pid: number, sig: NodeJS.Signals): boolean {
   return false;
 }
 
+/**
+ * Signals ONLY the process group (`-pid`), never the bare pid. Unlike
+ * signalGroup, it does NOT fall back to a bare-pid kill on ESRCH — in the
+ * reaper, the bare pid may have been recycled to an unrelated process, so a
+ * fallback could signal a stranger. Returns true if the group signal was
+ * delivered, false on ESRCH (group gone) or EPERM (exists but not signalable
+ * — fail closed, do not signal).
+ */
+function signalGroupOnly(pid: number, sig: NodeJS.Signals): boolean {
+  if (pid <= 1) return false;
+  try {
+    process.kill(-pid, sig);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function killIdentifiedProcess(
   pid: number,
   identity: string | null | undefined,
@@ -776,6 +794,64 @@ export async function stopServer(
   return { stopped: false };
 }
 
+/**
+ * Best-effort reap of a surviving process group whose leader has died —
+ * the died-path fix for the wrapper-only-death orphan (issue #49 Layer B
+ * follow-up). Guarded so it can NEVER signal a process that recycled the
+ * leader's pid:
+ *
+ *  - If `pid` is still alive, do nothing. Either it's still our (running)
+ *    wrapper — shouldn't happen on the died path — or it's an unrelated
+ *    process that recycled the pid. Never signal a live leader here.
+ *  - If `pid` is dead, check group liveness (`process.kill(-pid, 0)`). If
+ *    the whole group is already gone (ESRCH), it's a clean crash — no-op.
+ *  - If the leader is dead but the group still has live members, so this
+ *    is, in practice, still our group (a live group's pgid is not reused
+ *    while any member holds it — a strong practical guard, not an absolute
+ *    proof: a narrow TOCTOU remains if the whole original group exits and
+ *    the pgid is recycled between this check and the signal, the same
+ *    residual race stopServer's verify→signal path carries): SIGTERM the
+ *    group via `signalGroupOnly` (never falls back to a bare-pid signal —
+ *    the recycled bare pid could be a stranger), wait a bounded grace,
+ *    escalate to SIGKILL if members survive.
+ *
+ * Known limitation (zombie leader): the `isAlive(pid)` guard above is
+ * deliberately safe-biased — it errs toward NOT reaping. On Linux, a
+ * freshly-exited-but-unreaped ZOMBIE leader still passes `isAlive`
+ * (`kill(pid, 0)` succeeds for a zombie until reaped by its parent), so if
+ * the died path is ever reached while our wrapper is a zombie with a
+ * still-live child, the reap is skipped and the child leaks until a later
+ * tick observes the pid absent. This is a narrow race — normally the
+ * zombie's identity still matches, so `serverStatus` reports running and
+ * the died path isn't reached at all — accepted as a known limitation
+ * under the same-user trust boundary; tracked as a follow-up.
+ *
+ * Never throws — this runs on the fail-closed exit path and must not break
+ * it (mirrors the swallow style of `stopForHung`/`removeDiscoveryIfMatches`).
+ */
+export async function reapSurvivingGroup(pid: number): Promise<void> {
+  try {
+    if (isAlive(pid)) return;
+
+    let groupAlive: boolean;
+    try {
+      process.kill(-pid, 0);
+      groupAlive = true;
+    } catch {
+      groupAlive = false;
+    }
+    if (!groupAlive) return;
+
+    if (!signalGroupOnly(pid, "SIGTERM")) return;
+    if (await waitForGroupDeath(pid, STOP_GRACE_MS)) return;
+
+    signalGroupOnly(pid, "SIGKILL");
+    await waitForGroupDeath(pid, STOP_GRACE_MS);
+  } catch {
+    // Best-effort — never throw into the died-path exit.
+  }
+}
+
 export type SuperviseOutcome =
   | { reason: "signal" }
   | { reason: "died" }
@@ -886,7 +962,10 @@ async function superviseTick(
   const st = tick.status(tick.rosterPath);
   if (!st.running) {
     // serverStatus already ran Layer A compare-and-delete cleanup on this
-    // pid-gone path — no stale record remains.
+    // pid-gone path — no stale record remains. Best-effort reap of a
+    // surviving group (wrapper died, child orphaned) before exiting
+    // fail-closed; guarded against pid recycling (see reapSurvivingGroup).
+    await reapSurvivingGroup(tick.handle.pid);
     return { kind: "outcome", outcome: { reason: "died" } };
   }
 
