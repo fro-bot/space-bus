@@ -776,6 +776,48 @@ export async function stopServer(
   return { stopped: false };
 }
 
+/**
+ * Best-effort reap of a surviving process group whose leader has died —
+ * the died-path fix for the wrapper-only-death orphan (issue #49 Layer B
+ * follow-up). Guarded so it can NEVER signal a process that recycled the
+ * leader's pid:
+ *
+ *  - If `pid` is still alive, do nothing. Either it's still our (running)
+ *    wrapper — shouldn't happen on the died path — or it's an unrelated
+ *    process that recycled the pid. Never signal a live leader here.
+ *  - If `pid` is dead, check group liveness (`process.kill(-pid, 0)`). If
+ *    the whole group is already gone (ESRCH), it's a clean crash — no-op.
+ *  - If the leader is dead but the group still has live members, that
+ *    group's pgid cannot have been recycled (a live group holds its pgid),
+ *    so this is provably still our group: SIGTERM the group, wait a bounded
+ *    grace, escalate to SIGKILL if members survive.
+ *
+ * Never throws — this runs on the fail-closed exit path and must not break
+ * it (mirrors the swallow style of `stopForHung`/`removeDiscoveryIfMatches`).
+ */
+export async function reapSurvivingGroup(pid: number): Promise<void> {
+  try {
+    if (isAlive(pid)) return;
+
+    let groupAlive: boolean;
+    try {
+      process.kill(-pid, 0);
+      groupAlive = true;
+    } catch {
+      groupAlive = false;
+    }
+    if (!groupAlive) return;
+
+    signalGroup(pid, "SIGTERM");
+    if (await waitForGroupDeath(pid, STOP_GRACE_MS)) return;
+
+    signalGroup(pid, "SIGKILL");
+    await waitForGroupDeath(pid, STOP_GRACE_MS);
+  } catch {
+    // Best-effort — never throw into the died-path exit.
+  }
+}
+
 export type SuperviseOutcome =
   | { reason: "signal" }
   | { reason: "died" }
@@ -886,7 +928,10 @@ async function superviseTick(
   const st = tick.status(tick.rosterPath);
   if (!st.running) {
     // serverStatus already ran Layer A compare-and-delete cleanup on this
-    // pid-gone path — no stale record remains.
+    // pid-gone path — no stale record remains. Best-effort reap of a
+    // surviving group (wrapper died, child orphaned) before exiting
+    // fail-closed; guarded against pid recycling (see reapSurvivingGroup).
+    await reapSurvivingGroup(tick.handle.pid);
     return { kind: "outcome", outcome: { reason: "died" } };
   }
 

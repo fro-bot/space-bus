@@ -24,6 +24,7 @@ import type { ProbeOutcome, ServerHandle, ServerStatus } from "./server";
 import {
   attachServer,
   ensureServer,
+  reapSurvivingGroup,
   redactSensitive,
   SUPERVISE_INTERVAL_MS,
   SUPERVISE_UNHEALTHY_BUDGET_MS,
@@ -726,6 +727,67 @@ describe("server lifecycle", () => {
       else process.env["STUB_IGNORE_SIGTERM"] = originalEnv;
     }
   }, 15_000);
+
+  // --- reapSurvivingGroup: died-path orphan reap (guarded) --------------
+
+  test("reapSurvivingGroup kills a surviving child when the wrapper (group leader) has died", async () => {
+    writeRoster(
+      makeRoster({
+        managed: {
+          command: WRAPPER_COMMAND,
+          cwd: REPO_ROOT,
+        },
+      }),
+    );
+
+    const handle = await ensureServer(rosterPath, { readinessBudgetMs: 5000 });
+    spawnedPids.push(handle.pid);
+
+    const childPid = readWrapperChildPid(logFilePath(rosterPath));
+    expect(childPid).not.toBeNull();
+    const childPidValue = childPid as number;
+    spawnedPids.push(childPidValue);
+
+    expect(isAlive(handle.pid)).toBe(true);
+    expect(isAlive(childPidValue)).toBe(true);
+
+    // Kill ONLY the wrapper (bare pid, not the group) so the child is
+    // orphaned but stays alive under the now-dead leader's pgid.
+    process.kill(handle.pid, "SIGKILL");
+    expect(await waitUntilDead(handle.pid)).toBe(true);
+    // Give the child a moment — it must still be alive (the orphan bug).
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(isAlive(childPidValue)).toBe(true);
+
+    await reapSurvivingGroup(handle.pid);
+
+    expect(await waitUntilDead(childPidValue)).toBe(true);
+  }, 15_000);
+
+  test("reapSurvivingGroup is a no-op when the whole group is already dead (clean crash)", async () => {
+    // A pid whose group is fully gone — never a real process.
+    const deadPid = 2_147_483_000;
+    await expect(reapSurvivingGroup(deadPid)).resolves.toBeUndefined();
+  });
+
+  test("reapSurvivingGroup never signals a live pid (recycle safety) — bystander untouched", async () => {
+    const { spawn } = await import("node:child_process");
+    const bystander = spawn("sleep", ["30"], {
+      detached: true,
+      stdio: "ignore",
+    });
+    bystander.unref();
+    const bystanderPid = bystander.pid as number;
+    spawnedPids.push(bystanderPid);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(isAlive(bystanderPid)).toBe(true);
+
+    await reapSurvivingGroup(bystanderPid);
+
+    // The leader-alive guard means reap must never signal this pid.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(isAlive(bystanderPid)).toBe(true);
+  });
 
   // --- Finding 8: crashed child fails fast, well under the budget --------
 
