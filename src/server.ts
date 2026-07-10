@@ -725,6 +725,11 @@ export async function stopServer(
   if (!discovery) return { stopped: false };
 
   if (!verifyIdentity(discovery.pid, discovery.identity)) {
+    // The recorded wrapper pid is gone/recycled. If the wrapper was a
+    // group leader whose port-holder child survived (wrapper died alone),
+    // the child would otherwise leak, orphaned and still holding the
+    // port — dead-wrapper parity with the supervision died-path reap.
+    await reapSurvivingGroup(discovery.pid);
     removeDiscovery(rosterPath);
     return { stopped: false };
   }
