@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   rmSync,
@@ -20,6 +21,7 @@ import {
   lockFilePath,
   readDiscovery,
   releaseLock,
+  removeDiscoveryIfMatches,
   stateDirFor,
   verifyIdentity,
   writeDiscovery,
@@ -197,5 +199,99 @@ describe("discovery", () => {
     const handle = acquireLock(rosterPath);
     expect(handle).not.toBeNull();
     releaseLock(handle as NonNullable<typeof handle>);
+  });
+
+  // --- removeDiscoveryIfMatches (compare-and-delete) ------------------------
+
+  test("removeDiscoveryIfMatches removes the file when pid+identity match", () => {
+    const data = makeDiscovery();
+    writeDiscovery(rosterPath, data);
+    removeDiscoveryIfMatches(rosterPath, {
+      pid: data.pid,
+      identity: data.identity,
+    });
+    expect(existsSync(discoveryFilePath(rosterPath))).toBe(false);
+  });
+
+  test("removeDiscoveryIfMatches leaves the file intact when identity differs (simulated respawn)", () => {
+    const data = makeDiscovery();
+    writeDiscovery(rosterPath, data);
+    removeDiscoveryIfMatches(rosterPath, {
+      pid: data.pid,
+      identity: "some-other-fresh-identity",
+    });
+    expect(existsSync(discoveryFilePath(rosterPath))).toBe(true);
+    expect(readDiscovery(rosterPath)).toEqual(data);
+  });
+
+  test("removeDiscoveryIfMatches leaves the file intact when pid differs", () => {
+    const data = makeDiscovery();
+    writeDiscovery(rosterPath, data);
+    removeDiscoveryIfMatches(rosterPath, {
+      pid: 2_147_483_000,
+      identity: data.identity,
+    });
+    expect(existsSync(discoveryFilePath(rosterPath))).toBe(true);
+    expect(readDiscovery(rosterPath)).toEqual(data);
+  });
+
+  test("removeDiscoveryIfMatches is a no-op and does not throw when no file is present", () => {
+    expect(() =>
+      removeDiscoveryIfMatches(rosterPath, {
+        pid: process.pid,
+        identity: "anything",
+      }),
+    ).not.toThrow();
+    expect(existsSync(discoveryFilePath(rosterPath))).toBe(false);
+  });
+
+  test("removeDiscoveryIfMatches does not throw when the on-disk record is corrupt", () => {
+    writeDiscovery(rosterPath, makeDiscovery());
+    writeFileSync(discoveryFilePath(rosterPath), "not json{{{");
+    expect(() =>
+      removeDiscoveryIfMatches(rosterPath, {
+        pid: process.pid,
+        identity: "anything",
+      }),
+    ).not.toThrow();
+  });
+
+  // --- attachLive dead-pid cleanup (Unit 2) ---------------------------------
+
+  test("attachLive removes the stale discovery file when identity verification fails (dead pid)", () => {
+    writeDiscovery(
+      rosterPath,
+      makeDiscovery({ pid: 2_147_483_000, identity: "bogus-identity" }),
+    );
+    expect(attachLive(rosterPath)).toBeNull();
+    expect(existsSync(discoveryFilePath(rosterPath))).toBe(false);
+  });
+
+  test("attachLive leaves an alive+verified discovery record untouched", () => {
+    writeDiscovery(rosterPath, makeDiscovery());
+    const endpoint = attachLive(rosterPath);
+    expect(endpoint).not.toBeNull();
+    expect(existsSync(discoveryFilePath(rosterPath))).toBe(true);
+  });
+
+  test("removeDiscoveryIfMatches preserves a record whose identity differs from the stale expected key", () => {
+    // Simulate: a stale dead-pid record was read, but by the time cleanup
+    // runs the on-disk file has already been overwritten by a fresh
+    // respawn with a different identity. We can't hit the exact race
+    // window, but we can prove the underlying primitive protects a fresh
+    // record even under attachLive's real read path by writing the fresh
+    // record with an identity that differs from what a stale read would
+    // have captured, then invoking removeDiscoveryIfMatches with the
+    // stale key directly (the same call attachLive makes internally).
+    const freshIdentity = captureIdentity(process.pid) ?? "fresh-identity";
+    writeDiscovery(
+      rosterPath,
+      makeDiscovery({ pid: process.pid, identity: freshIdentity }),
+    );
+    removeDiscoveryIfMatches(rosterPath, {
+      pid: process.pid,
+      identity: "stale-identity-from-dead-record",
+    });
+    expect(existsSync(discoveryFilePath(rosterPath))).toBe(true);
   });
 });

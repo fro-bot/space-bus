@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -8,7 +8,11 @@ import {
   loadContext,
   resolveRosterPath,
 } from "./config";
-import { removeDiscovery } from "./discovery";
+import {
+  discoveryFilePath,
+  removeDiscovery,
+  writeDiscovery,
+} from "./discovery";
 import { ensureServer, stopServer } from "./server";
 
 const STUB_COMMAND = ["bun", "test/fixtures/stub-server.ts"];
@@ -225,6 +229,24 @@ describe("config", () => {
       expect(() => loadContext(managedDir)).toThrow(
         /managed server not running.*ensureServer\(\)|space-bus serve/,
       );
+    });
+
+    test("managed roster + stale discovery (dead pid): loadContext throws AND cleans up the discovery file", () => {
+      writeDiscovery(rosterPath, {
+        port: 4096,
+        pid: 2_147_483_000,
+        identity: "bogus-dead-identity",
+        password: "stale-password",
+        spawnConfig: { command: STUB_COMMAND, cwd: REPO_ROOT },
+        baseUrl: "http://127.0.0.1:4096",
+      });
+      expect(existsSync(discoveryFilePath(rosterPath))).toBe(true);
+
+      expect(() => loadContext(managedDir)).toThrow(
+        /managed server not running.*ensureServer\(\)|space-bus serve/,
+      );
+
+      expect(existsSync(discoveryFilePath(rosterPath))).toBe(false);
     });
 
     test("managed roster + live stub: loadContext returns discovery-sourced baseUrl+credentials", async () => {

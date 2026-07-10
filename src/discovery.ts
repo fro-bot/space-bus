@@ -126,6 +126,38 @@ export function removeDiscovery(rosterPath: string): void {
   }
 }
 
+/**
+ * Compare-and-delete: re-reads the record and unlinks only if the on-disk
+ * pid+identity still match the ones passed in, so a fresh record written
+ * by a concurrent respawn is (practically) preserved. A vanishingly small
+ * window remains between the re-read and the unlink; a respawn's atomic
+ * rename landing in that window could still be removed — accepted as
+ * best-effort, consistent with the discovery layer's other best-effort
+ * operations, and self-heals (the orphaned daemon is reaped on the next
+ * ensure).
+ */
+export function removeDiscoveryIfMatches(
+  rosterPath: string,
+  expected: { pid: number; identity: string },
+): void {
+  try {
+    const current = readDiscovery(rosterPath);
+    if (
+      current &&
+      current.pid === expected.pid &&
+      current.identity === expected.identity
+    ) {
+      removeDiscovery(rosterPath);
+    }
+  } catch {
+    // Swallows all errors — cleanup is best-effort and must never
+    // propagate over the caller's dead-pid handling. (Broader than
+    // removeDiscovery's ENOENT-only swallow: a stale-record cleanup
+    // failure, e.g. EACCES, must not turn a not-running result into a
+    // throw.)
+  }
+}
+
 // --- Live endpoint attach (pure read-path, used by config.ts and server.ts) --
 
 // Re-exported for existing Node-side importers (config.ts, server.ts) — the
@@ -151,7 +183,13 @@ export function attachLive(rosterPath: string): LiveEndpoint | null {
   const discovery = readDiscovery(rosterPath);
   if (!discovery) return null;
   if (!loopbackOk(discovery.baseUrl)) return null;
-  if (!verifyIdentity(discovery.pid, discovery.identity)) return null;
+  if (!verifyIdentity(discovery.pid, discovery.identity)) {
+    removeDiscoveryIfMatches(rosterPath, {
+      pid: discovery.pid,
+      identity: discovery.identity,
+    });
+    return null;
+  }
   return {
     baseUrl: discovery.baseUrl,
     credentials: { username: "opencode", password: discovery.password },

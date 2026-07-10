@@ -12,6 +12,7 @@ import { join } from "node:path";
 
 import {
   captureIdentity,
+  discoveryFilePath,
   isAlive,
   logFilePath,
   provisionalFilePath,
@@ -388,6 +389,35 @@ describe("server lifecycle", () => {
 
   test("serverStatus reports running:false when there is no live discovery", () => {
     expect(serverStatus(rosterPath)).toEqual({ running: false });
+    expect(existsSync(discoveryFilePath(rosterPath))).toBe(false);
+  });
+
+  test("serverStatus cleans up a stale discovery record for a dead pid", () => {
+    writeDiscovery(rosterPath, {
+      port: 4096,
+      pid: 2_147_483_000,
+      identity: "bogus-identity",
+      password: "test-password",
+      spawnConfig: { command: STUB_COMMAND },
+      baseUrl: "http://127.0.0.1:4096",
+    });
+    expect(existsSync(discoveryFilePath(rosterPath))).toBe(true);
+    expect(serverStatus(rosterPath)).toEqual({ running: false });
+    expect(existsSync(discoveryFilePath(rosterPath))).toBe(false);
+  });
+
+  test("serverStatus leaves an alive+verified discovery record intact", async () => {
+    const handle = await ensureServer(rosterPath, { readinessBudgetMs: 5000 });
+    spawnedPids.push(handle.pid);
+
+    expect(serverStatus(rosterPath)).toEqual(
+      expect.objectContaining({
+        running: true,
+        port: expect.any(Number),
+        pid: expect.any(Number),
+      }),
+    );
+    expect(existsSync(discoveryFilePath(rosterPath))).toBe(true);
   });
 
   test("serverStatus reports configDrift when the roster's managed command differs from spawnConfig", async () => {
