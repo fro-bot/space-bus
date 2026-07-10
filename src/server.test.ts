@@ -509,7 +509,11 @@ describe("server lifecycle", () => {
 
       const { stopped } = await stopServer(rosterPath);
       expect(stopped).toBe(true);
-      expect(isAlive(handle.pid)).toBe(false);
+      // After the group SIGKILL the child can briefly linger as a reapable
+      // zombie (kill(pid,0) still succeeds) until init reparents+reaps it —
+      // await death instead of asserting it instantly, matching the reap
+      // test below. Bare isAlive here flaked ~33% in isolation.
+      expect(await waitUntilDead(handle.pid)).toBe(true);
       expect(readDiscovery(rosterPath)).toBeNull();
     } finally {
       if (originalEnv === undefined) delete process.env["STUB_IGNORE_SIGTERM"];
