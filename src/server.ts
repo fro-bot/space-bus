@@ -50,6 +50,11 @@ const MIN_PROBE_PHASE_MS = 3_000;
 const PROBE_FETCH_TIMEOUT_MS = 2_000;
 /** Bounded window for stopServer's SIGTERM->SIGKILL escalation. */
 const STOP_GRACE_MS = 2_000;
+/** Interval between supervision liveness ticks. */
+export const SUPERVISE_INTERVAL_MS = 5_000;
+/** Consecutive unreachable-probe failures (pid still alive) before the
+ * supervisor declares the daemon hung and kills it. */
+export const SUPERVISE_FAILURE_THRESHOLD = 3;
 
 export interface EnsureServerOptions {
   /** Bounds the readiness probe loop after spawning. Default 15s. */
@@ -274,9 +279,12 @@ async function waitForDiscoveryOrFail(
   );
 }
 
-type ProbeOutcome = "ready" | "auth-failure" | "retry";
+export type ProbeOutcome = "ready" | "auth-failure" | "retry";
 
-async function probe(baseUrl: string, password: string): Promise<ProbeOutcome> {
+export async function probe(
+  baseUrl: string,
+  password: string,
+): Promise<ProbeOutcome> {
   try {
     const res = await fetch(`${baseUrl}/session?limit=1`, {
       headers: { authorization: `Basic ${basicAuthToken(password)}` },
@@ -758,6 +766,123 @@ export async function stopServer(
   // Survived SIGKILL too (shouldn't happen) — leave the discovery file so
   // credentials aren't lost while the server may still be reachable.
   return { stopped: false };
+}
+
+export type SuperviseOutcome =
+  | { reason: "signal" }
+  | { reason: "died" }
+  | { reason: "hung" };
+
+export interface SuperviseServerOptions {
+  /** Interval between liveness ticks. Default `SUPERVISE_INTERVAL_MS`. */
+  intervalMs?: number;
+  /** Consecutive `retry` probes (pid alive) before declaring the daemon
+   * hung. Default `SUPERVISE_FAILURE_THRESHOLD`. */
+  threshold?: number;
+  /** Injectable sleep, for deterministic tests. */
+  sleep?: (ms: number) => Promise<void>;
+  /** Injectable serverStatus, for deterministic tests. */
+  status?: (rosterPath: string) => ServerStatus;
+  /** Injectable probe, for deterministic tests. */
+  probe?: (baseUrl: string, password: string) => Promise<ProbeOutcome>;
+  /** Injectable stopServer, for deterministic tests. */
+  stop?: (rosterPath: string) => Promise<{ stopped: boolean }>;
+  /** Checked at the top of every tick; returning true breaks the loop with
+   * `{ reason: "signal" }` before any liveness work happens on that tick. */
+  shouldStop?: () => boolean;
+}
+
+/**
+ * Active supervision loop for `--foreground`: polls pid-identity liveness
+ * (`serverStatus`) and an authenticated HTTP probe, and returns a
+ * fail-closed outcome once death is confirmed. Never restarts the daemon
+ * in-process — callers (the CLI) act on the outcome (e.g. exit non-zero
+ * so an external process manager can restart `space-bus serve`).
+ *
+ * Liveness rules:
+ * - pid gone (`serverStatus().running === false`) is immediate death — no
+ *   grace period, the process is already gone. `serverStatus` itself runs
+ *   Layer A compare-and-delete cleanup on this path, so no stale record
+ *   remains.
+ * - pid alive but the authenticated probe returns `"retry"` (unreachable/
+ *   timeout/5xx) increments a failure counter; `"ready"` or
+ *   `"auth-failure"` (server is up and answering — a password mismatch is
+ *   config, not death) resets it to 0.
+ * - Once the counter reaches `threshold` with the pid still alive, the
+ *   daemon is treated as hung: `stop` (group-aware `stopServer`) is
+ *   invoked to kill it and clean up the record, and the loop returns
+ *   `{ reason: "hung" }`.
+ *
+ * Fully seam-driven (injectable `sleep`/`status`/`probe`/`stop`/
+ * `shouldStop`) so it's unit-testable without real timers or a real
+ * daemon; defaults to the real implementations.
+ */
+interface SuperviseTick {
+  rosterPath: string;
+  handle: ServerHandle;
+  password: string;
+  threshold: number;
+  status: (rosterPath: string) => ServerStatus;
+  probe: (baseUrl: string, password: string) => Promise<ProbeOutcome>;
+  stop: (rosterPath: string) => Promise<{ stopped: boolean }>;
+}
+
+/** One liveness check. Returns a terminal outcome ("died"/"hung") once
+ * confirmed, or the updated failure counter to continue the loop. Split
+ * out of `superviseServer` to keep the loop's cognitive complexity low. */
+async function superviseTick(
+  tick: SuperviseTick,
+  failures: number,
+): Promise<{ outcome: SuperviseOutcome } | { failures: number }> {
+  const st = tick.status(tick.rosterPath);
+  if (!st.running) {
+    // serverStatus already ran Layer A compare-and-delete cleanup on this
+    // pid-gone path — no stale record remains.
+    return { outcome: { reason: "died" } };
+  }
+
+  const probeOutcome = await tick.probe(tick.handle.baseUrl, tick.password);
+  if (probeOutcome !== "retry") {
+    // "ready" or "auth-failure" — the server is up and answering.
+    return { failures: 0 };
+  }
+  const nextFailures = failures + 1;
+  if (nextFailures >= tick.threshold) {
+    await tick.stop(tick.rosterPath);
+    return { outcome: { reason: "hung" } };
+  }
+  return { failures: nextFailures };
+}
+
+export async function superviseServer(
+  rosterPath: string,
+  handle: ServerHandle,
+  opts: SuperviseServerOptions = {},
+): Promise<SuperviseOutcome> {
+  const intervalMs = opts.intervalMs ?? SUPERVISE_INTERVAL_MS;
+  const tick: SuperviseTick = {
+    rosterPath,
+    handle,
+    password: handle.credentials.password ?? "",
+    threshold: opts.threshold ?? SUPERVISE_FAILURE_THRESHOLD,
+    status: opts.status ?? serverStatus,
+    probe: opts.probe ?? probe,
+    stop: opts.stop ?? stopServer,
+  };
+  const doSleep = opts.sleep ?? sleep;
+  const shouldStop = opts.shouldStop ?? (() => false);
+
+  let failures = 0;
+  for (;;) {
+    if (shouldStop()) return { reason: "signal" };
+
+    const result = await superviseTick(tick, failures);
+    if ("outcome" in result) return result.outcome;
+    failures = result.failures;
+
+    if (shouldStop()) return { reason: "signal" };
+    await doSleep(intervalMs);
+  }
 }
 
 async function waitForDeath(pid: number, budgetMs: number): Promise<boolean> {

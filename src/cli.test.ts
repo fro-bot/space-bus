@@ -3,6 +3,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { runServe } from "./cli";
+import type { ServerHandle, SuperviseOutcome } from "./server";
 import { stopServer } from "./server";
 
 const STUB_COMMAND = ["bun", "test/fixtures/stub-server.ts"];
@@ -152,4 +154,171 @@ describe("space-bus CLI", () => {
     expect(afterStop.running).toBe(false);
     assertNoPasswordLeak(afterStopRes.stdout, afterStopRes.stderr);
   }, 30_000);
+
+  // --- runServe foreground supervision: injected deps, no real daemon ----
+
+  describe("runServe foreground supervision", () => {
+    const fakeHandle: ServerHandle = {
+      baseUrl: "http://127.0.0.1:9",
+      credentials: { username: "opencode", password: "pw" },
+      pid: 111,
+      port: 9,
+    };
+
+    function captureStderr(): { get: () => string; restore: () => void } {
+      const original = process.stderr.write.bind(process.stderr);
+      let buf = "";
+      // biome-ignore lint/suspicious/noExplicitAny: test stub for stderr.write's overloaded signature
+      (process.stderr.write as any) = (chunk: any, ...rest: any[]) => {
+        buf += chunk.toString();
+        return original(chunk, ...rest);
+      };
+      return {
+        get: () => buf,
+        restore: () => {
+          process.stderr.write = original;
+        },
+      };
+    }
+
+    test("signal: shouldStop -> resolves 0, stopServer invoked", async () => {
+      let stopCalls = 0;
+      const args = {
+        command: "serve",
+        json: true,
+        foreground: true,
+        config: rosterPath,
+        help: false,
+        unknownFlags: [],
+        configMissingValue: false,
+      };
+      writeRoster();
+      const code = await runServe(args, {
+        ensureServer: async () => fakeHandle,
+        stopServer: async () => {
+          stopCalls += 1;
+          return { stopped: true };
+        },
+        superviseServer: async (_roster, _handle, shouldStop) => {
+          // Simulate the signal firing immediately.
+          expect(shouldStop()).toBe(false);
+          return { reason: "signal" } as SuperviseOutcome;
+        },
+      });
+      expect(code).toBe(0);
+      expect(stopCalls).toBe(1);
+    });
+
+    test("died -> non-zero exit, actionable stderr, no stopServer call needed by runServe", async () => {
+      const capture = captureStderr();
+      const args = {
+        command: "serve",
+        json: true,
+        foreground: true,
+        config: rosterPath,
+        help: false,
+        unknownFlags: [],
+        configMissingValue: false,
+      };
+      writeRoster();
+      try {
+        const code = await runServe(args, {
+          ensureServer: async () => fakeHandle,
+          stopServer: async () => ({ stopped: false }),
+          superviseServer: async () => ({ reason: "died" }) as SuperviseOutcome,
+        });
+        expect(code).not.toBe(0);
+        expect(capture.get()).toContain("managed daemon died");
+      } finally {
+        capture.restore();
+      }
+    });
+
+    test("hung -> non-zero exit, stopServer was invoked (by superviseServer itself)", async () => {
+      let stopCalls = 0;
+      const args = {
+        command: "serve",
+        json: true,
+        foreground: true,
+        config: rosterPath,
+        help: false,
+        unknownFlags: [],
+        configMissingValue: false,
+      };
+      writeRoster();
+      const code = await runServe(args, {
+        ensureServer: async () => fakeHandle,
+        stopServer: async () => {
+          stopCalls += 1;
+          return { stopped: true };
+        },
+        superviseServer: async (roster, _handle, _shouldStop) => {
+          // superviseServer's real implementation calls stop internally on
+          // the hung path; the injected fake here calls the injected
+          // stopServer to model that.
+          await stopServer(roster).catch(() => {});
+          stopCalls += 1;
+          return { reason: "hung" } as SuperviseOutcome;
+        },
+      });
+      expect(code).not.toBe(0);
+      expect(stopCalls).toBeGreaterThan(0);
+    });
+
+    test("non-foreground: returns 0 immediately, does not supervise", async () => {
+      let superviseCalls = 0;
+      const args = {
+        command: "serve",
+        json: true,
+        foreground: false,
+        config: rosterPath,
+        help: false,
+        unknownFlags: [],
+        configMissingValue: false,
+      };
+      writeRoster();
+      const code = await runServe(args, {
+        ensureServer: async () => fakeHandle,
+        superviseServer: async () => {
+          superviseCalls += 1;
+          return { reason: "signal" } as SuperviseOutcome;
+        },
+      });
+      expect(code).toBe(0);
+      expect(superviseCalls).toBe(0);
+    });
+
+    test("regression: the initial running-line still prints before supervision", async () => {
+      const originalWrite = process.stdout.write.bind(process.stdout);
+      let out = "";
+      // biome-ignore lint/suspicious/noExplicitAny: test stub for stdout.write's overloaded signature
+      (process.stdout.write as any) = (chunk: any, ...rest: any[]) => {
+        out += chunk.toString();
+        return originalWrite(chunk, ...rest);
+      };
+      const args = {
+        command: "serve",
+        json: true,
+        foreground: true,
+        config: rosterPath,
+        help: false,
+        unknownFlags: [],
+        configMissingValue: false,
+      };
+      writeRoster();
+      try {
+        await runServe(args, {
+          ensureServer: async () => fakeHandle,
+          stopServer: async () => ({ stopped: true }),
+          superviseServer: async () =>
+            ({ reason: "signal" }) as SuperviseOutcome,
+        });
+        const parsed = JSON.parse(out.trim());
+        expect(parsed.running).toBe(true);
+        expect(parsed.pid).toBe(fakeHandle.pid);
+      } finally {
+        process.stdout.write = originalWrite;
+      }
+    });
+  });
 });

@@ -20,12 +20,14 @@ import {
   writeDiscovery,
   writeProvisional,
 } from "./discovery";
+import type { ProbeOutcome, ServerHandle, ServerStatus } from "./server";
 import {
   attachServer,
   ensureServer,
   redactSensitive,
   serverStatus,
   stopServer,
+  superviseServer,
 } from "./server";
 
 const STUB_COMMAND = ["bun", "test/fixtures/stub-server.ts"];
@@ -745,5 +747,166 @@ describe("server lifecycle", () => {
     expect(caughtError?.message).toMatch(/exited before/);
     // Should fail fast, well under the 10s budget.
     expect(elapsed).toBeLessThan(5000);
+  });
+
+  // --- superviseServer: seam-driven, no real timers/daemon ---------------
+
+  describe("superviseServer", () => {
+    const fakeHandle: ServerHandle = {
+      baseUrl: "http://127.0.0.1:9",
+      credentials: { username: "opencode", password: "pw" },
+      pid: 12345,
+      port: 9,
+    };
+
+    function noopSleep(): Promise<void> {
+      return Promise.resolve();
+    }
+
+    test("signal: shouldStop fires on tick 1 -> {reason:'signal'}, no stop-as-death", async () => {
+      let stopCalls = 0;
+      const outcome = await superviseServer(rosterPath, fakeHandle, {
+        sleep: noopSleep,
+        status: (): ServerStatus => ({ running: true, pid: 12345 }),
+        probe: async () => "ready",
+        stop: async () => {
+          stopCalls += 1;
+          return { stopped: true };
+        },
+        shouldStop: () => true,
+      });
+      expect(outcome).toEqual({ reason: "signal" });
+      expect(stopCalls).toBe(0);
+    });
+
+    test("death (crash): status reports running:false on tick 2 -> {reason:'died'}", async () => {
+      let tick = 0;
+      let stopCalls = 0;
+      const outcome = await superviseServer(rosterPath, fakeHandle, {
+        sleep: noopSleep,
+        status: (): ServerStatus => {
+          tick += 1;
+          return tick === 1
+            ? { running: true, pid: 12345 }
+            : { running: false };
+        },
+        probe: async () => "ready",
+        stop: async () => {
+          stopCalls += 1;
+          return { stopped: true };
+        },
+        shouldStop: () => false,
+      });
+      expect(outcome).toEqual({ reason: "died" });
+      expect(stopCalls).toBe(0);
+    });
+
+    test("hung: pid alive but probe returns retry x3 consecutive -> stopServer called once, {reason:'hung'}", async () => {
+      let stopCalls = 0;
+      const outcome = await superviseServer(rosterPath, fakeHandle, {
+        sleep: noopSleep,
+        status: (): ServerStatus => ({ running: true, pid: 12345 }),
+        probe: async () => "retry",
+        stop: async () => {
+          stopCalls += 1;
+          return { stopped: true };
+        },
+        shouldStop: () => false,
+      });
+      expect(outcome).toEqual({ reason: "hung" });
+      expect(stopCalls).toBe(1);
+    });
+
+    test("transient blip: retry, retry, ready then later stop -> counter resets, no death declared before reset", async () => {
+      const probeSequence: ProbeOutcome[] = ["retry", "retry", "ready"];
+      let probeCall = 0;
+      let stopCalls = 0;
+      let ticks = 0;
+      const outcome = await superviseServer(rosterPath, fakeHandle, {
+        sleep: noopSleep,
+        status: (): ServerStatus => ({ running: true, pid: 12345 }),
+        probe: async () => {
+          const result =
+            probeSequence[Math.min(probeCall, probeSequence.length - 1)] ??
+            "ready";
+          probeCall += 1;
+          return result;
+        },
+        stop: async () => {
+          stopCalls += 1;
+          return { stopped: true };
+        },
+        // Stop after the 3 probes (blip + reset) have been observed, so
+        // the loop doesn't run forever.
+        shouldStop: () => {
+          ticks += 1;
+          return ticks > 4;
+        },
+      });
+      expect(outcome).toEqual({ reason: "signal" });
+      expect(stopCalls).toBe(0);
+    });
+
+    test("auth-failure != death: probe returns auth-failure repeatedly, pid alive -> never declares death", async () => {
+      let ticks = 0;
+      let stopCalls = 0;
+      const outcome = await superviseServer(rosterPath, fakeHandle, {
+        sleep: noopSleep,
+        status: (): ServerStatus => ({ running: true, pid: 12345 }),
+        probe: async () => "auth-failure",
+        stop: async () => {
+          stopCalls += 1;
+          return { stopped: true };
+        },
+        shouldStop: () => {
+          ticks += 1;
+          return ticks > 5;
+        },
+      });
+      expect(outcome).toEqual({ reason: "signal" });
+      expect(stopCalls).toBe(0);
+    });
+
+    test("threshold boundary: threshold-1 retries then ready -> survives", async () => {
+      // threshold=3: 2 retries then ready must NOT trip hung.
+      const probeSequence: ProbeOutcome[] = ["retry", "retry", "ready"];
+      let probeCall = 0;
+      let stopCalls = 0;
+      let ticks = 0;
+      const outcome = await superviseServer(rosterPath, fakeHandle, {
+        threshold: 3,
+        sleep: noopSleep,
+        status: (): ServerStatus => ({ running: true, pid: 12345 }),
+        probe: async () => {
+          const result =
+            probeSequence[Math.min(probeCall, probeSequence.length - 1)] ??
+            "ready";
+          probeCall += 1;
+          return result;
+        },
+        stop: async () => {
+          stopCalls += 1;
+          return { stopped: true };
+        },
+        shouldStop: () => {
+          ticks += 1;
+          return ticks > 4;
+        },
+      });
+      expect(outcome).toEqual({ reason: "signal" });
+      expect(stopCalls).toBe(0);
+    });
+
+    test("threshold boundary: exactly threshold retries -> hung", async () => {
+      const outcome = await superviseServer(rosterPath, fakeHandle, {
+        threshold: 3,
+        sleep: noopSleep,
+        status: (): ServerStatus => ({ running: true, pid: 12345 }),
+        probe: async () => "retry",
+        stop: async () => ({ stopped: true }),
+        shouldStop: () => false,
+      });
+      expect(outcome).toEqual({ reason: "hung" });
+    });
   });
 });

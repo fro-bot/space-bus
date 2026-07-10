@@ -9,7 +9,14 @@
  * surface baseUrl + pid + port.
  */
 import { resolveRosterPath } from "./config";
-import { ensureServer, serverStatus, stopServer } from "./server";
+import {
+  ensureServer,
+  type ServerHandle,
+  type SuperviseOutcome,
+  serverStatus,
+  stopServer,
+  superviseServer,
+} from "./server";
 
 const USAGE = `space-bus — thin CLI for the managed OpenCode bus server
 
@@ -93,9 +100,35 @@ function printJson(json: boolean, data: unknown, plain: string): void {
   }
 }
 
-async function runServe(args: ParsedArgs): Promise<number> {
+/** Injectable dependencies for `runServe`'s foreground supervision — lets
+ * tests drive the signal/died/hung outcomes deterministically without a
+ * real daemon or real timers. Defaults to the real implementations. */
+export interface RunServeDeps {
+  ensureServer?: typeof ensureServer;
+  stopServer?: typeof stopServer;
+  /** Receives a `shouldStop` seam wired to the process signal handlers —
+   * when a signal fires, `shouldStop()` starts returning true so the loop
+   * (real or injected) can break with `{ reason: "signal" }`. */
+  superviseServer?: (
+    rosterPath: string,
+    handle: ServerHandle,
+    shouldStop: () => boolean,
+  ) => Promise<SuperviseOutcome>;
+}
+
+export async function runServe(
+  args: ParsedArgs,
+  deps: RunServeDeps = {},
+): Promise<number> {
+  const doEnsureServer = deps.ensureServer ?? ensureServer;
+  const doStopServer = deps.stopServer ?? stopServer;
+  const doSuperviseServer =
+    deps.superviseServer ??
+    ((rosterPath, handle, shouldStop) =>
+      superviseServer(rosterPath, handle, { shouldStop }));
+
   const rosterPath = resolveRoster(args.config);
-  const handle = await ensureServer(rosterPath);
+  const handle = await doEnsureServer(rosterPath);
   const data = {
     running: true,
     port: handle.port,
@@ -111,15 +144,40 @@ async function runServe(args: ParsedArgs): Promise<number> {
   if (!args.foreground) return 0;
 
   return await new Promise<number>((resolve) => {
-    let stopping = false;
-    const shutdown = (signal: NodeJS.Signals) => {
-      if (stopping) return;
-      stopping = true;
-      process.stderr.write(`space-bus: received ${signal}, stopping...\n`);
-      void stopServer(rosterPath).finally(() => resolve(0));
+    let stopRequested = false;
+    let resolved = false;
+    const sigintHandler = () => onSignal("SIGINT");
+    const sigtermHandler = () => onSignal("SIGTERM");
+    const removeSignalHandlers = () => {
+      process.off("SIGINT", sigintHandler);
+      process.off("SIGTERM", sigtermHandler);
     };
-    process.on("SIGINT", () => shutdown("SIGINT"));
-    process.on("SIGTERM", () => shutdown("SIGTERM"));
+    const onSignal = (signal: NodeJS.Signals) => {
+      if (stopRequested) return;
+      stopRequested = true;
+      process.stderr.write(`space-bus: received ${signal}, stopping...\n`);
+      // Wired into superviseServer's shouldStop seam below — the loop
+      // breaks with {reason:"signal"} on its next tick, and the
+      // .then() handler below performs the actual stopServer/resolve.
+    };
+    process.on("SIGINT", sigintHandler);
+    process.on("SIGTERM", sigtermHandler);
+
+    void doSuperviseServer(rosterPath, handle, () => stopRequested).then(
+      (outcome) => {
+        if (resolved) return;
+        resolved = true;
+        removeSignalHandlers();
+        if (outcome.reason === "signal") {
+          void doStopServer(rosterPath).finally(() => resolve(0));
+          return;
+        }
+        process.stderr.write(
+          `space-bus: managed daemon ${outcome.reason}, discovery cleaned; exiting for supervisor restart\n`,
+        );
+        resolve(1);
+      },
+    );
   });
 }
 
@@ -184,11 +242,16 @@ async function main(): Promise<number> {
   }
 }
 
-main()
-  .then((code) => {
-    process.exitCode = code;
-  })
-  .catch((err) => {
-    process.stderr.write(`space-bus: ${(err as Error).message}\n`);
-    process.exitCode = 1;
-  });
+// Guard so importing this module (e.g. from cli.test.ts to reach the
+// exported `runServe` for injected-dependency tests) doesn't also run the
+// CLI against the importer's own argv.
+if (import.meta.main) {
+  main()
+    .then((code) => {
+      process.exitCode = code;
+    })
+    .catch((err) => {
+      process.stderr.write(`space-bus: ${(err as Error).message}\n`);
+      process.exitCode = 1;
+    });
+}
