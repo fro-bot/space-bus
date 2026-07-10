@@ -936,7 +936,19 @@ async function interruptibleSleep(
     await doSleep(intervalMs);
     return;
   }
-  await Promise.race([doSleep(intervalMs), interrupt]);
+  // Own the timer so it can be cancelled when the interrupt wins the race.
+  // A bare setTimeout (as in `sleep`) would otherwise stay registered and
+  // hold the event loop open up to intervalMs after shutdown, delaying real
+  // process exit even though the logical await already resolved.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timed = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, intervalMs);
+  });
+  try {
+    await Promise.race([timed, interrupt]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 export async function superviseServer(

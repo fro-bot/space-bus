@@ -325,6 +325,68 @@ describe("space-bus CLI", () => {
       expect(superviseCalls).toBe(0);
     });
 
+    test("regression: real subprocess exits fast on SIGINT, not after SUPERVISE_INTERVAL_MS (#59)", async () => {
+      writeRoster();
+      const proc = Bun.spawn(
+        ["bun", "run", CLI_PATH, "serve", "--foreground"],
+        {
+          cwd: REPO_ROOT,
+          env: {
+            ...process.env,
+            SPACE_BUS_CONFIG: rosterPath,
+            OPENCODE_SERVER_PASSWORD: SENTINEL_PASSWORD,
+          },
+          stdout: "pipe",
+          stderr: "pipe",
+        },
+      );
+
+      let stdoutBuf = "";
+      let stderrBuf = "";
+      const stdoutDone = (async () => {
+        for await (const chunk of proc.stdout) {
+          stdoutBuf += Buffer.from(chunk).toString();
+        }
+      })();
+      const stderrDone = (async () => {
+        for await (const chunk of proc.stderr) {
+          stderrBuf += Buffer.from(chunk).toString();
+        }
+      })();
+
+      // Wait until the "server running at" line has printed, i.e. we're
+      // past ensureServer and into the supervise loop, before sending the
+      // signal. Bounded poll with a sane timeout.
+      const readyDeadline = Date.now() + 15_000;
+      while (!stdoutBuf.includes("server running at")) {
+        if (Date.now() > readyDeadline) {
+          proc.kill("SIGKILL");
+          throw new Error(
+            `timed out waiting for serve --foreground readiness; stdout=${stdoutBuf} stderr=${stderrBuf}`,
+          );
+        }
+        await new Promise((r) => setTimeout(r, 25));
+      }
+
+      const t0 = performance.now();
+      proc.kill("SIGINT");
+      const exitCode = await proc.exited;
+      const elapsed = performance.now() - t0;
+      await Promise.all([stdoutDone, stderrDone]);
+
+      // Broken: interruptibleSleep's losing setTimeout keeps the process
+      // alive up to SUPERVISE_INTERVAL_MS (5s) after the logical await
+      // resolved. Fixed: the owned timer is cleared, so real process exit
+      // follows within tens of ms. 2s cleanly separates the two.
+      expect(elapsed).toBeLessThan(2000);
+      expect(exitCode).toBe(0);
+      assertNoPasswordLeak(stdoutBuf, stderrBuf);
+
+      // Belt-and-suspenders: make sure nothing is left running under this
+      // roster's discovery record.
+      await stopServer(rosterPath).catch(() => {});
+    }, 20_000);
+
     test("regression: the initial running-line still prints before supervision", async () => {
       const originalWrite = process.stdout.write.bind(process.stdout);
       let out = "";

@@ -186,7 +186,7 @@ export async function runServe(
         }
         removeSignalHandlers();
         process.stderr.write(
-          `space-bus: managed daemon ${outcome.reason}, discovery cleaned; exiting for supervisor restart\n`,
+          `space-bus: managed daemon ${outcome.reason}; exiting for supervisor restart\n`,
         );
         resolve(1);
       })
