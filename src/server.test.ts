@@ -20,12 +20,16 @@ import {
   writeDiscovery,
   writeProvisional,
 } from "./discovery";
+import type { ProbeOutcome, ServerHandle, ServerStatus } from "./server";
 import {
   attachServer,
   ensureServer,
   redactSensitive,
+  SUPERVISE_INTERVAL_MS,
+  SUPERVISE_UNHEALTHY_BUDGET_MS,
   serverStatus,
   stopServer,
+  superviseServer,
 } from "./server";
 
 const STUB_COMMAND = ["bun", "test/fixtures/stub-server.ts"];
@@ -749,5 +753,258 @@ describe("server lifecycle", () => {
     expect(caughtError?.message).toMatch(/exited before/);
     // Should fail fast, well under the 10s budget.
     expect(elapsed).toBeLessThan(5000);
+  });
+
+  // --- superviseServer: seam-driven, no real timers/daemon ---------------
+
+  describe("superviseServer", () => {
+    const fakeHandle: ServerHandle = {
+      baseUrl: "http://127.0.0.1:9",
+      credentials: { username: "opencode", password: "pw" },
+      pid: 12345,
+      port: 9,
+    };
+
+    function noopSleep(): Promise<void> {
+      return Promise.resolve();
+    }
+
+    test("signal: shouldStop fires on tick 1 -> {reason:'signal'}, no stop-as-death", async () => {
+      let stopCalls = 0;
+      const outcome = await superviseServer(rosterPath, fakeHandle, {
+        sleep: noopSleep,
+        status: (): ServerStatus => ({ running: true, pid: 12345 }),
+        probe: async () => "ready",
+        stop: async () => {
+          stopCalls += 1;
+          return { stopped: true };
+        },
+        shouldStop: () => true,
+      });
+      expect(outcome).toEqual({ reason: "signal" });
+      expect(stopCalls).toBe(0);
+    });
+
+    test("death (crash): status reports running:false on tick 2 -> {reason:'died'}", async () => {
+      let tick = 0;
+      let stopCalls = 0;
+      const outcome = await superviseServer(rosterPath, fakeHandle, {
+        sleep: noopSleep,
+        status: (): ServerStatus => {
+          tick += 1;
+          return tick === 1
+            ? { running: true, pid: 12345 }
+            : { running: false };
+        },
+        probe: async () => "ready",
+        stop: async () => {
+          stopCalls += 1;
+          return { stopped: true };
+        },
+        shouldStop: () => false,
+      });
+      expect(outcome).toEqual({ reason: "died" });
+      expect(stopCalls).toBe(0);
+    });
+
+    test("hung: pid alive but probe returns retry x3 consecutive -> stopServer called once, {reason:'hung'}", async () => {
+      let stopCalls = 0;
+      const outcome = await superviseServer(rosterPath, fakeHandle, {
+        sleep: noopSleep,
+        status: (): ServerStatus => ({ running: true, pid: 12345 }),
+        probe: async () => "retry",
+        stop: async () => {
+          stopCalls += 1;
+          return { stopped: true };
+        },
+        shouldStop: () => false,
+      });
+      expect(outcome).toEqual({ reason: "hung" });
+      expect(stopCalls).toBe(1);
+    });
+
+    test("transient blip: retry, retry, ready then later stop -> counter resets, no death declared before reset", async () => {
+      // probeSequence exhausts at "ready" (index 2) then holds steady at
+      // "ready" for subsequent calls (Math.min clamps to the last index) —
+      // shouldStop must let enough ticks pass to actually CONSUME the
+      // "ready" probe and prove the counter reset, not just stop before it.
+      const probeSequence: ProbeOutcome[] = ["retry", "retry", "ready"];
+      let probeCall = 0;
+      let stopCalls = 0;
+      let ticks = 0;
+      const outcome = await superviseServer(rosterPath, fakeHandle, {
+        sleep: noopSleep,
+        status: (): ServerStatus => ({ running: true, pid: 12345 }),
+        probe: async () => {
+          const result =
+            probeSequence[Math.min(probeCall, probeSequence.length - 1)] ??
+            "ready";
+          probeCall += 1;
+          return result;
+        },
+        stop: async () => {
+          stopCalls += 1;
+          return { stopped: true };
+        },
+        // Run well past the point where "ready" (probe index 2, tick 3)
+        // has been consumed and the counter reset — if the reset didn't
+        // happen, the loop would have declared "hung" long before this.
+        shouldStop: () => {
+          ticks += 1;
+          return ticks > 8;
+        },
+      });
+      expect(probeCall).toBeGreaterThan(3); // proves "ready" was consumed
+      expect(outcome).toEqual({ reason: "signal" });
+      expect(stopCalls).toBe(0);
+    });
+
+    test("auth-failure != death: probe returns auth-failure repeatedly, pid alive -> never declares death", async () => {
+      let ticks = 0;
+      let stopCalls = 0;
+      const outcome = await superviseServer(rosterPath, fakeHandle, {
+        sleep: noopSleep,
+        status: (): ServerStatus => ({ running: true, pid: 12345 }),
+        probe: async () => "auth-failure",
+        stop: async () => {
+          stopCalls += 1;
+          return { stopped: true };
+        },
+        shouldStop: () => {
+          ticks += 1;
+          return ticks > 5;
+        },
+      });
+      expect(outcome).toEqual({ reason: "signal" });
+      expect(stopCalls).toBe(0);
+    });
+
+    test("threshold boundary: threshold-1 retries then ready -> survives", async () => {
+      // threshold=3: 2 retries then ready must NOT trip hung. shouldStop
+      // must let enough ticks pass to actually consume the "ready" probe
+      // and prove the counter reset.
+      const probeSequence: ProbeOutcome[] = ["retry", "retry", "ready"];
+      let probeCall = 0;
+      let stopCalls = 0;
+      let ticks = 0;
+      const outcome = await superviseServer(rosterPath, fakeHandle, {
+        threshold: 3,
+        sleep: noopSleep,
+        status: (): ServerStatus => ({ running: true, pid: 12345 }),
+        probe: async () => {
+          const result =
+            probeSequence[Math.min(probeCall, probeSequence.length - 1)] ??
+            "ready";
+          probeCall += 1;
+          return result;
+        },
+        stop: async () => {
+          stopCalls += 1;
+          return { stopped: true };
+        },
+        shouldStop: () => {
+          ticks += 1;
+          return ticks > 8;
+        },
+      });
+      expect(probeCall).toBeGreaterThan(3); // proves "ready" was consumed
+      expect(outcome).toEqual({ reason: "signal" });
+      expect(stopCalls).toBe(0);
+    });
+
+    test("threshold boundary: exactly threshold retries -> hung", async () => {
+      let stopCalls = 0;
+      const outcome = await superviseServer(rosterPath, fakeHandle, {
+        threshold: 3,
+        sleep: noopSleep,
+        status: (): ServerStatus => ({ running: true, pid: 12345 }),
+        probe: async () => "retry",
+        stop: async () => {
+          stopCalls += 1;
+          return { stopped: true };
+        },
+        shouldStop: () => false,
+      });
+      expect(outcome).toEqual({ reason: "hung" });
+      expect(stopCalls).toBe(1);
+    });
+
+    // --- Watchdog (absolute-lifetime): FIX 1 -------------------------------
+
+    test("watchdog: persistent auth-failure (never 'ready') is bounded past SUPERVISE_UNHEALTHY_BUDGET_MS", async () => {
+      let virtualNow = 0;
+      let stopCalls = 0;
+      const outcome = await superviseServer(rosterPath, fakeHandle, {
+        sleep: noopSleep,
+        now: () => virtualNow,
+        status: (): ServerStatus => ({ running: true, pid: 12345 }),
+        probe: async () => {
+          // Advance the virtual clock past the watchdog budget over a
+          // handful of ticks — auth-failure never resets lastReadyAt.
+          virtualNow += SUPERVISE_UNHEALTHY_BUDGET_MS / 2;
+          return "auth-failure";
+        },
+        stop: async () => {
+          stopCalls += 1;
+          return { stopped: true };
+        },
+        shouldStop: () => false,
+      });
+      expect(outcome).toEqual({ reason: "hung" });
+      expect(stopCalls).toBe(1);
+    });
+
+    test("watchdog: genuinely-degraded ('retry' forever) with a high consecutive threshold is still bounded by the watchdog", async () => {
+      let virtualNow = 0;
+      let stopCalls = 0;
+      const outcome = await superviseServer(rosterPath, fakeHandle, {
+        threshold: 1000, // consecutive path won't fire within this test
+        sleep: noopSleep,
+        now: () => virtualNow,
+        status: (): ServerStatus => ({ running: true, pid: 12345 }),
+        probe: async () => {
+          virtualNow += SUPERVISE_UNHEALTHY_BUDGET_MS / 2;
+          return "retry";
+        },
+        stop: async () => {
+          stopCalls += 1;
+          return { stopped: true };
+        },
+        shouldStop: () => false,
+      });
+      expect(outcome).toEqual({ reason: "hung" });
+      expect(stopCalls).toBe(1);
+    });
+
+    test("watchdog: healthy-flapping (retry/ready alternating) never trips hung — lastReadyAt keeps refreshing", async () => {
+      let virtualNow = 0;
+      let stopCalls = 0;
+      let ticks = 0;
+      let flap = 0;
+      const outcome = await superviseServer(rosterPath, fakeHandle, {
+        sleep: noopSleep,
+        now: () => virtualNow,
+        status: (): ServerStatus => ({ running: true, pid: 12345 }),
+        probe: async () => {
+          // Alternate retry/ready; advance the clock by a normal interval
+          // each tick — well inside the watchdog budget between "ready"s.
+          flap += 1;
+          virtualNow += SUPERVISE_INTERVAL_MS;
+          return flap % 2 === 0 ? "ready" : "retry";
+        },
+        stop: async () => {
+          stopCalls += 1;
+          return { stopped: true };
+        },
+        // Run for many ticks — comfortably more than the consecutive
+        // threshold, but each "ready" keeps the watchdog fresh.
+        shouldStop: () => {
+          ticks += 1;
+          return ticks > 20;
+        },
+      });
+      expect(outcome).toEqual({ reason: "signal" });
+      expect(stopCalls).toBe(0);
+    });
   });
 });
