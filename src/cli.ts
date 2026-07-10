@@ -108,11 +108,14 @@ export interface RunServeDeps {
   stopServer?: typeof stopServer;
   /** Receives a `shouldStop` seam wired to the process signal handlers —
    * when a signal fires, `shouldStop()` starts returning true so the loop
-   * (real or injected) can break with `{ reason: "signal" }`. */
+   * (real or injected) can break with `{ reason: "signal" }` — plus an
+   * `interrupt` promise that resolves immediately on signal, so the
+   * inter-tick sleep doesn't have to wait out the full interval. */
   superviseServer?: (
     rosterPath: string,
     handle: ServerHandle,
     shouldStop: () => boolean,
+    interrupt: Promise<void>,
   ) => Promise<SuperviseOutcome>;
 }
 
@@ -124,8 +127,8 @@ export async function runServe(
   const doStopServer = deps.stopServer ?? stopServer;
   const doSuperviseServer =
     deps.superviseServer ??
-    ((rosterPath, handle, shouldStop) =>
-      superviseServer(rosterPath, handle, { shouldStop }));
+    ((rosterPath, handle, shouldStop, interrupt) =>
+      superviseServer(rosterPath, handle, { shouldStop, interrupt }));
 
   const rosterPath = resolveRoster(args.config);
   const handle = await doEnsureServer(rosterPath);
@@ -145,7 +148,10 @@ export async function runServe(
 
   return await new Promise<number>((resolve) => {
     let stopRequested = false;
-    let resolved = false;
+    let wake: () => void = () => {};
+    const interrupt = new Promise<void>((r) => {
+      wake = r;
+    });
     const sigintHandler = () => onSignal("SIGINT");
     const sigtermHandler = () => onSignal("SIGTERM");
     const removeSignalHandlers = () => {
@@ -159,25 +165,38 @@ export async function runServe(
       // Wired into superviseServer's shouldStop seam below — the loop
       // breaks with {reason:"signal"} on its next tick, and the
       // .then() handler below performs the actual stopServer/resolve.
+      // wake() also breaks the inter-tick sleep immediately instead of
+      // waiting out the full interval.
+      wake();
     };
     process.on("SIGINT", sigintHandler);
     process.on("SIGTERM", sigtermHandler);
 
-    void doSuperviseServer(rosterPath, handle, () => stopRequested).then(
-      (outcome) => {
-        if (resolved) return;
-        resolved = true;
-        removeSignalHandlers();
+    void doSuperviseServer(rosterPath, handle, () => stopRequested, interrupt)
+      .then((outcome) => {
         if (outcome.reason === "signal") {
-          void doStopServer(rosterPath).finally(() => resolve(0));
+          // Keep signal handlers live during the stop grace window, so a
+          // second Ctrl+C during shutdown hits our idempotent handler
+          // (stopRequested guard) instead of Node's default hard-kill.
+          void doStopServer(rosterPath).finally(() => {
+            removeSignalHandlers();
+            resolve(0);
+          });
           return;
         }
+        removeSignalHandlers();
         process.stderr.write(
           `space-bus: managed daemon ${outcome.reason}, discovery cleaned; exiting for supervisor restart\n`,
         );
         resolve(1);
-      },
-    );
+      })
+      .catch((err) => {
+        removeSignalHandlers();
+        process.stderr.write(
+          `space-bus: supervision failed unexpectedly: ${(err as Error).message}\n`,
+        );
+        resolve(1);
+      });
   });
 }
 

@@ -199,9 +199,10 @@ describe("space-bus CLI", () => {
           stopCalls += 1;
           return { stopped: true };
         },
-        superviseServer: async (_roster, _handle, shouldStop) => {
+        superviseServer: async (_roster, _handle, shouldStop, interrupt) => {
           // Simulate the signal firing immediately.
           expect(shouldStop()).toBe(false);
+          expect(interrupt).toBeInstanceOf(Promise);
           return { reason: "signal" } as SuperviseOutcome;
         },
       });
@@ -209,7 +210,7 @@ describe("space-bus CLI", () => {
       expect(stopCalls).toBe(1);
     });
 
-    test("died -> non-zero exit, actionable stderr, no stopServer call needed by runServe", async () => {
+    test("died -> non-zero exit, actionable stderr (no password), no stopServer call needed by runServe", async () => {
       const capture = captureStderr();
       const args = {
         command: "serve",
@@ -227,14 +228,16 @@ describe("space-bus CLI", () => {
           stopServer: async () => ({ stopped: false }),
           superviseServer: async () => ({ reason: "died" }) as SuperviseOutcome,
         });
-        expect(code).not.toBe(0);
-        expect(capture.get()).toContain("managed daemon died");
+        expect(code).toBe(1);
+        expect(capture.get()).toContain("died");
+        assertNoPasswordLeak(capture.get());
       } finally {
         capture.restore();
       }
     });
 
-    test("hung -> non-zero exit, stopServer was invoked (by superviseServer itself)", async () => {
+    test("hung -> non-zero exit, actionable stderr (no password), stopServer was invoked (by superviseServer itself)", async () => {
+      const capture = captureStderr();
       let stopCalls = 0;
       const args = {
         command: "serve",
@@ -246,23 +249,57 @@ describe("space-bus CLI", () => {
         configMissingValue: false,
       };
       writeRoster();
-      const code = await runServe(args, {
-        ensureServer: async () => fakeHandle,
-        stopServer: async () => {
-          stopCalls += 1;
-          return { stopped: true };
-        },
-        superviseServer: async (roster, _handle, _shouldStop) => {
-          // superviseServer's real implementation calls stop internally on
-          // the hung path; the injected fake here calls the injected
-          // stopServer to model that.
-          await stopServer(roster).catch(() => {});
-          stopCalls += 1;
-          return { reason: "hung" } as SuperviseOutcome;
-        },
-      });
-      expect(code).not.toBe(0);
-      expect(stopCalls).toBeGreaterThan(0);
+      try {
+        const code = await runServe(args, {
+          ensureServer: async () => fakeHandle,
+          stopServer: async () => {
+            stopCalls += 1;
+            return { stopped: true };
+          },
+          superviseServer: async (roster, _handle, _shouldStop, _interrupt) => {
+            // superviseServer's real implementation calls stop internally
+            // on the hung path; the injected fake here calls the injected
+            // stopServer to model that.
+            await stopServer(roster).catch(() => {});
+            stopCalls += 1;
+            return { reason: "hung" } as SuperviseOutcome;
+          },
+        });
+        expect(code).toBe(1);
+        expect(stopCalls).toBeGreaterThan(0);
+        expect(capture.get()).toContain("hung");
+        assertNoPasswordLeak(capture.get());
+      } finally {
+        capture.restore();
+      }
+    });
+
+    test("rejection: a superviseServer that rejects -> resolves 1 (does not hang), actionable stderr (no password)", async () => {
+      const capture = captureStderr();
+      const args = {
+        command: "serve",
+        json: true,
+        foreground: true,
+        config: rosterPath,
+        help: false,
+        unknownFlags: [],
+        configMissingValue: false,
+      };
+      writeRoster();
+      try {
+        const code = await runServe(args, {
+          ensureServer: async () => fakeHandle,
+          stopServer: async () => ({ stopped: true }),
+          superviseServer: async () => {
+            throw new Error("boom: simulated supervision failure");
+          },
+        });
+        expect(code).toBe(1);
+        expect(capture.get()).toContain("supervision failed");
+        assertNoPasswordLeak(capture.get());
+      } finally {
+        capture.restore();
+      }
     });
 
     test("non-foreground: returns 0 immediately, does not supervise", async () => {

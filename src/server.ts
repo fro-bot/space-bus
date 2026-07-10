@@ -55,6 +55,14 @@ export const SUPERVISE_INTERVAL_MS = 5_000;
 /** Consecutive unreachable-probe failures (pid still alive) before the
  * supervisor declares the daemon hung and kills it. */
 export const SUPERVISE_FAILURE_THRESHOLD = 3;
+/** Absolute-lifetime watchdog: how long the daemon may go without a
+ * genuinely-"ready" probe before it's declared hung, regardless of whether
+ * failures ever hit 3-in-a-row. Bounds two cases the consecutive-failure
+ * counter can't catch: a FLAPPING daemon (retry, ready, retry, ready, ...
+ * never 3 consecutive) and a persistent auth-failure (server answers but
+ * never actually serves, looping "silently" forever). Tunable; 60s gives
+ * ~12 ticks at the default 5s interval to recover before being killed. */
+export const SUPERVISE_UNHEALTHY_BUDGET_MS = 60_000;
 
 export interface EnsureServerOptions {
   /** Bounds the readiness probe loop after spawning. Default 15s. */
@@ -779,17 +787,26 @@ export interface SuperviseServerOptions {
   /** Consecutive `retry` probes (pid alive) before declaring the daemon
    * hung. Default `SUPERVISE_FAILURE_THRESHOLD`. */
   threshold?: number;
+  /** Absolute-lifetime watchdog budget. Default
+   * `SUPERVISE_UNHEALTHY_BUDGET_MS`. */
+  unhealthyBudgetMs?: number;
   /** Injectable sleep, for deterministic tests. */
   sleep?: (ms: number) => Promise<void>;
+  /** Injectable clock, for deterministic tests. Default `Date.now`. */
+  now?: () => number;
   /** Injectable serverStatus, for deterministic tests. */
-  status?: (rosterPath: string) => ServerStatus;
+  status?: typeof serverStatus;
   /** Injectable probe, for deterministic tests. */
-  probe?: (baseUrl: string, password: string) => Promise<ProbeOutcome>;
+  probe?: typeof probe;
   /** Injectable stopServer, for deterministic tests. */
-  stop?: (rosterPath: string) => Promise<{ stopped: boolean }>;
+  stop?: typeof stopServer;
   /** Checked at the top of every tick; returning true breaks the loop with
    * `{ reason: "signal" }` before any liveness work happens on that tick. */
   shouldStop?: () => boolean;
+  /** Resolves to break the inter-tick sleep immediately (e.g. wired to a
+   * signal handler) instead of waiting out the full `intervalMs`. If
+   * undefined, the loop just sleeps the full interval. */
+  interrupt?: Promise<void>;
 }
 
 /**
@@ -822,36 +839,104 @@ interface SuperviseTick {
   handle: ServerHandle;
   password: string;
   threshold: number;
-  status: (rosterPath: string) => ServerStatus;
-  probe: (baseUrl: string, password: string) => Promise<ProbeOutcome>;
-  stop: (rosterPath: string) => Promise<{ stopped: boolean }>;
+  unhealthyBudgetMs: number;
+  now: () => number;
+  status: typeof serverStatus;
+  probe: typeof probe;
+  stop: typeof stopServer;
+}
+
+interface SuperviseLoopState {
+  failures: number;
+  lastReadyAt: number;
+}
+
+type SuperviseTickResult =
+  | { kind: "outcome"; outcome: SuperviseOutcome }
+  | ({ kind: "tick" } & SuperviseLoopState);
+
+/** Attempts the hung-path stop once, swallowing any rejection (e.g.
+ * stopServer -> removeDiscovery rethrowing a non-ENOENT error such as
+ * EACCES) — a failed cleanup attempt must not reject the supervise
+ * promise; the "hung" outcome is returned either way. */
+async function stopForHung(
+  tick: SuperviseTick,
+): Promise<{ kind: "outcome"; outcome: SuperviseOutcome }> {
+  try {
+    await tick.stop(tick.rosterPath);
+  } catch {
+    // Best-effort cleanup on the hung path — see doc comment above.
+  }
+  return { kind: "outcome", outcome: { reason: "hung" } };
 }
 
 /** One liveness check. Returns a terminal outcome ("died"/"hung") once
- * confirmed, or the updated failure counter to continue the loop. Split
- * out of `superviseServer` to keep the loop's cognitive complexity low. */
+ * confirmed, or the updated loop state to continue. Split out of
+ * `superviseServer` to keep the loop's cognitive complexity low.
+ *
+ * Two independent hung triggers: the consecutive-failure counter (fast
+ * path, unchanged) OR the absolute-lifetime watchdog — `lastReadyAt` only
+ * advances on a genuinely-"ready" probe, so a flapping daemon (ready often
+ * enough) or persistent auth-failure (never ready) is bounded even when
+ * the consecutive counter never fires. */
 async function superviseTick(
   tick: SuperviseTick,
-  failures: number,
-): Promise<{ outcome: SuperviseOutcome } | { failures: number }> {
+  state: SuperviseLoopState,
+): Promise<SuperviseTickResult> {
   const st = tick.status(tick.rosterPath);
   if (!st.running) {
     // serverStatus already ran Layer A compare-and-delete cleanup on this
     // pid-gone path — no stale record remains.
-    return { outcome: { reason: "died" } };
+    return { kind: "outcome", outcome: { reason: "died" } };
   }
 
   const probeOutcome = await tick.probe(tick.handle.baseUrl, tick.password);
-  if (probeOutcome !== "retry") {
-    // "ready" or "auth-failure" — the server is up and answering.
-    return { failures: 0 };
+  const failures = probeOutcome === "retry" ? state.failures + 1 : 0;
+  const lastReadyAt = probeOutcome === "ready" ? tick.now() : state.lastReadyAt;
+
+  if (failures >= tick.threshold) {
+    return stopForHung(tick);
   }
-  const nextFailures = failures + 1;
-  if (nextFailures >= tick.threshold) {
-    await tick.stop(tick.rosterPath);
-    return { outcome: { reason: "hung" } };
+  if (tick.now() - lastReadyAt >= tick.unhealthyBudgetMs) {
+    return stopForHung(tick);
   }
-  return { failures: nextFailures };
+  return { kind: "tick", failures, lastReadyAt };
+}
+
+function makeSuperviseTick(
+  rosterPath: string,
+  handle: ServerHandle,
+  opts: SuperviseServerOptions,
+): SuperviseTick {
+  return {
+    rosterPath,
+    handle,
+    // A missing/empty password yields 401 -> "auth-failure" on every
+    // probe, which used to loop silently forever; the watchdog now bounds
+    // that case (killed after unhealthyBudgetMs).
+    password: handle.credentials.password ?? "",
+    threshold: opts.threshold ?? SUPERVISE_FAILURE_THRESHOLD,
+    unhealthyBudgetMs: opts.unhealthyBudgetMs ?? SUPERVISE_UNHEALTHY_BUDGET_MS,
+    now: opts.now ?? Date.now,
+    status: opts.status ?? serverStatus,
+    probe: opts.probe ?? probe,
+    stop: opts.stop ?? stopServer,
+  };
+}
+
+/** Sleeps `intervalMs`, but resolves immediately if `interrupt` settles
+ * first (e.g. a signal handler waking the loop) instead of waiting out the
+ * full interval. */
+async function interruptibleSleep(
+  doSleep: (ms: number) => Promise<void>,
+  intervalMs: number,
+  interrupt: Promise<void> | undefined,
+): Promise<void> {
+  if (!interrupt) {
+    await doSleep(intervalMs);
+    return;
+  }
+  await Promise.race([doSleep(intervalMs), interrupt]);
 }
 
 export async function superviseServer(
@@ -860,28 +945,23 @@ export async function superviseServer(
   opts: SuperviseServerOptions = {},
 ): Promise<SuperviseOutcome> {
   const intervalMs = opts.intervalMs ?? SUPERVISE_INTERVAL_MS;
-  const tick: SuperviseTick = {
-    rosterPath,
-    handle,
-    password: handle.credentials.password ?? "",
-    threshold: opts.threshold ?? SUPERVISE_FAILURE_THRESHOLD,
-    status: opts.status ?? serverStatus,
-    probe: opts.probe ?? probe,
-    stop: opts.stop ?? stopServer,
-  };
+  const tick = makeSuperviseTick(rosterPath, handle, opts);
   const doSleep = opts.sleep ?? sleep;
   const shouldStop = opts.shouldStop ?? (() => false);
 
-  let failures = 0;
+  // The daemon was just confirmed ready by ensureServer, so start the
+  // watchdog clock now rather than at epoch 0 (which would immediately
+  // exceed the budget).
+  let state: SuperviseLoopState = { failures: 0, lastReadyAt: tick.now() };
   for (;;) {
     if (shouldStop()) return { reason: "signal" };
 
-    const result = await superviseTick(tick, failures);
-    if ("outcome" in result) return result.outcome;
-    failures = result.failures;
+    const result = await superviseTick(tick, state);
+    if (result.kind === "outcome") return result.outcome;
+    state = { failures: result.failures, lastReadyAt: result.lastReadyAt };
 
     if (shouldStop()) return { reason: "signal" };
-    await doSleep(intervalMs);
+    await interruptibleSleep(doSleep, intervalMs, opts.interrupt);
   }
 }
 
