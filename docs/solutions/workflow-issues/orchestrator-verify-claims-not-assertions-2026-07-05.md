@@ -1,6 +1,7 @@
 ---
 title: Verify claims against ground truth — subagent assertions and external state both drift
 date: 2026-07-05
+last_updated: 2026-07-10
 category: workflow-issues
 module: space-bus
 problem_type: workflow_issue
@@ -34,8 +35,8 @@ Across one long orchestration session, the orchestrator acted on two kinds of un
 **When a subagent makes an exculpatory or dismissive claim, verify it before accepting** — those claims are exactly the ones that let a real defect through. Specifically:
 
 - "flaky / intermittent" → reproduce it yourself. Run the test in isolation N times (`for i in $(seq 1 25); do ... ; done`) and count. "Flaky" is a hypothesis about a race, not a pass.
-- "pre-existing / fails on main too" → check whether the code even exists on main (`git log`, `git show main:<path>`). A test added on the branch cannot pre-exist.
-- "unrelated to my change" → confirm by running the thing on both refs, not by reasoning.
+- "pre-existing / fails on main too" → **reproduce it on a clean checkout of the base branch, not on your working branch.** A subagent's `git stash` A-B still runs against the branch's own HEAD (which already contains the change under suspicion), so it proves nothing about main. Add a worktree on the base SHA (`git worktree add /tmp/base <main-sha>`) and run the test there in isolation N times. This single standard resolves both directions: a test *added on the branch* won't exist on main (claim impossible), and a test that *does* exist on main can be measured there (claim confirmed or refuted by its real failure rate). The narrower `git show main:<path>` existence check only catches the first case — it misses a genuinely pre-existing flake that lives on main.
+- "unrelated to my change" → confirm by running the thing on both refs (clean base worktree vs branch), not by reasoning.
 - "dead code / never happens / X is unauthenticated" → probe the running system (see the companion empirical-claims doc).
 
 **At each continuation boundary in a long session, re-verify external state rather than carrying an in-session belief.** PRs get merged, releases publish, branches move — often by the human, out-of-band. Before referencing PR/release/branch state, query it (`gh pr view`, `npm view`, `git pull`). The cost of a `gh pr list` is trivial; the cost of telling the user something they already did is a correction.
@@ -62,11 +63,24 @@ done
 # result: genuinely intermittent → root-cause it (zombie-reap race), don't ship it
 ```
 
-Refute "fails on the unmodified branch" with one command:
+Reproduce a "pre-existing" claim on a clean base-branch worktree — the evidentiary standard, not a stash on the working branch:
 
 ```sh
-git show main:src/server.test.ts | grep -c "escalates to group SIGKILL"   # 0 → the test doesn't exist on main; the claim is impossible
+# subagent: "pre-existing flake, confirmed on unmodified branch via git stash"
+# a stash on the branch still includes the branch's commits — check MAIN itself:
+git worktree add /tmp/sb-main-check <main-sha>
+cd /tmp/sb-main-check && bun install >/dev/null
+pass=0; fail=0
+for i in $(seq 1 15); do
+  bun test src/server.test.ts -t "escalates to SIGKILL" >/dev/null 2>&1 && pass=$((pass+1)) || fail=$((fail+1))
+done
+echo "MAIN: $pass pass / $fail fail"   # ~33% fail on main → genuinely pre-existing → split into its own PR
+git worktree remove /tmp/sb-main-check --force
 ```
+
+The scope decision hinges on the result: **pre-existing** (reproduces on clean main) → split into its own focused PR, don't bundle it into the feature; **introduced** (only on the branch) → fix it in the feature PR. In this session the worktree showed ~33% failure on main, so the flake was split into its own PR while the feature PR stayed clean.
+
+Note the earlier `git show main:<path>` existence check is a weaker special case — it correctly flags a test that was *added on the branch* (can't pre-exist), but a genuinely pre-existing flake exists on main and passes that check. The worktree-reproduction standard covers both.
 
 Re-check board state at a continuation boundary:
 
@@ -79,3 +93,4 @@ npm view @fro.bot/space-bus version    # ground truth, not the last value you re
 
 - [../best-practices/verify-reviewer-empirical-claims-2026-07-05.md](../best-practices/verify-reviewer-empirical-claims-2026-07-05.md) — the same discipline applied to *reviewer* claims about live behavior; this doc extends it to *subagent* claims about their own work and to stale external state.
 - [../integration-issues/managed-stop-leaked-wrapper-child-2026-07-05.md](../integration-issues/managed-stop-leaked-wrapper-child-2026-07-05.md) — the reliability fix where the "flaky/pre-existing" claim, if trusted, would have shipped a flaky test.
+- [../best-practices/real-subprocess-tests-for-process-lifecycle-claims-2026-07-10.md](../best-practices/real-subprocess-tests-for-process-lifecycle-claims-2026-07-10.md) — the sibling case: a green *mock-injected* test suite is itself a "claim" that needs a real-process ground-truth check; both are about not trusting a proxy for the thing itself.
