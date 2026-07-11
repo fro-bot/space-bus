@@ -189,13 +189,14 @@ server.registerTool(
       sessionIds: z
         .array(z.string())
         .min(1, "bus_wait requires at least one sessionId")
+        .max(100, "bus_wait accepts at most 100 sessionIds")
         .describe("Session IDs to watch (returned by bus_task)"),
       timeoutMs: z
         .number()
         .positive()
         .optional()
         .describe(
-          `Max time to wait in milliseconds before returning a timeout snapshot (default 60s, capped at ${MAX_WAIT_TIMEOUT_MS}ms)`,
+          `Max time to wait in milliseconds before returning a timeout snapshot (default 60s, capped at ${MAX_WAIT_TIMEOUT_MS}ms; soft deadline, may overshoot by up to ~30s if a request is slow)`,
         ),
     },
   },

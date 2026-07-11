@@ -354,6 +354,27 @@ describe("formatWait", () => {
     const out = formatWait(r);
     expect(out).toContain('waiting on a question — "proceed?"');
     expect(out).toContain("options: yes | no");
+    expect(out).toContain("(answer with bus_task using sessionId)");
+  });
+
+  test("blocked session with no options: no options line, but hint still present", () => {
+    const r: WaitResult = {
+      sessions: [
+        {
+          sessionId: "ses_a",
+          project: "alpha",
+          state: "blocked",
+          resultAvailable: false,
+          pendingQuestion: { preview: "proceed?", options: [] },
+        },
+      ],
+      waker: ["ses_a"],
+      timedOut: false,
+    };
+    const out = formatWait(r);
+    expect(out).toContain('waiting on a question — "proceed?"');
+    expect(out).not.toContain("options:");
+    expect(out).toContain("(answer with bus_task using sessionId)");
   });
 
   test("failed and not_found states render plainly", () => {

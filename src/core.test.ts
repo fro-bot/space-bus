@@ -1356,4 +1356,81 @@ describe("wait()", () => {
     expect(res.sessions[0]?.state).toBe("running");
     expect(callCount).toBeGreaterThan(0);
   });
+
+  test("dedupe: same sessionId passed twice -> sessions and waker each have length 1", async () => {
+    globalThis.fetch = makeWaitFetch({
+      sessionDirs: { ses_x: dirA },
+      statuses: { ses_x: { type: "idle" } },
+    });
+    const res = await callWait(["ses_x", "ses_x"], {
+      timeoutMs: 300,
+      pollIntervalMs: 30,
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.sessions).toHaveLength(1);
+    expect(res.waker).toHaveLength(1);
+  });
+
+  test("empty sessionIds -> returns immediately with empty sessions/waker and timedOut:true", async () => {
+    const start = Date.now();
+    const res = await callWait([], { timeoutMs: 5000, pollIntervalMs: 30 });
+    const elapsed = Date.now() - start;
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.sessions).toEqual([]);
+    expect(res.waker).toEqual([]);
+    expect(res.timedOut).toBe(true);
+    expect(elapsed).toBeLessThan(1000);
+  });
+
+  test("retry status -> state 'running' (exercises isStatusBusy retry branch)", async () => {
+    globalThis.fetch = makeWaitFetch({
+      sessionDirs: { ses_1: dirA },
+      statuses: { ses_1: { type: "retry" } },
+    });
+    const res = await callWait(["ses_1"], {
+      timeoutMs: 150,
+      pollIntervalMs: 30,
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.timedOut).toBe(true);
+    expect(res.sessions.find((s) => s.sessionId === "ses_1")?.state).toBe(
+      "running",
+    );
+  });
+
+  test("cross-surface consistency: wait()-derived state equals status()-derived state for the same scenario", async () => {
+    globalThis.fetch = makeWaitFetch({
+      sessionDirs: { ses_1: dirA, ses_2: dirA },
+      statuses: { ses_1: { type: "busy" }, ses_2: { type: "idle" } },
+      questions: {
+        q1: {
+          id: "q1",
+          sessionID: "ses_1",
+          questions: [{ question: "pick", options: [{ label: "a" }] }],
+        },
+      },
+    });
+    const waitRes = await callWait(["ses_1", "ses_2"], {
+      timeoutMs: 300,
+      pollIntervalMs: 30,
+    });
+    expect(waitRes.ok).toBe(true);
+    if (!waitRes.ok) return;
+
+    const status1 = await status("ses_1", ctx());
+    const status2 = await status("ses_2", ctx());
+    expect(status1.ok).toBe(true);
+    expect(status2.ok).toBe(true);
+    if (!status1.ok || !status2.ok) return;
+
+    expect(waitRes.sessions.find((s) => s.sessionId === "ses_1")?.state).toBe(
+      status1.state,
+    );
+    expect(waitRes.sessions.find((s) => s.sessionId === "ses_2")?.state).toBe(
+      status2.state,
+    );
+  });
 });

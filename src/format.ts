@@ -93,6 +93,7 @@ export function formatWait(r: WaitResult): string {
       if (s.pendingQuestion.options.length > 0) {
         parts.push(`      options: ${s.pendingQuestion.options.join(" | ")}`);
       }
+      parts.push(`      (answer with bus_task using sessionId)`);
     }
     return parts.join("\n");
   });

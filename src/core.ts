@@ -31,6 +31,8 @@ function findProject(
   return projects.find((p) => p.name === name);
 }
 
+export type { SessionState, SessionStateInfo } from "./contract";
+
 type Ok<T> = { ok: true } & T;
 type Err = { ok: false; error: string };
 export type Result<T> = Ok<T> | Err;
@@ -239,6 +241,10 @@ function validateContext(context: BusContext): Result<{
   };
 }
 
+function isStatusBusy(entry?: { type: string }): boolean {
+  return entry?.type === "busy" || entry?.type === "retry" || false;
+}
+
 function resolveProjectOrErr(
   projects: ProjectSchema[],
   name: string,
@@ -305,8 +311,8 @@ export async function roster(
           JSON.parse(statusRes.bodyText),
         );
         const sessions = sessionListSchema.parse(JSON.parse(listRes.bodyText));
-        const busyCount = Object.values(statusMap).filter(
-          (s) => s.type === "busy" || s.type === "retry",
+        const busyCount = Object.values(statusMap).filter((s) =>
+          isStatusBusy(s),
         ).length;
         const capped = sessions.length > 100;
         return {
@@ -679,7 +685,7 @@ export async function status(
   }
 
   const entry = statusMap[sessionId];
-  const busy = entry ? entry.type === "busy" || entry.type === "retry" : false;
+  const busy = isStatusBusy(entry);
 
   const { diff, diffSource } = diffResult;
   const additions = diff.reduce((sum, d) => sum + d.additions, 0);
@@ -807,7 +813,7 @@ export async function result(
         JSON.parse(statusMapRes.bodyText),
       );
       const entry = statusMap[sessionId];
-      if (entry && (entry.type === "busy" || entry.type === "retry")) {
+      if (isStatusBusy(entry)) {
         return err(
           `space-bus: session ${sessionId} is still running, use bus_status`,
         );
@@ -904,8 +910,8 @@ async function fetchSnapshotProject(
       JSON.parse(statusRes.bodyText),
     );
     const sessions = sessionListSchema.parse(JSON.parse(listRes.bodyText));
-    const busyCount = Object.values(statusMap).filter(
-      (s) => s.type === "busy" || s.type === "retry",
+    const busyCount = Object.values(statusMap).filter((s) =>
+      isStatusBusy(s),
     ).length;
     const capped = sessions.length > 100;
     let pendingQuestions:
@@ -936,9 +942,7 @@ async function fetchSnapshotProject(
     // this data, same as status(); pass failed=false.
     const sessionStates = sessions.map((s) => {
       const entry = statusMap[s.id];
-      const busy = entry
-        ? entry.type === "busy" || entry.type === "retry"
-        : false;
+      const busy = isStatusBusy(entry);
       const pendingQuestion = pendingQuestionsBySession.get(s.id);
       const state = deriveSessionState({
         busy,
@@ -1036,6 +1040,7 @@ export async function snapshot(
 // live harness needs different tuning.
 const DEFAULT_WAIT_TIMEOUT_MS = 60_000;
 const DEFAULT_WAIT_POLL_INTERVAL_MS = 1_500;
+const DEFAULT_WAIT_CONCURRENCY = 4;
 
 const NEEDS_ATTENTION_STATES: SessionState[] = [
   "complete",
@@ -1075,10 +1080,19 @@ async function resolveWaitSessions(
   groupList: WaitGroup[];
   lastKnown: Map<string, SessionStateInfo>;
 }> {
-  const locations = await mapWithConcurrency(sessionIds, 4, async (id) => {
-    const loc = await findSessionDirectory(baseUrl, credentials, projects, id);
-    return { id, loc };
-  });
+  const locations = await mapWithConcurrency(
+    sessionIds,
+    DEFAULT_WAIT_CONCURRENCY,
+    async (id) => {
+      const loc = await findSessionDirectory(
+        baseUrl,
+        credentials,
+        projects,
+        id,
+      );
+      return { id, loc };
+    },
+  );
 
   const locationById = new Map<string, WaitLocation>();
   for (const { id, loc } of locations) {
@@ -1126,6 +1140,11 @@ export async function wait(
   if (!ctx.ok) return ctx;
   const { baseUrl, projects, credentials } = ctx;
 
+  const uniqueIds = Array.from(new Set(sessionIds));
+  if (uniqueIds.length === 0) {
+    return { ok: true, sessions: [], waker: [], timedOut: true };
+  }
+
   const timeoutMs = opts.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS;
   const pollIntervalMs = opts.pollIntervalMs ?? DEFAULT_WAIT_POLL_INTERVAL_MS;
   const deadline = Date.now() + timeoutMs;
@@ -1134,7 +1153,7 @@ export async function wait(
     baseUrl,
     credentials,
     projects,
-    sessionIds,
+    uniqueIds,
   );
 
   async function pollGroup(group: {
@@ -1158,9 +1177,7 @@ export async function wait(
     const pendingBySession = parsePendingQuestions(questionRes);
     for (const id of group.sessionIds) {
       const entry = statusMap[id];
-      const busy = entry
-        ? entry.type === "busy" || entry.type === "retry"
-        : false;
+      const busy = isStatusBusy(entry);
       const pendingQuestion = pendingBySession.get(id);
       const state = deriveSessionState({
         busy,
@@ -1178,10 +1195,10 @@ export async function wait(
   }
 
   while (true) {
-    await mapWithConcurrency(groupList, 4, pollGroup);
-    const sessions = sessionIds.map(
-      (id) => lastKnown.get(id) as SessionStateInfo,
-    );
+    await mapWithConcurrency(groupList, DEFAULT_WAIT_CONCURRENCY, pollGroup);
+    // resolveWaitSessions seeds lastKnown for every id, so get() is always defined
+    // biome-ignore lint/style/noNonNullAssertion: invariant documented above
+    const sessions = uniqueIds.map((id) => lastKnown.get(id)!);
     const waker = sessions
       .filter((s) => NEEDS_ATTENTION_STATES.includes(s.state))
       .map((s) => s.sessionId);

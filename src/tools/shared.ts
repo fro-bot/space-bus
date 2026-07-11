@@ -1,5 +1,5 @@
 /**
- * Shared adapter-seam helper for the four plugin tools: for managed
+ * Shared adapter-seam helper for the five plugin tools: for managed
  * rosters, ensure a server is running (spawns if needed, idempotent
  * attach-fast-path otherwise) before loading context; externally-managed
  * (baseUrl) rosters go straight to loadContext, unchanged from today.
