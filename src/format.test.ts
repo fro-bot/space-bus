@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import type { WaitResult } from "./core";
 import {
   formatDispatch,
   formatResult,
   formatRoster,
   formatStatus,
+  formatWait,
 } from "./format";
 
 describe("formatRoster", () => {
@@ -288,5 +290,93 @@ describe("formatResult", () => {
         "  (no changes)",
       ].join("\n"),
     );
+  });
+});
+
+describe("formatWait", () => {
+  test("running session, timed out", () => {
+    const r: WaitResult = {
+      sessions: [
+        {
+          sessionId: "ses_a",
+          project: "alpha",
+          state: "running",
+          resultAvailable: false,
+        },
+      ],
+      waker: [],
+      timedOut: true,
+    };
+    const out = formatWait(r);
+    expect(out).toContain("timed out");
+    expect(out).toContain("ses_a (alpha): running");
+  });
+
+  test("complete session wakes the wait", () => {
+    const r: WaitResult = {
+      sessions: [
+        {
+          sessionId: "ses_a",
+          project: "alpha",
+          state: "complete",
+          resultAvailable: true,
+        },
+        {
+          sessionId: "ses_b",
+          project: "beta",
+          state: "running",
+          resultAvailable: false,
+        },
+      ],
+      waker: ["ses_a"],
+      timedOut: false,
+    };
+    const out = formatWait(r);
+    expect(out).toContain("woke on: ses_a");
+    expect(out).toContain("ses_a (alpha): complete");
+    expect(out).toContain("ses_b (beta): running");
+  });
+
+  test("blocked session renders the pending question and options", () => {
+    const r: WaitResult = {
+      sessions: [
+        {
+          sessionId: "ses_a",
+          project: "alpha",
+          state: "blocked",
+          resultAvailable: false,
+          pendingQuestion: { preview: "proceed?", options: ["yes", "no"] },
+        },
+      ],
+      waker: ["ses_a"],
+      timedOut: false,
+    };
+    const out = formatWait(r);
+    expect(out).toContain('waiting on a question — "proceed?"');
+    expect(out).toContain("options: yes | no");
+  });
+
+  test("failed and not_found states render plainly", () => {
+    const r: WaitResult = {
+      sessions: [
+        {
+          sessionId: "ses_a",
+          project: "alpha",
+          state: "failed",
+          resultAvailable: false,
+        },
+        {
+          sessionId: "ses_missing",
+          project: "",
+          state: "not_found",
+          resultAvailable: false,
+        },
+      ],
+      waker: ["ses_a", "ses_missing"],
+      timedOut: false,
+    };
+    const out = formatWait(r);
+    expect(out).toContain("ses_a (alpha): failed");
+    expect(out).toContain("ses_missing ((unresolved)): not_found");
   });
 });

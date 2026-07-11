@@ -6,16 +6,18 @@ import { BUS_RESULT_DESCRIPTION } from "./tools/bus_result";
 import { BUS_ROSTER_DESCRIPTION } from "./tools/bus_roster";
 import { BUS_STATUS_DESCRIPTION } from "./tools/bus_status";
 import { BUS_TASK_DESCRIPTION } from "./tools/bus_task";
+import { BUS_WAIT_DESCRIPTION } from "./tools/bus_wait";
 
 const DESCRIPTIONS: Record<string, string> = {
   bus_roster: BUS_ROSTER_DESCRIPTION,
   bus_task: BUS_TASK_DESCRIPTION,
   bus_status: BUS_STATUS_DESCRIPTION,
   bus_result: BUS_RESULT_DESCRIPTION,
+  bus_wait: BUS_WAIT_DESCRIPTION,
 };
 
 describe("plugin factory <-> description constant parity", () => {
-  test("factory produces exactly the four tools, each matching its description constant", async () => {
+  test("factory produces exactly the five tools, each matching its description constant", async () => {
     const hooks = await SpaceBusPlugin(
       // biome-ignore lint: minimal stub, only `directory` is consumed
       { directory: "/tmp" } as any,
@@ -26,6 +28,7 @@ describe("plugin factory <-> description constant parity", () => {
       "bus_roster",
       "bus_status",
       "bus_task",
+      "bus_wait",
     ]);
     for (const [name, def] of Object.entries(tools)) {
       const expected = DESCRIPTIONS[name];
@@ -73,6 +76,17 @@ describe("plugin factory <-> description constant parity", () => {
     expect(isOptionalZod(args["sessionId"])).toBe(false);
   });
 
+  test("bus_wait args: sessionIds required, timeoutMs optional", async () => {
+    const hooks = await SpaceBusPlugin(
+      // biome-ignore lint: minimal stub, only `directory` is consumed
+      { directory: "/tmp" } as any,
+    );
+    const args = hooks.tool?.bus_wait?.args as Record<string, unknown>;
+    expect(Object.keys(args).sort()).toEqual(["sessionIds", "timeoutMs"]);
+    expect(isOptionalZod(args["sessionIds"])).toBe(false);
+    expect(isOptionalZod(args["timeoutMs"])).toBe(true);
+  });
+
   test("bus_roster args: no args", async () => {
     const hooks = await SpaceBusPlugin(
       // biome-ignore lint: minimal stub, only `directory` is consumed
@@ -115,12 +129,13 @@ describe("mcp.ts source-text parity guard", () => {
     expect(mcpSource).toContain("BUS_TASK_DESCRIPTION");
     expect(mcpSource).toContain("BUS_STATUS_DESCRIPTION");
     expect(mcpSource).toContain("BUS_RESULT_DESCRIPTION");
+    expect(mcpSource).toContain("BUS_WAIT_DESCRIPTION");
   });
 
-  test("registers exactly four server.registerTool( calls, one per bus tool", () => {
+  test("registers exactly five server.registerTool( calls, one per bus tool", () => {
     const matches = mcpSource.match(/server\.registerTool\(\s*\n?\s*"(\w+)"/g);
     expect(matches).not.toBeNull();
-    expect(matches).toHaveLength(4);
+    expect(matches).toHaveLength(5);
     const names = (matches ?? []).map((m) => {
       const nameMatch = m.match(/"(\w+)"/);
       return nameMatch?.[1];
@@ -130,6 +145,7 @@ describe("mcp.ts source-text parity guard", () => {
       "bus_roster",
       "bus_status",
       "bus_task",
+      "bus_wait",
     ]);
   });
 
@@ -161,6 +177,6 @@ describe("mcp.ts source-text parity guard", () => {
     // bare loadContext().
     expect(bareLoadContextCalls).toHaveLength(1);
     const mcpLoadContextCalls = mcpSource.match(/mcpLoadContext\(\)/g);
-    expect(mcpLoadContextCalls?.length).toBeGreaterThanOrEqual(4);
+    expect(mcpLoadContextCalls?.length).toBeGreaterThanOrEqual(5);
   });
 });

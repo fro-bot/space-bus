@@ -7,6 +7,7 @@ import type {
   RosterProject,
   SessionResultResult,
   SessionStatusResult,
+  WaitResult,
 } from "./core";
 
 export function formatRoster(projects: RosterProject[]): string {
@@ -75,6 +76,27 @@ export function formatStatus(r: SessionStatusResult): string {
     todoLines,
   );
   return lines.join("\n");
+}
+
+export function formatWait(r: WaitResult): string {
+  const header = r.timedOut
+    ? "timed out — no session reached a needs-attention state"
+    : `woke on: ${r.waker.join(", ")}`;
+  const sessionLines = r.sessions.map((s) => {
+    const parts = [
+      `  - ${s.sessionId} (${s.project || "(unresolved)"}): ${s.state}`,
+    ];
+    if (s.pendingQuestion) {
+      parts.push(
+        `    blocked: waiting on a question — "${s.pendingQuestion.preview}"`,
+      );
+      if (s.pendingQuestion.options.length > 0) {
+        parts.push(`      options: ${s.pendingQuestion.options.join(" | ")}`);
+      }
+    }
+    return parts.join("\n");
+  });
+  return [header, ...sessionLines].join("\n");
 }
 
 export function formatResult(r: SessionResultResult): string {
