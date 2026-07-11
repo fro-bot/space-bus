@@ -39,6 +39,16 @@ export { discoveryFileSchema, managedSpawnConfigSchema };
 // --- State dir resolution ---------------------------------------------------
 
 /**
+ * First 16 hex chars of sha256(roster path) — the shared per-roster
+ * identity key used by both `stateDirFor` (filesystem layout) and
+ * `launchd.ts`'s `serviceLabel` (launchd label/plist filename), so the two
+ * stay in lockstep without duplicating the hash derivation.
+ */
+export function rosterKey(rosterPath: string): string {
+  return createHash("sha256").update(rosterPath).digest("hex").slice(0, 16);
+}
+
+/**
  * Per-roster state directory: `$XDG_STATE_HOME|~/.local/state`/
  * `space-bus/<first 16 hex of sha256(absolute roster path)>/`. Keying by a
  * hash of the roster path keeps concurrent workspaces from colliding
@@ -47,11 +57,7 @@ export { discoveryFileSchema, managedSpawnConfigSchema };
 export function stateDirFor(rosterPath: string): string {
   const base =
     process.env["XDG_STATE_HOME"] ?? join(homedir(), ".local", "state");
-  const hash = createHash("sha256")
-    .update(rosterPath)
-    .digest("hex")
-    .slice(0, 16);
-  return join(base, "space-bus", hash);
+  return join(base, "space-bus", rosterKey(rosterPath));
 }
 
 export function discoveryFilePath(rosterPath: string): string {
