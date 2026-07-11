@@ -30,8 +30,8 @@ const CONFIG_ONLY_MARKER = "SPACE_BUS_CONFIG must be an absolute path";
 
 // Distinctive strings unique to the other Node-only lifecycle modules. If
 // any of these show up in a browser bundle, that module leaked into the
-// graph — server.ts/discovery.ts/cli.ts are Node-only by construction and
-// must never be reachable from core/contract/format.
+// graph — server.ts/discovery.ts/cli.ts/launchd.ts/service.ts are Node-only
+// by construction and must never be reachable from core/contract/format.
 const SERVER_ONLY_MARKER =
   "ensureServer called on an externally-managed roster";
 // Note: "discovery.json" itself is NOT usable as this marker — attach.ts
@@ -41,6 +41,9 @@ const SERVER_ONLY_MARKER =
 // filename, never referenced by attach.ts).
 const DISCOVERY_ONLY_MARKER = "spawn.provisional.json";
 const CLI_ONLY_MARKER = "thin CLI for the managed OpenCode bus server";
+const LAUNCHD_ONLY_MARKER = "launchd agent plist XML for a roster";
+const SERVICE_ONLY_MARKER =
+  "space-bus service is not supported on this platform";
 
 // Node-only constructs that must never appear in these browser-safe bundles.
 // Word-boundary regexes keep this pragmatic (avoid false positives inside
@@ -96,6 +99,8 @@ describe("browser-safety: core/contract/format bundle for browser target", () =>
       expect(text).not.toContain(SERVER_ONLY_MARKER);
       expect(text).not.toContain(DISCOVERY_ONLY_MARKER);
       expect(text).not.toContain(CLI_ONLY_MARKER);
+      expect(text).not.toContain(LAUNCHD_ONLY_MARKER);
+      expect(text).not.toContain(SERVICE_ONLY_MARKER);
 
       // Node-only APIs (Buffer, process.env, require()) must never survive
       // into a browser bundle — this is what catches e.g. authHeader()

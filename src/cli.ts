@@ -8,6 +8,8 @@
  * every other consumer. Never prints credentials: serve/status only ever
  * surface baseUrl + pid + port.
  */
+import { fileURLToPath } from "node:url";
+
 import { resolveRosterPath } from "./config";
 import {
   ensureServer,
@@ -17,6 +19,13 @@ import {
   stopServer,
   superviseServer,
 } from "./server";
+import {
+  installService,
+  serviceStatus,
+  startService,
+  stopService,
+  uninstallService,
+} from "./service";
 
 const USAGE = `space-bus — thin CLI for the managed OpenCode bus server
 
@@ -24,6 +33,11 @@ Usage:
   space-bus serve [--foreground] [--json] [--config <path>]
   space-bus status [--json] [--config <path>]
   space-bus stop [--json] [--config <path>]
+  space-bus service install [--json] [--config <path>]    install the launchd agent (macOS)
+  space-bus service uninstall [--json] [--config <path>]  remove the launchd agent
+  space-bus service status [--json] [--config <path>]     installed/loaded/running state
+  space-bus service stop [--json] [--config <path>]       bootout the loaded job (plist stays)
+  space-bus service start [--json] [--config <path>]      bootstrap + kickstart the job
   space-bus --help
 
 Roster resolution: SPACE_BUS_CONFIG env var, or --config <path>.
@@ -31,6 +45,8 @@ Roster resolution: SPACE_BUS_CONFIG env var, or --config <path>.
 
 interface ParsedArgs {
   command: string | undefined;
+  /** Second positional arg — only meaningful when command === "service". */
+  subcommand?: string | undefined;
   json: boolean;
   foreground: boolean;
   config: string | undefined;
@@ -43,6 +59,7 @@ interface ParsedArgs {
 function parseArgs(argv: string[]): ParsedArgs {
   const result: ParsedArgs = {
     command: undefined,
+    subcommand: undefined,
     json: false,
     foreground: false,
     config: undefined,
@@ -81,6 +98,12 @@ function consumeArg(argv: string[], i: number, result: ParsedArgs): number {
     result.unknownFlags.push(arg);
   } else if (result.command === undefined && arg !== undefined) {
     result.command = arg;
+  } else if (
+    result.command === "service" &&
+    result.subcommand === undefined &&
+    arg !== undefined
+  ) {
+    result.subcommand = arg;
   }
   return i;
 }
@@ -220,6 +243,153 @@ async function runStop(args: ParsedArgs): Promise<number> {
   return 0;
 }
 
+const SERVICE_VERBS = [
+  "install",
+  "uninstall",
+  "status",
+  "stop",
+  "start",
+] as const;
+type ServiceVerb = (typeof SERVICE_VERBS)[number];
+
+function isServiceVerb(value: string | undefined): value is ServiceVerb {
+  return SERVICE_VERBS.includes(value as ServiceVerb);
+}
+
+type InstallOk = Extract<
+  Awaited<ReturnType<typeof installService>>,
+  { ok: true }
+>;
+type UninstallOk = Extract<
+  Awaited<ReturnType<typeof uninstallService>>,
+  { ok: true }
+>;
+type StatusOk = Extract<
+  Awaited<ReturnType<typeof serviceStatus>>,
+  { ok: true }
+>;
+type StopOk = Extract<Awaited<ReturnType<typeof stopService>>, { ok: true }>;
+type StartOk = Extract<Awaited<ReturnType<typeof startService>>, { ok: true }>;
+
+function installPlainMessage(result: InstallOk): string {
+  return `space-bus: service installed: ${result.label}${result.pid !== undefined ? ` (pid ${result.pid})` : ""}${result.warning ? `\nwarning: ${result.warning}` : ""}`;
+}
+
+function uninstallPlainMessage(result: UninstallOk): string {
+  return `space-bus: service uninstalled: ${result.label} (job removed: ${result.removed.job}, plist removed: ${result.removed.plist})`;
+}
+
+function statusPlainMessage(result: StatusOk): string {
+  return `space-bus: service ${result.label} — installed: ${result.installed}, loaded: ${result.loaded}, running: ${result.running}${result.pid !== undefined ? ` (pid ${result.pid})` : ""}`;
+}
+
+function stopPlainMessage(result: StopOk): string {
+  return `space-bus: service stopped: ${result.label} (was loaded: ${result.wasLoaded}); will start again at next login`;
+}
+
+function startPlainMessage(result: StartOk): string {
+  return `space-bus: service started: ${result.label}${result.pid !== undefined ? ` (pid ${result.pid})` : ""}`;
+}
+
+function servicePlainMessage(verb: "install", result: InstallOk): string;
+function servicePlainMessage(verb: "uninstall", result: UninstallOk): string;
+function servicePlainMessage(verb: "status", result: StatusOk): string;
+function servicePlainMessage(verb: "stop", result: StopOk): string;
+function servicePlainMessage(verb: "start", result: StartOk): string;
+function servicePlainMessage(
+  verb: ServiceVerb,
+  result: InstallOk | UninstallOk | StatusOk | StopOk | StartOk,
+): string {
+  switch (verb) {
+    case "install":
+      return installPlainMessage(result as InstallOk);
+    case "uninstall":
+      return uninstallPlainMessage(result as UninstallOk);
+    case "status":
+      return statusPlainMessage(result as StatusOk);
+    case "stop":
+      return stopPlainMessage(result as StopOk);
+    case "start":
+      return startPlainMessage(result as StartOk);
+    default:
+      return "space-bus: service ok";
+  }
+}
+
+/** Injectable dependencies for `runService` — lets tests swap in fake
+ * verb implementations so they never touch the real launchd / LaunchAgents
+ * directory. Defaults to the real implementations from service.ts. */
+export interface RunServiceDeps {
+  installService?: typeof installService;
+  uninstallService?: typeof uninstallService;
+  serviceStatus?: typeof serviceStatus;
+  stopService?: typeof stopService;
+  startService?: typeof startService;
+}
+
+export async function runService(
+  args: ParsedArgs,
+  deps: RunServiceDeps = {},
+): Promise<number> {
+  if (!isServiceVerb(args.subcommand)) {
+    process.stderr.write(
+      `space-bus: unknown or missing service verb "${args.subcommand ?? ""}"\n\n`,
+    );
+    process.stderr.write(USAGE);
+    return 1;
+  }
+
+  const doInstallService = deps.installService ?? installService;
+  const doUninstallService = deps.uninstallService ?? uninstallService;
+  const doServiceStatus = deps.serviceStatus ?? serviceStatus;
+  const doStopService = deps.stopService ?? stopService;
+  const doStartService = deps.startService ?? startService;
+
+  const rosterPath = resolveRoster(args.config);
+  const serviceDeps = { cliEntryPath: fileURLToPath(import.meta.url) };
+
+  const result = await (() => {
+    switch (args.subcommand) {
+      case "install":
+        return doInstallService(rosterPath, serviceDeps);
+      case "uninstall":
+        return doUninstallService(rosterPath, serviceDeps);
+      case "status":
+        return doServiceStatus(rosterPath, serviceDeps);
+      case "stop":
+        return doStopService(rosterPath, serviceDeps);
+      case "start":
+        return doStartService(rosterPath, serviceDeps);
+      default:
+        throw new Error("unreachable");
+    }
+  })();
+
+  if (!result.ok) {
+    process.stderr.write(`space-bus: ${result.error}\n`);
+    return 1;
+  }
+
+  const plain = ((): string => {
+    switch (args.subcommand) {
+      case "install":
+        return servicePlainMessage("install", result as InstallOk);
+      case "uninstall":
+        return servicePlainMessage("uninstall", result as UninstallOk);
+      case "status":
+        return servicePlainMessage("status", result as StatusOk);
+      case "stop":
+        return servicePlainMessage("stop", result as StopOk);
+      case "start":
+        return servicePlainMessage("start", result as StartOk);
+      default:
+        return "space-bus: service ok";
+    }
+  })();
+  printJson(args.json, result, plain);
+  return 0;
+}
+
 async function main(): Promise<number> {
   const args = parseArgs(process.argv.slice(2));
 
@@ -254,6 +424,8 @@ async function main(): Promise<number> {
       return runStatus(args);
     case "stop":
       return await runStop(args);
+    case "service":
+      return await runService(args);
     default:
       process.stderr.write(`space-bus: unknown command "${args.command}"\n\n`);
       process.stderr.write(USAGE);

@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { runServe } from "./cli";
+import { runServe, runService } from "./cli";
 import type { ServerHandle, SuperviseOutcome } from "./server";
 import { stopServer } from "./server";
 
@@ -54,6 +54,22 @@ function assertNoPasswordLeak(...outputs: string[]): void {
   for (const out of outputs) {
     expect(out).not.toContain(SENTINEL_PASSWORD);
   }
+}
+
+function captureStderrGlobal(): { get: () => string; restore: () => void } {
+  const original = process.stderr.write.bind(process.stderr);
+  let buf = "";
+  // biome-ignore lint/suspicious/noExplicitAny: test stub for stderr.write's overloaded signature
+  (process.stderr.write as any) = (chunk: any, ...rest: any[]) => {
+    buf += chunk.toString();
+    return original(chunk, ...rest);
+  };
+  return {
+    get: () => buf,
+    restore: () => {
+      process.stderr.write = original;
+    },
+  };
 }
 
 describe("space-bus CLI", () => {
@@ -123,6 +139,22 @@ describe("space-bus CLI", () => {
     assertNoPasswordLeak(res.stdout, res.stderr);
   });
 
+  test("service with unknown sub-verb: exit 1, usage on stderr", () => {
+    const res = runCli(["service", "frobnicate"]);
+    expect(res.exitCode).toBe(1);
+    expect(res.stderr).toContain("unknown or missing service verb");
+    expect(res.stderr).toContain("Usage:");
+    assertNoPasswordLeak(res.stdout, res.stderr);
+  });
+
+  test("service with missing sub-verb: exit 1, usage on stderr", () => {
+    const res = runCli(["service"]);
+    expect(res.exitCode).toBe(1);
+    expect(res.stderr).toContain("unknown or missing service verb");
+    expect(res.stderr).toContain("Usage:");
+    assertNoPasswordLeak(res.stdout, res.stderr);
+  });
+
   test("serve then status: status shows running:true with port/pid (AE5), then stop clears it", () => {
     const serveRes = runCli(["serve", "--json"]);
     expect(serveRes.exitCode).toBe(0);
@@ -154,6 +186,143 @@ describe("space-bus CLI", () => {
     expect(afterStop.running).toBe(false);
     assertNoPasswordLeak(afterStopRes.stdout, afterStopRes.stderr);
   }, 30_000);
+
+  // --- runService: injected fake service functions, no real launchd -----
+
+  describe("runService", () => {
+    function baseArgs(
+      overrides: Partial<{
+        subcommand: string;
+        json: boolean;
+        config: string;
+      }> = {},
+    ) {
+      return {
+        command: "service",
+        subcommand: overrides.subcommand,
+        json: overrides.json ?? true,
+        foreground: false,
+        config: overrides.config ?? rosterPath,
+        help: false,
+        unknownFlags: [],
+        configMissingValue: false,
+      };
+    }
+
+    test("install: routes with resolved roster, --json passthrough", async () => {
+      let calledRoster: string | undefined;
+      const code = await runService(baseArgs({ subcommand: "install" }), {
+        installService: async (roster) => {
+          calledRoster = roster;
+          return { ok: true, label: "bot.fro.space-bus.abc", plistPath: "/x" };
+        },
+      });
+      expect(code).toBe(0);
+      expect(calledRoster).toEndWith(rosterPath.replace(/^\/private/, ""));
+    });
+
+    test("uninstall: routes to uninstallService", async () => {
+      let called = false;
+      const code = await runService(baseArgs({ subcommand: "uninstall" }), {
+        uninstallService: async () => {
+          called = true;
+          return {
+            ok: true,
+            removed: { job: true, plist: true },
+            label: "bot.fro.space-bus.abc",
+          };
+        },
+      });
+      expect(code).toBe(0);
+      expect(called).toBe(true);
+    });
+
+    test("status: routes to serviceStatus", async () => {
+      let called = false;
+      const code = await runService(baseArgs({ subcommand: "status" }), {
+        serviceStatus: async () => {
+          called = true;
+          return {
+            ok: true,
+            installed: true,
+            loaded: true,
+            running: true,
+            pid: 42,
+            label: "bot.fro.space-bus.abc",
+            plistPath: "/x",
+          };
+        },
+      });
+      expect(code).toBe(0);
+      expect(called).toBe(true);
+    });
+
+    test("stop: routes to stopService", async () => {
+      let called = false;
+      const code = await runService(baseArgs({ subcommand: "stop" }), {
+        stopService: async () => {
+          called = true;
+          return { ok: true, label: "bot.fro.space-bus.abc", wasLoaded: true };
+        },
+      });
+      expect(code).toBe(0);
+      expect(called).toBe(true);
+    });
+
+    test("start: routes to startService", async () => {
+      let called = false;
+      const code = await runService(baseArgs({ subcommand: "start" }), {
+        startService: async () => {
+          called = true;
+          return { ok: true, label: "bot.fro.space-bus.abc", pid: 42 };
+        },
+      });
+      expect(code).toBe(0);
+      expect(called).toBe(true);
+    });
+
+    test("unknown sub-verb: exit 1, no service function invoked", async () => {
+      const args = baseArgs({ subcommand: "bogus" });
+      const capture = captureStderrGlobal();
+      try {
+        const code = await runService(args, {});
+        expect(code).toBe(1);
+        expect(capture.get()).toContain("unknown or missing service verb");
+        expect(capture.get()).toContain("Usage:");
+      } finally {
+        capture.restore();
+      }
+    });
+
+    test("missing sub-verb: exit 1, usage", async () => {
+      const args = baseArgs();
+      args.subcommand = undefined;
+      const capture = captureStderrGlobal();
+      try {
+        const code = await runService(args, {});
+        expect(code).toBe(1);
+        expect(capture.get()).toContain("Usage:");
+      } finally {
+        capture.restore();
+      }
+    });
+
+    test("{ok:false} from service layer: exit 1, error on stderr", async () => {
+      const capture = captureStderrGlobal();
+      try {
+        const code = await runService(baseArgs({ subcommand: "install" }), {
+          installService: async () => ({
+            ok: false,
+            error: "launchctl bootstrap failed (exit 1)",
+          }),
+        });
+        expect(code).toBe(1);
+        expect(capture.get()).toContain("launchctl bootstrap failed");
+      } finally {
+        capture.restore();
+      }
+    });
+  });
 
   // --- runServe foreground supervision: injected deps, no real daemon ----
 
