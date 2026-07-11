@@ -843,7 +843,103 @@ describe("snapshot()", () => {
       expect(p?.pendingQuestions).toEqual([
         { sessionId: "ses_1", preview: "pick one", options: ["a", "b"] },
       ]);
+      expect(p?.sessions).toEqual([
+        { sessionId: "ses_1", state: "blocked", resultAvailable: false },
+        { sessionId: "ses_2", state: "complete", resultAvailable: true },
+      ]);
     }
+  });
+
+  test("per-session state: busy, idle, and blocked sessions each report the correct normalized state", async () => {
+    globalThis.fetch = mockFetch({
+      "GET /session/status": () => ({
+        body: {
+          ses_busy: { type: "busy" },
+          ses_blocked: { type: "busy" },
+        },
+      }),
+      "GET /session?limit=101": () => ({
+        body: [{ id: "ses_busy" }, { id: "ses_idle" }, { id: "ses_blocked" }],
+      }),
+      "GET /question": () => ({
+        body: [
+          {
+            id: "q1",
+            sessionID: "ses_blocked",
+            questions: [
+              {
+                question: "pick one",
+                options: [{ label: "a" }],
+              },
+            ],
+          },
+        ],
+      }),
+    });
+    const res = await snapshot(threeProjectContext());
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const alpha = res.projects.find((p) => p.name === "alpha");
+    expect(alpha?.sessions).toEqual([
+      { sessionId: "ses_busy", state: "running", resultAvailable: false },
+      { sessionId: "ses_idle", state: "complete", resultAvailable: true },
+      { sessionId: "ses_blocked", state: "blocked", resultAvailable: false },
+    ]);
+  });
+
+  test("parity: snapshot()'s per-session state matches status()'s state for the same session (blocked and complete)", async () => {
+    globalThis.fetch = mockFetch({
+      "GET /session/status": () => ({
+        body: {},
+      }),
+      "GET /session?limit=101": () => ({
+        body: [{ id: "ses_blocked" }, { id: "ses_idle" }],
+      }),
+      "GET /session/ses_blocked": () => ({
+        body: { id: "ses_blocked", title: "t", directory: dirA },
+      }),
+      "GET /session/ses_idle": () => ({
+        body: { id: "ses_idle", title: "t", directory: dirA },
+      }),
+      "GET /session/ses_blocked/todo": () => ({ body: [] }),
+      "GET /session/ses_idle/todo": () => ({ body: [] }),
+      "GET /question": () => ({
+        body: [
+          {
+            id: "q1",
+            sessionID: "ses_blocked",
+            questions: [
+              {
+                question: "pick one",
+                options: [{ label: "a" }],
+              },
+            ],
+          },
+        ],
+      }),
+    });
+    const context = threeProjectContext().context;
+    const snapshotRes = await snapshot({ context });
+    expect(snapshotRes.ok).toBe(true);
+    if (!snapshotRes.ok) return;
+    const alpha = snapshotRes.projects.find((p) => p.name === "alpha");
+    const blockedFromSnapshot = alpha?.sessions?.find(
+      (s) => s.sessionId === "ses_blocked",
+    );
+    const idleFromSnapshot = alpha?.sessions?.find(
+      (s) => s.sessionId === "ses_idle",
+    );
+
+    const blockedStatusRes = await status("ses_blocked", { context });
+    const idleStatusRes = await status("ses_idle", { context });
+    expect(blockedStatusRes.ok).toBe(true);
+    expect(idleStatusRes.ok).toBe(true);
+    if (!blockedStatusRes.ok || !idleStatusRes.ok) return;
+
+    expect(blockedFromSnapshot?.state).toBe(blockedStatusRes.state);
+    expect(blockedFromSnapshot?.state).toBe("blocked");
+    expect(idleFromSnapshot?.state).toBe(idleStatusRes.state);
+    expect(idleFromSnapshot?.state).toBe("complete");
   });
 
   test("error path: one project's status fetch rejects, others intact, overall ok:true", async () => {

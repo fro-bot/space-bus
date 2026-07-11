@@ -870,6 +870,11 @@ export type SnapshotProject = {
     preview: string;
     options: string[];
   }[];
+  sessions?: {
+    sessionId: string;
+    state: SessionState;
+    resultAvailable: boolean;
+  }[];
   error?: string;
 };
 
@@ -905,16 +910,46 @@ async function fetchSnapshotProject(
     let pendingQuestions:
       | { sessionId: string; preview: string; options: string[] }[]
       | undefined;
+    let pendingQuestionsBySession = new Map<
+      string,
+      { preview: string; options: string[] }
+    >();
     if (questionRes.res.ok) {
       try {
         const entries = pendingQuestionListSchema.parse(
           JSON.parse(questionRes.bodyText),
         );
-        pendingQuestions = entries.map((e) => formatQuestionEntry(e));
+        const formatted = entries.map((e) => formatQuestionEntry(e));
+        pendingQuestions = formatted;
+        pendingQuestionsBySession = new Map(
+          formatted.map((q) => [q.sessionId, q]),
+        );
       } catch {
         pendingQuestions = undefined;
       }
     }
+    // state derived identically to status() (deriveSessionState) so
+    // snapshot() and status() cannot report divergent lifecycles for the
+    // same session (R2). resolved is always true here — every entry comes
+    // from the roster's own session list. failed has no clear signal in
+    // this data, same as status(); pass failed=false.
+    const sessionStates = sessions.map((s) => {
+      const entry = statusMap[s.id];
+      const busy = entry
+        ? entry.type === "busy" || entry.type === "retry"
+        : false;
+      const pendingQuestion = pendingQuestionsBySession.get(s.id);
+      const state = deriveSessionState({
+        busy,
+        pendingQuestion,
+        resolved: true,
+      });
+      return {
+        sessionId: s.id,
+        state,
+        resultAvailable: state === "complete",
+      };
+    });
     return {
       name: project.name,
       path: directory,
@@ -924,6 +959,7 @@ async function fetchSnapshotProject(
       sessionCount: capped ? 100 : sessions.length,
       sessionCountCapped: capped,
       pendingQuestions,
+      sessions: sessionStates,
     };
   } catch (e) {
     return {
