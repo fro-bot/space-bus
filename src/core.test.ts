@@ -1297,14 +1297,11 @@ describe("wait()", () => {
       ses_1: { type: "busy" },
     };
     let pollCount = 0;
-    globalThis.fetch = (async (input: string | URL | Request, init) => {
+    globalThis.fetch = (async (input: string | URL | Request) => {
       const url = typeof input === "string" ? input : input.toString();
       const path = url.replace("http://127.0.0.1:4096", "");
       if (path === "/session/status") pollCount += 1;
-      return makeWaitFetch({ sessionDirs: { ses_1: dirA }, statuses })(
-        input,
-        init,
-      );
+      return makeWaitFetch({ sessionDirs: { ses_1: dirA }, statuses })(input);
     }) as typeof fetch;
 
     setTimeout(() => {
