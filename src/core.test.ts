@@ -6,12 +6,14 @@ import { loadContext } from "./config";
 import {
   type CoreOpts,
   type DispatchArgs,
+  deriveSessionState,
   dispatch,
   result,
   roster,
   snapshot,
   status,
   toDispatchArgs,
+  wait,
 } from "./core";
 
 const ORIGINAL_ENV = process.env["SPACE_BUS_CONFIG"];
@@ -280,6 +282,85 @@ describe("dispatch() steering", () => {
   });
 });
 
+describe("deriveSessionState()", () => {
+  test("busy -> running", () => {
+    expect(deriveSessionState({ busy: true, resolved: true })).toBe("running");
+  });
+
+  test("not-busy + resolved -> complete", () => {
+    expect(deriveSessionState({ busy: false, resolved: true })).toBe(
+      "complete",
+    );
+  });
+
+  test("pendingQuestion present -> blocked", () => {
+    expect(
+      deriveSessionState({
+        busy: false,
+        resolved: true,
+        pendingQuestion: { preview: "q", options: [] },
+      }),
+    ).toBe("blocked");
+  });
+
+  test("unresolved -> not_found", () => {
+    expect(deriveSessionState({ busy: false, resolved: false })).toBe(
+      "not_found",
+    );
+  });
+
+  test("failed -> failed", () => {
+    expect(
+      deriveSessionState({ busy: false, resolved: true, failed: true }),
+    ).toBe("failed");
+  });
+
+  test("busy AND pendingQuestion -> blocked (not running)", () => {
+    expect(
+      deriveSessionState({
+        busy: true,
+        resolved: true,
+        pendingQuestion: { preview: "q", options: [] },
+      }),
+    ).toBe("blocked");
+  });
+
+  test("not-busy AND pendingQuestion -> blocked (not complete)", () => {
+    expect(
+      deriveSessionState({
+        busy: false,
+        resolved: true,
+        pendingQuestion: { preview: "q", options: [] },
+      }),
+    ).toBe("blocked");
+  });
+
+  test("unresolved AND busy -> not_found (unresolved wins)", () => {
+    expect(deriveSessionState({ busy: true, resolved: false })).toBe(
+      "not_found",
+    );
+  });
+
+  test("failed AND busy -> failed (failed wins over running)", () => {
+    expect(
+      deriveSessionState({ busy: true, resolved: true, failed: true }),
+    ).toBe("failed");
+  });
+
+  test("resultAvailable-equivalent: state is complete only when not busy, no question, resolved, not failed", () => {
+    const complete = deriveSessionState({ busy: false, resolved: true });
+    const running = deriveSessionState({ busy: true, resolved: true });
+    const blocked = deriveSessionState({
+      busy: false,
+      resolved: true,
+      pendingQuestion: { preview: "q", options: [] },
+    });
+    expect(complete).toBe("complete");
+    expect(running).not.toBe("complete");
+    expect(blocked).not.toBe("complete");
+  });
+});
+
 describe("status()", () => {
   test("busy session with pendingQuestion populated", async () => {
     globalThis.fetch = mockFetch({
@@ -313,6 +394,74 @@ describe("status()", () => {
     await expect(callStatus("ses_1")).resolves.toEqual(
       expect.objectContaining({ ok: false }),
     );
+  });
+
+  test("busy session: state is running, existing fields unchanged", async () => {
+    globalThis.fetch = mockFetch({
+      "GET /session/ses_1": () => ({
+        body: { id: "ses_1", directory: dirA, title: "My session" },
+      }),
+      "GET /session/status": () => ({ body: { ses_1: { type: "busy" } } }),
+      "GET /session/ses_1/todo": () => ({ body: [] }),
+      "GET /session/ses_1/diff": () => ({ body: [] }),
+      "GET /question": () => ({ body: [] }),
+      "GET /vcs/status": () => ({ body: [] }),
+    });
+    const res = await callStatus("ses_1");
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.state).toBe("running");
+    expect(res.busy).toBe(true);
+    expect(res.title).toBe("My session");
+    expect(res.pendingQuestion).toBeUndefined();
+  });
+
+  test("idle session: state is complete, existing fields unchanged", async () => {
+    globalThis.fetch = mockFetch({
+      "GET /session/ses_1": () => ({
+        body: { id: "ses_1", directory: dirA, title: "My session" },
+      }),
+      "GET /session/status": () => ({ body: { ses_1: { type: "idle" } } }),
+      "GET /session/ses_1/todo": () => ({ body: [] }),
+      "GET /session/ses_1/diff": () => ({ body: [] }),
+      "GET /question": () => ({ body: [] }),
+      "GET /vcs/status": () => ({ body: [] }),
+    });
+    const res = await callStatus("ses_1");
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.state).toBe("complete");
+    expect(res.resultAvailable).toBe(true);
+    expect(res.busy).toBe(false);
+    expect(res.diff).toEqual({ files: 0, additions: 0, deletions: 0 });
+  });
+
+  test("blocked session (pendingQuestion): state is blocked, existing fields unchanged", async () => {
+    globalThis.fetch = mockFetch({
+      "GET /session/ses_1": () => ({
+        body: { id: "ses_1", directory: dirA, title: "My session" },
+      }),
+      "GET /session/status": () => ({ body: { ses_1: { type: "busy" } } }),
+      "GET /session/ses_1/todo": () => ({ body: [] }),
+      "GET /session/ses_1/diff": () => ({ body: [] }),
+      "GET /question": () => ({
+        body: [
+          {
+            id: "q_1",
+            sessionID: "ses_1",
+            questions: [{ question: "Proceed?", options: [{ label: "Yes" }] }],
+          },
+        ],
+      }),
+      "GET /vcs/status": () => ({ body: [] }),
+    });
+    const res = await callStatus("ses_1");
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.state).toBe("blocked");
+    expect(res.resultAvailable).toBe(false);
+    expect(res.busy).toBe(true);
+    expect(res.pendingQuestion?.preview).toBe("Proceed?");
   });
 });
 
@@ -695,7 +844,103 @@ describe("snapshot()", () => {
       expect(p?.pendingQuestions).toEqual([
         { sessionId: "ses_1", preview: "pick one", options: ["a", "b"] },
       ]);
+      expect(p?.sessions).toEqual([
+        { sessionId: "ses_1", state: "blocked", resultAvailable: false },
+        { sessionId: "ses_2", state: "complete", resultAvailable: true },
+      ]);
     }
+  });
+
+  test("per-session state: busy, idle, and blocked sessions each report the correct normalized state", async () => {
+    globalThis.fetch = mockFetch({
+      "GET /session/status": () => ({
+        body: {
+          ses_busy: { type: "busy" },
+          ses_blocked: { type: "busy" },
+        },
+      }),
+      "GET /session?limit=101": () => ({
+        body: [{ id: "ses_busy" }, { id: "ses_idle" }, { id: "ses_blocked" }],
+      }),
+      "GET /question": () => ({
+        body: [
+          {
+            id: "q1",
+            sessionID: "ses_blocked",
+            questions: [
+              {
+                question: "pick one",
+                options: [{ label: "a" }],
+              },
+            ],
+          },
+        ],
+      }),
+    });
+    const res = await snapshot(threeProjectContext());
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const alpha = res.projects.find((p) => p.name === "alpha");
+    expect(alpha?.sessions).toEqual([
+      { sessionId: "ses_busy", state: "running", resultAvailable: false },
+      { sessionId: "ses_idle", state: "complete", resultAvailable: true },
+      { sessionId: "ses_blocked", state: "blocked", resultAvailable: false },
+    ]);
+  });
+
+  test("parity: snapshot()'s per-session state matches status()'s state for the same session (blocked and complete)", async () => {
+    globalThis.fetch = mockFetch({
+      "GET /session/status": () => ({
+        body: {},
+      }),
+      "GET /session?limit=101": () => ({
+        body: [{ id: "ses_blocked" }, { id: "ses_idle" }],
+      }),
+      "GET /session/ses_blocked": () => ({
+        body: { id: "ses_blocked", title: "t", directory: dirA },
+      }),
+      "GET /session/ses_idle": () => ({
+        body: { id: "ses_idle", title: "t", directory: dirA },
+      }),
+      "GET /session/ses_blocked/todo": () => ({ body: [] }),
+      "GET /session/ses_idle/todo": () => ({ body: [] }),
+      "GET /question": () => ({
+        body: [
+          {
+            id: "q1",
+            sessionID: "ses_blocked",
+            questions: [
+              {
+                question: "pick one",
+                options: [{ label: "a" }],
+              },
+            ],
+          },
+        ],
+      }),
+    });
+    const context = threeProjectContext().context;
+    const snapshotRes = await snapshot({ context });
+    expect(snapshotRes.ok).toBe(true);
+    if (!snapshotRes.ok) return;
+    const alpha = snapshotRes.projects.find((p) => p.name === "alpha");
+    const blockedFromSnapshot = alpha?.sessions?.find(
+      (s) => s.sessionId === "ses_blocked",
+    );
+    const idleFromSnapshot = alpha?.sessions?.find(
+      (s) => s.sessionId === "ses_idle",
+    );
+
+    const blockedStatusRes = await status("ses_blocked", { context });
+    const idleStatusRes = await status("ses_idle", { context });
+    expect(blockedStatusRes.ok).toBe(true);
+    expect(idleStatusRes.ok).toBe(true);
+    if (!blockedStatusRes.ok || !idleStatusRes.ok) return;
+
+    expect(blockedFromSnapshot?.state).toBe(blockedStatusRes.state);
+    expect(blockedFromSnapshot?.state).toBe("blocked");
+    expect(idleFromSnapshot?.state).toBe(idleStatusRes.state);
+    expect(idleFromSnapshot?.state).toBe("complete");
   });
 
   test("error path: one project's status fetch rejects, others intact, overall ok:true", async () => {
@@ -825,5 +1070,364 @@ describe("snapshot()", () => {
     for (const p of res.projects) {
       if (p.error) expect(p.error).not.toContain(SENTINEL);
     }
+  });
+});
+
+describe("wait()", () => {
+  type WaitFetchOpts = {
+    sessionDirs: Record<string, string>;
+    statuses: Record<string, { type: string }>;
+    questions?: Record<
+      string,
+      { id: string; sessionID: string; questions: unknown[] }
+    >;
+  };
+
+  function waitFetchSessionResponse(
+    opts: WaitFetchOpts,
+    path: string,
+  ): Response {
+    const id = decodeURIComponent(path.slice("/session/".length));
+    const dir = opts.sessionDirs[id];
+    if (!dir) return new Response(JSON.stringify({}), { status: 404 });
+    return new Response(JSON.stringify({ id, directory: dir }), {
+      status: 200,
+    });
+  }
+
+  /** Mutable in-test session registry: sessionId -> owning directory, plus
+   * mutable status/question maps so tests (esp. the real-elapsed transition
+   * test) can flip state mid-wait via setTimeout. */
+  function makeWaitFetch(opts: WaitFetchOpts): typeof fetch {
+    return (async (input: string | URL | Request) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const path = url.replace("http://127.0.0.1:4096", "");
+      if (path === "/session/status") {
+        return new Response(JSON.stringify(opts.statuses), { status: 200 });
+      }
+      if (path === "/question") {
+        return new Response(
+          JSON.stringify(Object.values(opts.questions ?? {})),
+          {
+            status: 200,
+          },
+        );
+      }
+      if (path.startsWith("/session/") && !path.includes("?")) {
+        return waitFetchSessionResponse(opts, path);
+      }
+      return new Response(JSON.stringify([]), { status: 404 });
+    }) as typeof fetch;
+  }
+
+  async function callWait(
+    sessionIds: string[],
+    extra?: { timeoutMs?: number; pollIntervalMs?: number },
+  ) {
+    return wait(sessionIds, { ...ctx(), ...extra });
+  }
+
+  test("happy path: 3 sessions, one already complete at entry -> immediate return, waker=[that id]", async () => {
+    globalThis.fetch = makeWaitFetch({
+      sessionDirs: { ses_1: dirA, ses_2: dirA, ses_3: dirA },
+      statuses: {
+        ses_1: { type: "busy" },
+        ses_2: { type: "idle" },
+        ses_3: { type: "busy" },
+      },
+    });
+    const start = Date.now();
+    const res = await callWait(["ses_1", "ses_2", "ses_3"], {
+      timeoutMs: 300,
+      pollIntervalMs: 30,
+    });
+    const elapsed = Date.now() - start;
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.timedOut).toBe(false);
+    expect(res.waker).toEqual(["ses_2"]);
+    expect(res.sessions).toHaveLength(3);
+    expect(res.sessions.find((s) => s.sessionId === "ses_2")?.state).toBe(
+      "complete",
+    );
+    expect(res.sessions.find((s) => s.sessionId === "ses_1")?.state).toBe(
+      "running",
+    );
+    // Should return on the first poll, well under the timeout.
+    expect(elapsed).toBeLessThan(300);
+  });
+
+  test("level-triggered: one already blocked at entry -> immediate return", async () => {
+    globalThis.fetch = makeWaitFetch({
+      sessionDirs: { ses_1: dirA, ses_2: dirA },
+      statuses: { ses_1: { type: "busy" }, ses_2: { type: "busy" } },
+      questions: {
+        q1: {
+          id: "q1",
+          sessionID: "ses_2",
+          questions: [{ question: "pick", options: [{ label: "a" }] }],
+        },
+      },
+    });
+    const res = await callWait(["ses_1", "ses_2"], {
+      timeoutMs: 300,
+      pollIntervalMs: 30,
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.timedOut).toBe(false);
+    expect(res.waker).toEqual(["ses_2"]);
+    expect(
+      res.sessions.find((s) => s.sessionId === "ses_2")?.pendingQuestion
+        ?.preview,
+    ).toBe("pick");
+  });
+
+  test("real-elapsed transition: all running at entry, one flips to complete after a delay -> wakes before timeout", async () => {
+    const statuses: Record<string, { type: string }> = {
+      ses_1: { type: "busy" },
+      ses_2: { type: "busy" },
+    };
+    globalThis.fetch = makeWaitFetch({
+      sessionDirs: { ses_1: dirA, ses_2: dirA },
+      statuses,
+    });
+    const FLIP_MS = 100;
+    const TIMEOUT_MS = 500;
+    setTimeout(() => {
+      statuses["ses_2"] = { type: "idle" };
+    }, FLIP_MS);
+
+    const start = Date.now();
+    const res = await callWait(["ses_1", "ses_2"], {
+      timeoutMs: TIMEOUT_MS,
+      pollIntervalMs: 30,
+    });
+    const elapsed = Date.now() - start;
+
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.timedOut).toBe(false);
+    expect(res.waker).toEqual(["ses_2"]);
+    expect(res.sessions.find((s) => s.sessionId === "ses_1")?.state).toBe(
+      "running",
+    );
+    expect(res.sessions.find((s) => s.sessionId === "ses_2")?.state).toBe(
+      "complete",
+    );
+    // Real elapsed time: it must have genuinely waited for the flip (not an
+    // instant/mocked return) but woken up well before the timeout.
+    expect(elapsed).toBeGreaterThanOrEqual(90);
+    expect(elapsed).toBeLessThan(TIMEOUT_MS);
+  });
+
+  test("timeout: all stay running past timeoutMs -> timedOut:true, ok:true, all-running snapshot", async () => {
+    globalThis.fetch = makeWaitFetch({
+      sessionDirs: { ses_1: dirA, ses_2: dirA },
+      statuses: { ses_1: { type: "busy" }, ses_2: { type: "busy" } },
+    });
+    const res = await callWait(["ses_1", "ses_2"], {
+      timeoutMs: 150,
+      pollIntervalMs: 30,
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.timedOut).toBe(true);
+    expect(res.waker).toEqual([]);
+    expect(res.sessions.every((s) => s.state === "running")).toBe(true);
+  });
+
+  test("not_found: one unresolvable id -> inline not_found, wait proceeds on the rest and wakes immediately", async () => {
+    globalThis.fetch = makeWaitFetch({
+      sessionDirs: { ses_1: dirA },
+      statuses: { ses_1: { type: "busy" } },
+    });
+    const res = await callWait(["ses_1", "ses_missing"], {
+      timeoutMs: 300,
+      pollIntervalMs: 30,
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.timedOut).toBe(false);
+    expect(res.waker).toEqual(["ses_missing"]);
+    expect(res.sessions.find((s) => s.sessionId === "ses_missing")?.state).toBe(
+      "not_found",
+    );
+    expect(res.sessions.find((s) => s.sessionId === "ses_1")?.state).toBe(
+      "running",
+    );
+  });
+
+  test("cross-directory: sessions in two directories -> both groups polled, both represented", async () => {
+    globalThis.fetch = makeWaitFetch({
+      sessionDirs: { ses_1: dirA, ses_2: dirB },
+      statuses: { ses_1: { type: "idle" }, ses_2: { type: "busy" } },
+    });
+    const res = await callWait(["ses_1", "ses_2"], {
+      timeoutMs: 300,
+      pollIntervalMs: 30,
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.sessions.map((s) => s.sessionId).sort()).toEqual([
+      "ses_1",
+      "ses_2",
+    ]);
+    expect(res.sessions.find((s) => s.sessionId === "ses_1")?.project).toBe(
+      "alpha",
+    );
+    expect(res.sessions.find((s) => s.sessionId === "ses_2")?.project).toBe(
+      "beta",
+    );
+    expect(res.waker).toEqual(["ses_1"]);
+  });
+
+  test("invalid context fails closed: ok:false, never throws", async () => {
+    const badContext = {
+      roster: { server: { baseUrl: "http://evil.example.com" }, projects: [] },
+    };
+    await expect(
+      // biome-ignore lint/suspicious/noExplicitAny: intentionally malformed context for the fail-closed test
+      wait(["ses_1"], { context: badContext as any, timeoutMs: 100 }),
+    ).resolves.toEqual(expect.objectContaining({ ok: false }));
+  });
+
+  test("deadline independent of api's 30s: loop performs more than one poll before waking (proves it isn't a single 30s-bounded request)", async () => {
+    const statuses: Record<string, { type: string }> = {
+      ses_1: { type: "busy" },
+    };
+    let pollCount = 0;
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const path = url.replace("http://127.0.0.1:4096", "");
+      if (path === "/session/status") pollCount += 1;
+      return makeWaitFetch({ sessionDirs: { ses_1: dirA }, statuses })(input);
+    }) as typeof fetch;
+
+    setTimeout(() => {
+      statuses["ses_1"] = { type: "idle" };
+    }, 80);
+
+    const res = await callWait(["ses_1"], {
+      timeoutMs: 500,
+      pollIntervalMs: 30,
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.timedOut).toBe(false);
+    // At ~30ms intervals with an 80ms flip, several polls must have happened
+    // before wake — proving the loop repeats independently of api()'s
+    // per-request 30s abort rather than treating one request as the bound.
+    expect(pollCount).toBeGreaterThan(1);
+  });
+
+  test("poll failure degrades gracefully: a directory's request failing keeps sessions at last-known state without throwing", async () => {
+    let callCount = 0;
+    const sessionOpts: WaitFetchOpts = {
+      sessionDirs: { ses_1: dirA },
+      statuses: {},
+    };
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const path = url.replace("http://127.0.0.1:4096", "");
+      if (path === "/session/status") {
+        callCount += 1;
+        return new Response("boom", { status: 500 });
+      }
+      if (path === "/question") {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      if (path.startsWith("/session/") && !path.includes("?")) {
+        return waitFetchSessionResponse(sessionOpts, path);
+      }
+      return new Response(JSON.stringify([]), { status: 404 });
+    }) as typeof fetch;
+
+    const res = await callWait(["ses_1"], {
+      timeoutMs: 150,
+      pollIntervalMs: 30,
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.timedOut).toBe(true);
+    expect(res.sessions[0]?.state).toBe("running");
+    expect(callCount).toBeGreaterThan(0);
+  });
+
+  test("dedupe: same sessionId passed twice -> sessions and waker each have length 1", async () => {
+    globalThis.fetch = makeWaitFetch({
+      sessionDirs: { ses_x: dirA },
+      statuses: { ses_x: { type: "idle" } },
+    });
+    const res = await callWait(["ses_x", "ses_x"], {
+      timeoutMs: 300,
+      pollIntervalMs: 30,
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.sessions).toHaveLength(1);
+    expect(res.waker).toHaveLength(1);
+  });
+
+  test("empty sessionIds -> returns immediately with empty sessions/waker and timedOut:true", async () => {
+    const start = Date.now();
+    const res = await callWait([], { timeoutMs: 5000, pollIntervalMs: 30 });
+    const elapsed = Date.now() - start;
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.sessions).toEqual([]);
+    expect(res.waker).toEqual([]);
+    expect(res.timedOut).toBe(true);
+    expect(elapsed).toBeLessThan(1000);
+  });
+
+  test("retry status -> state 'running' (exercises isStatusBusy retry branch)", async () => {
+    globalThis.fetch = makeWaitFetch({
+      sessionDirs: { ses_1: dirA },
+      statuses: { ses_1: { type: "retry" } },
+    });
+    const res = await callWait(["ses_1"], {
+      timeoutMs: 150,
+      pollIntervalMs: 30,
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.timedOut).toBe(true);
+    expect(res.sessions.find((s) => s.sessionId === "ses_1")?.state).toBe(
+      "running",
+    );
+  });
+
+  test("cross-surface consistency: wait()-derived state equals status()-derived state for the same scenario", async () => {
+    globalThis.fetch = makeWaitFetch({
+      sessionDirs: { ses_1: dirA, ses_2: dirA },
+      statuses: { ses_1: { type: "busy" }, ses_2: { type: "idle" } },
+      questions: {
+        q1: {
+          id: "q1",
+          sessionID: "ses_1",
+          questions: [{ question: "pick", options: [{ label: "a" }] }],
+        },
+      },
+    });
+    const waitRes = await callWait(["ses_1", "ses_2"], {
+      timeoutMs: 300,
+      pollIntervalMs: 30,
+    });
+    expect(waitRes.ok).toBe(true);
+    if (!waitRes.ok) return;
+
+    const status1 = await status("ses_1", ctx());
+    const status2 = await status("ses_2", ctx());
+    expect(status1.ok).toBe(true);
+    expect(status2.ok).toBe(true);
+    if (!status1.ok || !status2.ok) return;
+
+    expect(waitRes.sessions.find((s) => s.sessionId === "ses_1")?.state).toBe(
+      status1.state,
+    );
+    expect(waitRes.sessions.find((s) => s.sessionId === "ses_2")?.state).toBe(
+      status2.state,
+    );
   });
 });

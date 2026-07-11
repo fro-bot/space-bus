@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import type { WaitResult } from "./core";
 import {
   formatDispatch,
   formatResult,
   formatRoster,
   formatStatus,
+  formatWait,
 } from "./format";
 
 describe("formatRoster", () => {
@@ -129,6 +131,8 @@ describe("formatStatus", () => {
       todos: [],
       diff: { files: 0, additions: 0, deletions: 0 },
       diffSource: "session",
+      state: "running",
+      resultAvailable: false,
     });
     expect(out).toBe(
       [
@@ -151,6 +155,8 @@ describe("formatStatus", () => {
       todos: [],
       diff: { files: 3, additions: 10, deletions: 4 },
       diffSource: "session",
+      state: "complete",
+      resultAvailable: true,
     });
     expect(out).toContain("title: Fix bug");
     expect(out).toContain("busy: false");
@@ -168,6 +174,8 @@ describe("formatStatus", () => {
       ],
       diff: { files: 0, additions: 0, deletions: 0 },
       diffSource: "session",
+      state: "complete",
+      resultAvailable: true,
     });
     expect(out).toContain("  - [pending] Write tests (high)");
     expect(out).toContain("  - [in_progress] Ship it (medium)");
@@ -181,6 +189,8 @@ describe("formatStatus", () => {
       todos: [],
       diff: { files: 1, additions: 2, deletions: 1 },
       diffSource: "working-tree",
+      state: "complete",
+      resultAvailable: true,
     });
     expect(out).toContain(
       "diff (working tree — repo-wide, may include changes from other sessions): 1 files, +2/-1",
@@ -199,6 +209,8 @@ describe("formatStatus", () => {
         preview: "Should I proceed?",
         options: ["Yes", "No"],
       },
+      state: "blocked",
+      resultAvailable: false,
     });
     const lines = out.split("\n");
     expect(lines).toContain(
@@ -217,6 +229,8 @@ describe("formatStatus", () => {
       diff: { files: 0, additions: 0, deletions: 0 },
       diffSource: "session",
       pendingQuestion: { preview: "Continue?", options: [] },
+      state: "blocked",
+      resultAvailable: false,
     });
     expect(out).not.toContain("  options:");
     expect(out).toContain("  (answer with bus_task using sessionId)");
@@ -276,5 +290,114 @@ describe("formatResult", () => {
         "  (no changes)",
       ].join("\n"),
     );
+  });
+});
+
+describe("formatWait", () => {
+  test("running session, timed out", () => {
+    const r: WaitResult = {
+      sessions: [
+        {
+          sessionId: "ses_a",
+          project: "alpha",
+          state: "running",
+          resultAvailable: false,
+        },
+      ],
+      waker: [],
+      timedOut: true,
+    };
+    const out = formatWait(r);
+    expect(out).toContain("timed out");
+    expect(out).toContain("ses_a (alpha): running");
+  });
+
+  test("complete session wakes the wait", () => {
+    const r: WaitResult = {
+      sessions: [
+        {
+          sessionId: "ses_a",
+          project: "alpha",
+          state: "complete",
+          resultAvailable: true,
+        },
+        {
+          sessionId: "ses_b",
+          project: "beta",
+          state: "running",
+          resultAvailable: false,
+        },
+      ],
+      waker: ["ses_a"],
+      timedOut: false,
+    };
+    const out = formatWait(r);
+    expect(out).toContain("woke on: ses_a");
+    expect(out).toContain("ses_a (alpha): complete");
+    expect(out).toContain("ses_b (beta): running");
+  });
+
+  test("blocked session renders the pending question and options", () => {
+    const r: WaitResult = {
+      sessions: [
+        {
+          sessionId: "ses_a",
+          project: "alpha",
+          state: "blocked",
+          resultAvailable: false,
+          pendingQuestion: { preview: "proceed?", options: ["yes", "no"] },
+        },
+      ],
+      waker: ["ses_a"],
+      timedOut: false,
+    };
+    const out = formatWait(r);
+    expect(out).toContain('waiting on a question — "proceed?"');
+    expect(out).toContain("options: yes | no");
+    expect(out).toContain("(answer with bus_task using sessionId)");
+  });
+
+  test("blocked session with no options: no options line, but hint still present", () => {
+    const r: WaitResult = {
+      sessions: [
+        {
+          sessionId: "ses_a",
+          project: "alpha",
+          state: "blocked",
+          resultAvailable: false,
+          pendingQuestion: { preview: "proceed?", options: [] },
+        },
+      ],
+      waker: ["ses_a"],
+      timedOut: false,
+    };
+    const out = formatWait(r);
+    expect(out).toContain('waiting on a question — "proceed?"');
+    expect(out).not.toContain("options:");
+    expect(out).toContain("(answer with bus_task using sessionId)");
+  });
+
+  test("failed and not_found states render plainly", () => {
+    const r: WaitResult = {
+      sessions: [
+        {
+          sessionId: "ses_a",
+          project: "alpha",
+          state: "failed",
+          resultAvailable: false,
+        },
+        {
+          sessionId: "ses_missing",
+          project: "",
+          state: "not_found",
+          resultAvailable: false,
+        },
+      ],
+      waker: ["ses_a", "ses_missing"],
+      timedOut: false,
+    };
+    const out = formatWait(r);
+    expect(out).toContain("ses_a (alpha): failed");
+    expect(out).toContain("ses_missing ((unresolved)): not_found");
   });
 });

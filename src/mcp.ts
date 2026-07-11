@@ -2,19 +2,21 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { isManagedRoster, loadContext, resolveRosterPath } from "./config";
-import { dispatch, result, roster, status, toDispatchArgs } from "./core";
+import { dispatch, result, roster, status, toDispatchArgs, wait } from "./core";
 import {
   dispatchMetadata,
   formatDispatch,
   formatResult,
   formatRoster,
   formatStatus,
+  formatWait,
 } from "./format";
 import { ensureServer } from "./server";
 import { BUS_RESULT_DESCRIPTION } from "./tools/bus_result";
 import { BUS_ROSTER_DESCRIPTION } from "./tools/bus_roster";
 import { BUS_STATUS_DESCRIPTION } from "./tools/bus_status";
 import { BUS_TASK_DESCRIPTION } from "./tools/bus_task";
+import { BUS_WAIT_DESCRIPTION, MAX_WAIT_TIMEOUT_MS } from "./tools/bus_wait";
 
 /**
  * MCP is attach-only by default (never spawns) — set SPACE_BUS_MCP_SPAWN
@@ -176,6 +178,46 @@ server.registerTool(
     if (!r.ok)
       return { content: [{ type: "text", text: r.error }], isError: true };
     return { content: [{ type: "text", text: formatResult(r) }] };
+  },
+);
+
+server.registerTool(
+  "bus_wait",
+  {
+    description: BUS_WAIT_DESCRIPTION,
+    inputSchema: {
+      sessionIds: z
+        .array(z.string())
+        .min(1, "bus_wait requires at least one sessionId")
+        .max(100, "bus_wait accepts at most 100 sessionIds")
+        .describe("Session IDs to watch (returned by bus_task)"),
+      timeoutMs: z
+        .number()
+        .positive()
+        .optional()
+        .describe(
+          `Max time to wait in milliseconds before returning a timeout snapshot (default 60s, capped at ${MAX_WAIT_TIMEOUT_MS}ms; soft deadline, may overshoot by up to ~30s if a request is slow)`,
+        ),
+    },
+  },
+  async (args) => {
+    let context: Awaited<ReturnType<typeof mcpLoadContext>>;
+    try {
+      context = await mcpLoadContext();
+    } catch (e) {
+      return {
+        content: [{ type: "text", text: (e as Error).message }],
+        isError: true,
+      };
+    }
+    const timeoutMs =
+      args.timeoutMs !== undefined
+        ? Math.min(args.timeoutMs, MAX_WAIT_TIMEOUT_MS)
+        : undefined;
+    const r = await wait(args.sessionIds, { context, timeoutMs });
+    if (!r.ok)
+      return { content: [{ type: "text", text: r.error }], isError: true };
+    return { content: [{ type: "text", text: formatWait(r) }] };
   },
 );
 

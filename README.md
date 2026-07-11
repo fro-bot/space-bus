@@ -66,6 +66,7 @@ Set `SPACE_BUS_CONFIG` to override roster discovery — it must be an absolute p
 - `bus_task` — Dispatch a prompt to an agent in the given space-bus manifest project, or steer an existing session by passing `sessionId` (answers its pending question, else sends a follow-up prompt). Returns immediately; does not wait for completion. Alongside the formatted text, results carry structured `{sessionId, project, mode}` metadata — plugin `ToolResult.metadata` on the tool surface, MCP `structuredContent` on the stdio surface — for callers that want the dispatch outcome without parsing the string.
 - `bus_status` — Report a space-bus session's status plus a summary of its latest todo and diff. Also reports when the session is blocked on an interactive question awaiting a reply.
 - `bus_result` — Return a completed space-bus session's final assistant message and diff. Errors if the session is still running — use `bus_status` to check first.
+- `bus_wait` — Block until any of the given sessions needs attention (completes, blocks on a question, fails, or is not found) or a bounded timeout elapses. Returns each watched session's normalized state and which session(s) woke the wait; on timeout returns the current snapshot, not an error.
 
 ## Managed server
 

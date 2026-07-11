@@ -43,8 +43,8 @@ concurrency:
 env:
   PR_REVIEW_PROMPT: |
     Review this OpenCode plugin PR (@fro.bot/space-bus) focusing on:
-    - OpenCode plugin API contract fidelity: default-exported Plugin factory, exactly the four `bus_*` tools (bus_roster, bus_task, bus_status, bus_result), tool schema correctness, ToolResult shape
-    - Three-surface parity: `.opencode/tools/` wrappers, the plugin's tool map, and the MCP registrations in `src/mcp.ts` must stay byte-identical in descriptions and output — driven from the same `makeBus*` factories and description constants, never duplicated by hand
+    - OpenCode plugin API contract fidelity: default-exported Plugin factory, exactly the five `bus_*` tools (bus_roster, bus_task, bus_status, bus_result, bus_wait), tool schema correctness, ToolResult shape
+    - Two-surface parity: the plugin's tool map and the MCP registrations in `src/mcp.ts` must stay byte-identical in descriptions and output — driven from the same `makeBus*` factories and description constants, never duplicated by hand
     - Roster/config safety: `spacebus.json`/`SPACE_BUS_CONFIG` resolution never walks upward, `server.baseUrl` localhost guard (127.0.0.1/::1/localhost) is preserved, no credential or token values ever appear in logs or tool output
     - Never `process.cwd()`: directory resolution must use `ctx.directory` (per-call) falling back to captured `input.directory` — this is what makes directory-routing work on a shared `opencode serve` instance
     - MCP stdio discipline: `src/mcp.ts`'s stdout carries protocol frames only — all diagnostics must go to stderr

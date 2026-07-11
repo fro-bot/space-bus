@@ -1,10 +1,10 @@
 # @fro.bot/space-bus — Plugin Development
 
-This is the source repo for the `@fro.bot/space-bus` OpenCode plugin: four `bus_*` tools that let a control agent task per-project agents over the OpenCode server API, plus a stdio MCP facade for Claude Desktop.
+This is the source repo for the `@fro.bot/space-bus` OpenCode plugin: five `bus_*` tools that let a control agent task per-project agents over the OpenCode server API, plus a stdio MCP facade for Claude Desktop.
 
 ## Project structure
 
-- `src/index.ts` — plugin entry; default-exported factory returning the `tool` map (`bus_roster`, `bus_task`, `bus_status`, `bus_result`).
+- `src/index.ts` — plugin entry; default-exported factory returning the `tool` map (`bus_roster`, `bus_task`, `bus_status`, `bus_result`, `bus_wait`).
 - `src/tools/*.ts` — one file per tool: thin adapter factories (`makeBus*`) plus the shared description constants also consumed by `src/mcp.ts`.
 - `src/core.ts` — all bus logic (roster lookups, dispatch, status, result, `snapshot()` composite). Discriminated-union returns, no throwing. Browser-safe: takes an injected `BusContext` (`{ roster, credentials? }`) per call instead of resolving one itself.
 - `src/config.ts` — `spacebus.json` roster resolution: `resolveRosterPath`/`getRoster`/`getProjects`, `SPACE_BUS_CONFIG` override, localhost guard. Node-only. `loadContext(directory?)` is the Node-side loader producing a `BusContext` for core.
@@ -17,7 +17,7 @@ This is the source repo for the `@fro.bot/space-bus` OpenCode plugin: four `bus_
 
 ## Invariants
 
-- **Two-surface parity:** the plugin's tool map and the MCP registrations must stay byte-identical in descriptions and output — driven from the same factories (`makeBus*`) and description constants, never duplicated by hand.
+- **Two-surface parity:** the plugin's tool map and the MCP registrations must stay byte-identical in descriptions and output — driven from the same factories (`makeBus*`, including `makeBusWait`) and description constants, never duplicated by hand.
 - **Never `process.cwd()`:** always use `ctx.directory` (per-call) falling back to `input.directory` (captured at plugin-instance creation). This is what makes directory-routing work on a shared `opencode serve` instance.
 - **Stdio discipline:** `src/mcp.ts`'s stdout carries protocol frames only — all diagnostics go to stderr.
 - **Localhost guard:** `spacebus.json`'s `server.baseUrl` must resolve to `127.0.0.1`/`::1`/`localhost`; never send bus credentials off-machine.

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import SpaceBusPlugin from "./index";
 
 describe("SpaceBusPlugin", () => {
-  test("registers exactly the four bus tools with description/args/execute", async () => {
+  test("registers exactly the five bus tools with description/args/execute", async () => {
     const hooks = await SpaceBusPlugin(
       // biome-ignore lint: minimal stub, only `directory` is consumed
       { directory: "/tmp/space-bus-index-test" } as any,
@@ -17,6 +17,7 @@ describe("SpaceBusPlugin", () => {
       "bus_roster",
       "bus_status",
       "bus_task",
+      "bus_wait",
     ]);
 
     for (const [name, def] of Object.entries(tools ?? {})) {

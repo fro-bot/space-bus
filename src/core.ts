@@ -13,6 +13,8 @@ import {
   type ProjectSchema,
   pendingQuestionListSchema,
   questionListSchema,
+  type SessionState,
+  type SessionStateInfo,
   sessionListSchema,
   sessionSchema,
   sessionStatusMapSchema,
@@ -28,6 +30,8 @@ function findProject(
 ): ProjectSchema | undefined {
   return projects.find((p) => p.name === name);
 }
+
+export type { SessionState, SessionStateInfo } from "./contract";
 
 type Ok<T> = { ok: true } & T;
 type Err = { ok: false; error: string };
@@ -237,6 +241,10 @@ function validateContext(context: BusContext): Result<{
   };
 }
 
+function isStatusBusy(entry?: { type: string }): boolean {
+  return entry?.type === "busy" || entry?.type === "retry" || false;
+}
+
 function resolveProjectOrErr(
   projects: ProjectSchema[],
   name: string,
@@ -303,8 +311,8 @@ export async function roster(
           JSON.parse(statusRes.bodyText),
         );
         const sessions = sessionListSchema.parse(JSON.parse(listRes.bodyText));
-        const busyCount = Object.values(statusMap).filter(
-          (s) => s.type === "busy" || s.type === "retry",
+        const busyCount = Object.values(statusMap).filter((s) =>
+          isStatusBusy(s),
         ).length;
         const capped = sessions.length > 100;
         return {
@@ -548,7 +556,38 @@ export type SessionStatusResult = {
   diff: { files: number; additions: number; deletions: number };
   diffSource: DiffSource;
   pendingQuestion?: { preview: string; options: string[] };
+  state: SessionState;
+  resultAvailable: boolean;
 };
+
+/**
+ * Maps raw session-status inputs to the normalized lifecycle enum. Called
+ * identically by status(), snapshot(), and bus_wait so the three emitters
+ * cannot diverge (R2).
+ *
+ * Precedence (highest first) — each check short-circuits the ones below it:
+ *   1. !resolved       -> "not_found"  (session id never resolved to a
+ *                          directory/session; nothing else can be derived)
+ *   2. failed          -> "failed"     (server-reported errored/aborted)
+ *   3. pendingQuestion -> "blocked"    (wins over both "running" and
+ *                          "complete" — a busy session with an open question
+ *                          is blocked, and a not-busy session with a still-
+ *                          open question is blocked, not complete)
+ *   4. busy            -> "running"
+ *   5. else            -> "complete"
+ */
+export function deriveSessionState(input: {
+  busy: boolean;
+  pendingQuestion?: { preview: string; options: string[] } | undefined;
+  resolved: boolean;
+  failed?: boolean;
+}): SessionState {
+  if (!input.resolved) return "not_found";
+  if (input.failed) return "failed";
+  if (input.pendingQuestion) return "blocked";
+  if (input.busy) return "running";
+  return "complete";
+}
 
 function formatQuestionEntry(
   entry: z.infer<typeof pendingQuestionListSchema>[number],
@@ -646,11 +685,17 @@ export async function status(
   }
 
   const entry = statusMap[sessionId];
-  const busy = entry ? entry.type === "busy" || entry.type === "retry" : false;
+  const busy = isStatusBusy(entry);
 
   const { diff, diffSource } = diffResult;
   const additions = diff.reduce((sum, d) => sum + d.additions, 0);
   const deletions = diff.reduce((sum, d) => sum + d.deletions, 0);
+
+  // resolved is true here — findSessionDirectory already succeeded above.
+  // failed-detection for a live session has no clear signal in status()'s
+  // current data (no errored/aborted status-map member observed); refined
+  // in a later unit rather than invented here.
+  const state = deriveSessionState({ busy, pendingQuestion, resolved: true });
 
   return {
     ok: true,
@@ -662,6 +707,8 @@ export async function status(
     diff: { files: diff.length, additions, deletions },
     diffSource,
     pendingQuestion,
+    state,
+    resultAvailable: state === "complete",
   };
 }
 
@@ -766,7 +813,7 @@ export async function result(
         JSON.parse(statusMapRes.bodyText),
       );
       const entry = statusMap[sessionId];
-      if (entry && (entry.type === "busy" || entry.type === "retry")) {
+      if (isStatusBusy(entry)) {
         return err(
           `space-bus: session ${sessionId} is still running, use bus_status`,
         );
@@ -830,6 +877,11 @@ export type SnapshotProject = {
     preview: string;
     options: string[];
   }[];
+  sessions?: {
+    sessionId: string;
+    state: SessionState;
+    resultAvailable: boolean;
+  }[];
   error?: string;
 };
 
@@ -858,23 +910,51 @@ async function fetchSnapshotProject(
       JSON.parse(statusRes.bodyText),
     );
     const sessions = sessionListSchema.parse(JSON.parse(listRes.bodyText));
-    const busyCount = Object.values(statusMap).filter(
-      (s) => s.type === "busy" || s.type === "retry",
+    const busyCount = Object.values(statusMap).filter((s) =>
+      isStatusBusy(s),
     ).length;
     const capped = sessions.length > 100;
     let pendingQuestions:
       | { sessionId: string; preview: string; options: string[] }[]
       | undefined;
+    let pendingQuestionsBySession = new Map<
+      string,
+      { preview: string; options: string[] }
+    >();
     if (questionRes.res.ok) {
       try {
         const entries = pendingQuestionListSchema.parse(
           JSON.parse(questionRes.bodyText),
         );
-        pendingQuestions = entries.map((e) => formatQuestionEntry(e));
+        const formatted = entries.map((e) => formatQuestionEntry(e));
+        pendingQuestions = formatted;
+        pendingQuestionsBySession = new Map(
+          formatted.map((q) => [q.sessionId, q]),
+        );
       } catch {
         pendingQuestions = undefined;
       }
     }
+    // state derived identically to status() (deriveSessionState) so
+    // snapshot() and status() cannot report divergent lifecycles for the
+    // same session (R2). resolved is always true here — every entry comes
+    // from the roster's own session list. failed has no clear signal in
+    // this data, same as status(); pass failed=false.
+    const sessionStates = sessions.map((s) => {
+      const entry = statusMap[s.id];
+      const busy = isStatusBusy(entry);
+      const pendingQuestion = pendingQuestionsBySession.get(s.id);
+      const state = deriveSessionState({
+        busy,
+        pendingQuestion,
+        resolved: true,
+      });
+      return {
+        sessionId: s.id,
+        state,
+        resultAvailable: state === "complete",
+      };
+    });
     return {
       name: project.name,
       path: directory,
@@ -884,6 +964,7 @@ async function fetchSnapshotProject(
       sessionCount: capped ? 100 : sessions.length,
       sessionCountCapped: capped,
       pendingQuestions,
+      sessions: sessionStates,
     };
   } catch (e) {
     return {
@@ -947,4 +1028,202 @@ export async function snapshot(
   );
 
   return { ok: true, projects: results };
+}
+
+// --- wait ------------------------------------------------------------------
+// Stateless, level-triggered long-poll over one or more sessions. Owns its
+// own deadline (opts.timeoutMs) independently of api()'s per-request 30s
+// abort — a single poll request stays bounded by api(), but the wait LOOP
+// keeps polling (each poll a fresh api() call) until a watched session needs
+// attention or the deadline elapses. Default kept comfortably below any
+// plugin/MCP-facade call ceiling; change these two constants together if the
+// live harness needs different tuning.
+const DEFAULT_WAIT_TIMEOUT_MS = 60_000;
+const DEFAULT_WAIT_POLL_INTERVAL_MS = 1_500;
+const DEFAULT_WAIT_CONCURRENCY = 4;
+
+const NEEDS_ATTENTION_STATES: SessionState[] = [
+  "complete",
+  "blocked",
+  "failed",
+  "not_found",
+];
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export type WaitResult = {
+  sessions: SessionStateInfo[];
+  waker: string[];
+  timedOut: boolean;
+};
+
+type WaitLocation = { directory: string; project: string } | null;
+type WaitGroup = { directory: string; sessionIds: string[] };
+
+/**
+ * Resolves each session id -> directory/project once, up front. An
+ * unresolvable id never fails the whole call (R9) — it's kept as a
+ * permanent not_found entry for the rest of the wait. (Judgment call:
+ * there's no owning project for a not_found session, so `project` is the
+ * empty string — SessionStateInfo requires the field, and inventing a
+ * project name would be worse than an empty one.)
+ */
+async function resolveWaitSessions(
+  baseUrl: string,
+  credentials: Credentials,
+  projects: ProjectSchema[],
+  sessionIds: string[],
+): Promise<{
+  locationById: Map<string, WaitLocation>;
+  groupList: WaitGroup[];
+  lastKnown: Map<string, SessionStateInfo>;
+}> {
+  const locations = await mapWithConcurrency(
+    sessionIds,
+    DEFAULT_WAIT_CONCURRENCY,
+    async (id) => {
+      const loc = await findSessionDirectory(
+        baseUrl,
+        credentials,
+        projects,
+        id,
+      );
+      return { id, loc };
+    },
+  );
+
+  const locationById = new Map<string, WaitLocation>();
+  for (const { id, loc } of locations) {
+    locationById.set(
+      id,
+      loc.ok ? { directory: loc.directory, project: loc.project } : null,
+    );
+  }
+
+  const groups = new Map<string, WaitGroup>();
+  for (const id of sessionIds) {
+    const loc = locationById.get(id);
+    if (!loc) continue;
+    const group = groups.get(loc.directory) ?? {
+      directory: loc.directory,
+      sessionIds: [],
+    };
+    group.sessionIds.push(id);
+    groups.set(loc.directory, group);
+  }
+
+  // Seed a last-known snapshot: not_found sessions are permanently not_found;
+  // resolved sessions start as "running" until the first poll reports
+  // otherwise. This is also what a poll failure falls back to (degrade
+  // gracefully rather than throw or fabricate "complete").
+  const lastKnown = new Map<string, SessionStateInfo>();
+  for (const id of sessionIds) {
+    const loc = locationById.get(id);
+    lastKnown.set(id, {
+      sessionId: id,
+      project: loc?.project ?? "",
+      state: loc ? "running" : "not_found",
+      resultAvailable: false,
+    });
+  }
+
+  return { locationById, groupList: Array.from(groups.values()), lastKnown };
+}
+
+export async function wait(
+  sessionIds: string[],
+  opts: CoreOpts & { timeoutMs?: number; pollIntervalMs?: number },
+): Promise<Result<WaitResult>> {
+  const ctx = validateContext(opts.context);
+  if (!ctx.ok) return ctx;
+  const { baseUrl, projects, credentials } = ctx;
+
+  const uniqueIds = Array.from(new Set(sessionIds));
+  if (uniqueIds.length === 0) {
+    return { ok: true, sessions: [], waker: [], timedOut: true };
+  }
+
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS;
+  const pollIntervalMs = opts.pollIntervalMs ?? DEFAULT_WAIT_POLL_INTERVAL_MS;
+  const deadline = Date.now() + timeoutMs;
+
+  const { locationById, groupList, lastKnown } = await resolveWaitSessions(
+    baseUrl,
+    credentials,
+    projects,
+    uniqueIds,
+  );
+
+  async function pollGroup(group: {
+    directory: string;
+    sessionIds: string[];
+  }): Promise<void> {
+    const [statusRes, questionRes] = await Promise.all([
+      api(baseUrl, credentials, group.directory, "/session/status"),
+      api(baseUrl, credentials, group.directory, "/question"),
+    ]);
+    // A failed poll for this directory degrades gracefully: keep every
+    // session in that group at its last-known state rather than throwing,
+    // looping forever, or fabricating a state change.
+    if (!statusRes.res.ok) return;
+    let statusMap: z.infer<typeof sessionStatusMapSchema>;
+    try {
+      statusMap = sessionStatusMapSchema.parse(JSON.parse(statusRes.bodyText));
+    } catch {
+      return;
+    }
+    const pendingBySession = parsePendingQuestions(questionRes);
+    for (const id of group.sessionIds) {
+      const entry = statusMap[id];
+      const busy = isStatusBusy(entry);
+      const pendingQuestion = pendingBySession.get(id);
+      const state = deriveSessionState({
+        busy,
+        pendingQuestion,
+        resolved: true,
+      });
+      lastKnown.set(id, {
+        sessionId: id,
+        project: locationById.get(id)?.project ?? "",
+        state,
+        resultAvailable: state === "complete",
+        pendingQuestion,
+      });
+    }
+  }
+
+  while (true) {
+    await mapWithConcurrency(groupList, DEFAULT_WAIT_CONCURRENCY, pollGroup);
+    // resolveWaitSessions seeds lastKnown for every id, so get() is always defined
+    // biome-ignore lint/style/noNonNullAssertion: invariant documented above
+    const sessions = uniqueIds.map((id) => lastKnown.get(id)!);
+    const waker = sessions
+      .filter((s) => NEEDS_ATTENTION_STATES.includes(s.state))
+      .map((s) => s.sessionId);
+    if (waker.length > 0) {
+      return { ok: true, sessions, waker, timedOut: false };
+    }
+    if (Date.now() >= deadline) {
+      return { ok: true, sessions, waker: [], timedOut: true };
+    }
+    const remaining = deadline - Date.now();
+    await sleep(Math.min(pollIntervalMs, Math.max(0, remaining)));
+  }
+}
+
+function parsePendingQuestions(questionRes: {
+  res: Response;
+  bodyText: string;
+}): Map<string, { preview: string; options: string[] }> {
+  if (!questionRes.res.ok) return new Map();
+  try {
+    const entries = pendingQuestionListSchema.parse(
+      JSON.parse(questionRes.bodyText),
+    );
+    return new Map(entries.map((e) => [e.sessionID, formatQuestionEntry(e)]));
+  } catch {
+    return new Map();
+  }
 }

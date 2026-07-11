@@ -24,6 +24,33 @@ export const sessionStatusMapSchema = z.record(
 );
 export type SessionStatusMapSchema = z.infer<typeof sessionStatusMapSchema>;
 
+// --- Normalized session lifecycle state --------------------------------------
+// Caller-facing lifecycle contract derived once in core (deriveSessionState)
+// and emitted identically by status(), snapshot(), and bus_wait.
+
+export const sessionStateSchema = z.enum([
+  "running",
+  "blocked",
+  "complete",
+  "failed",
+  "not_found",
+]);
+export type SessionState = z.infer<typeof sessionStateSchema>;
+
+export const sessionStateInfoSchema = z.object({
+  sessionId: z.string(),
+  project: z.string(),
+  state: sessionStateSchema,
+  resultAvailable: z.boolean(),
+  pendingQuestion: z
+    .object({
+      preview: z.string(),
+      options: z.array(z.string()),
+    })
+    .optional(),
+});
+export type SessionStateInfo = z.infer<typeof sessionStateInfoSchema>;
+
 export const todoSchema = z
   .array(
     z.looseObject({
