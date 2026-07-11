@@ -1,6 +1,7 @@
 ---
 title: Verify a reviewer's empirically-checkable claims before acting on them
 date: 2026-07-05
+last_updated: 2026-07-10
 category: best-practices
 module: space-bus
 problem_type: best_practice
@@ -9,6 +10,7 @@ severity: medium
 applies_when:
   - a code review makes an empirically checkable claim about live behavior (endpoint auth, an API response, dead code)
   - a reviewer infers a fact from static reading or priors rather than from the running system
+  - a reviewer rates a finding as a new (P0/P1) bug when it may describe pre-existing, intentional behavior
   - acting on the claim would change security-relevant code or remove a value
 tags:
   - review-process
@@ -49,7 +51,9 @@ A confident reviewer is not a running system. Both misfires below would have shi
 
 2. **"`[::1]` is dead code."** A reviewer flagged `"[::1]"` in the loopback host set as unreachable — "`URL.hostname` never has brackets" — and a fixer removed it. That **silently broke IPv6 loopback**: `new URL("http://[::1]:4096").hostname` returns `"[::1]"` **with** brackets on both Node and Bun. Caught by an Oracle re-review plus a one-line `new URL().hostname` check. The "dead" value was load-bearing.
 
-The pattern in both: a plausible static inference about runtime behavior, stated with confidence, that a trivial empirical check flips.
+3. **"This is a P0: error/aborted status maps to `complete`" (and "a resolved-but-absent session maps to `complete`").** During the `bus_wait` review, two adversarial reviewers rated these P0 — new, spurious-wake bugs in the diff. Reading the actual `status()` code plus the status-map schema settled it: both behaviors are **pre-existing** in `status()` (an absent status-map entry has always derived not-busy → `complete`), consistent across all three emitters, and explicitly documented as a deferred `failed`-detection gap. The `error`/`aborted` status types the P0 assumed don't even appear in the observed `/session/status` shape (`type: z.string()`, open). Changing `wait()` to "fix" them would have *diverged* it from `status()`. Verified as established behavior, not blocked on speculation — kept as a documented residual instead.
+
+The pattern in all three: a plausible static inference about runtime behavior — or about whether a behavior is *new* — stated with confidence, that a trivial check against the running system or the actual source flips. "Is this a new bug?" is as empirically checkable as "is this endpoint authenticated?": read what the code already did on the base branch before accepting that the diff introduced it.
 
 ## When to Apply
 
