@@ -1,6 +1,7 @@
 ---
 title: Source-ref dogfooding masks packaged-artifact failures
 date: 2026-07-11
+last_updated: 2026-07-11
 category: workflow-issues
 module: space-bus
 problem_type: workflow_issue
@@ -9,6 +10,7 @@ symptoms:
   - "a plugin/library works for months in dogfooding, then fails the first time it's consumed by published name"
   - "a packaging bug ships in multiple consecutive releases unnoticed"
   - "green CI + live daily use, yet the published artifact is broken on load"
+  - "a browser-safety/bundling test passes from src/ while the published dist artifact fails to bundle downstream"
 root_cause: process_gap
 resolution_type: process_change
 severity: medium
@@ -44,6 +46,12 @@ The dogfood path and the consumer path diverged at exactly the layer where the b
 - **Green CI.** The unit/integration suite imported from source or built `dist/` files directly; nothing resolved the package *by its exports map* the way OpenCode's loader does.
 - **Daily live use.** Real usage proved the *code* worked — it could not prove the *package* resolved, because the source ref shortcut that resolution.
 
+## Second Instance (same day): src-bundle test vs. published dist
+
+Hours after this doc was written, the same blind spot bit again at a different layer. The **browser-safety CI gate** bundled `src/core.ts`/`src/contract.ts`/`src/format.ts` for a browser target and asserted no `node:*` imports — and passed — while the **published** `dist/core.js`, `dist/contract.js`, `dist/format.js` all began with Bun's node-target `createRequire(node:module)` prelude, injected by `build.ts` bundling them in the node-target `Bun.build` call. The browser-safety *contract* held in source and was broken in the artifact; it surfaced only when Mothership's Vite build consumed 0.10.0 by npm name and had to ship a package patch stripping the prelude (marcusrbrown/mothership#22; fixed upstream in 0.10.1 by building browser-safe subpaths with `target: "browser"` and extending `browser-safety.test.ts` to scan the built `dist/*.js`).
+
+Same structure as the loader collision: the validation ran against a *reconstruction* of the artifact (an in-memory src bundle), not the artifact itself. Any contract you assert from `src/` — entrypoint shape, browser-safety, export surface — needs a twin assertion against `dist/`.
+
 ## Solution / Process Change
 
 - **Dogfood the published artifact path periodically, not just the source path.** At least once per release train, pin the plugin by npm name (or install the tarball) and confirm it loads — don't rely on a source-file ref as the only exercise.
@@ -58,6 +66,7 @@ The bug survived because the validation path was structurally incapable of seein
 
 - **Name the divergence explicitly:** if your dogfood uses a source/file/link ref, write down that it does *not* cover packaging, and own a separate check that does.
 - **One packaged-artifact resolution test per public entrypoint** is cheap insurance against a whole class of exports-map / `main` / `types` mistakes.
+- **Every src-level contract gate needs a dist-level twin.** If a CI test asserts a property by building from `src/`, add the same assertion against the built `dist/` output — the bundler's target/config can break in the artifact what holds in source.
 
 ## Related
 
