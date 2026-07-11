@@ -28,9 +28,16 @@ export function serviceLabel(rosterPath: string): string {
   return `bot.fro.space-bus.${rosterKey(rosterPath)}`;
 }
 
-/** `~/Library/LaunchAgents/<label>.plist`. */
-export function plistPath(label: string): string {
-  return join(homedir(), "Library", "LaunchAgents", `${label}.plist`);
+/**
+ * `<baseDir>/<label>.plist`. Defaults to `~/Library/LaunchAgents` when
+ * `baseDir` is omitted — tests MUST pass an injected temp directory so
+ * writes never land in the operator's real LaunchAgents folder.
+ */
+export function plistPath(label: string, baseDir?: string): string {
+  return join(
+    baseDir ?? join(homedir(), "Library", "LaunchAgents"),
+    `${label}.plist`,
+  );
 }
 
 // --- Plist rendering -----------------------------------------------------

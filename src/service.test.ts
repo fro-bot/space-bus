@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -17,10 +17,13 @@ import {
 
 let dir: string;
 let rosterPath: string;
+let launchAgentsDir: string;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "space-bus-service-test-"));
   rosterPath = join(dir, "spacebus.json");
+  launchAgentsDir = join(dir, "LaunchAgents");
+  mkdirSync(launchAgentsDir, { recursive: true });
 });
 
 afterEach(() => {
@@ -68,27 +71,11 @@ function stubServerStatus(running: boolean, pid?: number): () => ServerStatus {
     running ? { running: true, pid, port: 1234 } : { running: false };
 }
 
-// plistPath / serviceLabel resolve against homedir() — since we can't
-// inject homedir into launchd.ts, we instead verify via the identity
-// derivation directly (serviceLabel/plistPath are pure functions of the
-// roster path) and assert on service.ts's use of the exec seam / fs
-// behavior, not on ~/Library/LaunchAgents contents. To keep fs assertions
-// meaningful without touching the real home directory, we use HOME env
-// override.
-let originalHome: string | undefined;
-
-beforeEach(() => {
-  originalHome = process.env["HOME"];
-  process.env["HOME"] = dir;
-});
-
-afterEach(() => {
-  if (originalHome === undefined) delete process.env["HOME"];
-  else process.env["HOME"] = originalHome;
-});
-
+// plistPath is injectable via ServiceDeps.launchAgentsDir — every test
+// below passes a per-test mkdtemp `launchAgentsDir` so nothing ever reads
+// or writes the operator's real ~/Library/LaunchAgents.
 function plistPathFor(roster: string): string {
-  return plistPath(serviceLabel(roster));
+  return plistPath(serviceLabel(roster), launchAgentsDir);
 }
 
 const UID = 501;
@@ -108,6 +95,7 @@ describe("installService", () => {
     const result = await installService(rosterPath, {
       exec: seam,
       platform: "darwin",
+      launchAgentsDir,
       uid: UID,
       execPath: "/usr/local/bin/bun",
       cliEntryPath: "/usr/local/lib/space-bus/dist/cli.js",
@@ -142,6 +130,7 @@ describe("installService", () => {
     const result = await installService(rosterPath, {
       exec: seam,
       platform: "darwin",
+      launchAgentsDir,
       uid: UID,
       execPath: "/bin/bun",
       cliEntryPath: "/bin/cli.js",
@@ -174,6 +163,7 @@ describe("installService", () => {
     const result = await installService(rosterPath, {
       exec: seam,
       platform: "darwin",
+      launchAgentsDir,
       uid: UID,
       execPath: "/bin/bun",
       cliEntryPath: "/bin/cli.js",
@@ -208,6 +198,7 @@ describe("installService", () => {
     const result = await installService(rosterPath, {
       exec: seam,
       platform: "darwin",
+      launchAgentsDir,
       uid: UID,
       execPath: "/bin/bun",
       cliEntryPath: "/bin/cli.js",
@@ -230,6 +221,7 @@ describe("installService", () => {
     const result = await installService(rosterPath, {
       exec: seam,
       platform: "darwin",
+      launchAgentsDir,
       uid: UID,
       execPath: "/bin/bun",
       cliEntryPath: "/bin/cli.js",
@@ -249,6 +241,7 @@ describe("installService", () => {
     const result = await installService(rosterPath, {
       exec: seam,
       platform: "darwin",
+      launchAgentsDir,
       uid: UID,
       execPath: "/Users/marcus/.bun/install/cache/bun",
       cliEntryPath: "/bin/cli.js",
@@ -271,6 +264,7 @@ describe("uninstallService", () => {
     const install = await installService(rosterPath, {
       exec: seam,
       platform: "darwin",
+      launchAgentsDir,
       uid: UID,
       execPath: "/bin/bun",
       cliEntryPath: "/bin/cli.js",
@@ -283,6 +277,7 @@ describe("uninstallService", () => {
     const result = await uninstallService(rosterPath, {
       exec: uninstallSeam,
       platform: "darwin",
+      launchAgentsDir,
       uid: UID,
     });
 
@@ -299,6 +294,7 @@ describe("uninstallService", () => {
     const result = await uninstallService(rosterPath, {
       exec: seam,
       platform: "darwin",
+      launchAgentsDir,
       uid: UID,
     });
     expect(result.ok).toBe(true);
@@ -316,6 +312,7 @@ describe("serviceStatus", () => {
     const result = await serviceStatus(rosterPath, {
       exec: seam,
       platform: "darwin",
+      launchAgentsDir,
       uid: UID,
       serverStatus: stubServerStatus(false),
     });
@@ -331,6 +328,7 @@ describe("serviceStatus", () => {
     await installService(rosterPath, {
       exec: installSeam,
       platform: "darwin",
+      launchAgentsDir,
       uid: UID,
       execPath: "/bin/bun",
       cliEntryPath: "/bin/cli.js",
@@ -342,6 +340,7 @@ describe("serviceStatus", () => {
     const result = await serviceStatus(rosterPath, {
       exec: statusSeam,
       platform: "darwin",
+      launchAgentsDir,
       uid: UID,
       serverStatus: stubServerStatus(false),
     });
@@ -357,6 +356,7 @@ describe("serviceStatus", () => {
     const result = await serviceStatus(rosterPath, {
       exec: seam,
       platform: "darwin",
+      launchAgentsDir,
       uid: UID,
       serverStatus: stubServerStatus(true, 321),
     });
@@ -376,6 +376,7 @@ describe("stopService", () => {
     await installService(rosterPath, {
       exec: installSeam,
       platform: "darwin",
+      launchAgentsDir,
       uid: UID,
       execPath: "/bin/bun",
       cliEntryPath: "/bin/cli.js",
@@ -387,6 +388,7 @@ describe("stopService", () => {
     const result = await stopService(rosterPath, {
       exec: seam,
       platform: "darwin",
+      launchAgentsDir,
       uid: UID,
     });
     expect(result.ok).toBe(true);
@@ -401,6 +403,7 @@ describe("startService", () => {
     await installService(rosterPath, {
       exec: installSeam,
       platform: "darwin",
+      launchAgentsDir,
       uid: UID,
       execPath: "/bin/bun",
       cliEntryPath: "/bin/cli.js",
@@ -412,6 +415,7 @@ describe("startService", () => {
     const result = await startService(rosterPath, {
       exec: seam,
       platform: "darwin",
+      launchAgentsDir,
       uid: UID,
     });
     expect(result.ok).toBe(true);
@@ -425,6 +429,7 @@ describe("startService", () => {
     const result = await startService(rosterPath, {
       exec: seam,
       platform: "darwin",
+      launchAgentsDir,
       uid: UID,
     });
     expect(result.ok).toBe(false);
@@ -438,7 +443,12 @@ describe("startService", () => {
 describe("platform gate", () => {
   test("every verb on linux fails with the not-supported error, exec never called", async () => {
     const { seam, calls } = makeExecSeam(notLoadedResponder);
-    const deps = { exec: seam, platform: "linux" as NodeJS.Platform, uid: UID };
+    const deps = {
+      exec: seam,
+      platform: "linux" as NodeJS.Platform,
+      uid: UID,
+      launchAgentsDir,
+    };
 
     const install = await installService(rosterPath, {
       ...deps,
@@ -481,6 +491,7 @@ describe("two rosters", () => {
     const installA = await installService(rosterA, {
       exec: seamA,
       platform: "darwin",
+      launchAgentsDir,
       uid: UID,
       execPath: "/bin/bun",
       cliEntryPath: "/bin/cli.js",
@@ -490,6 +501,7 @@ describe("two rosters", () => {
     const installB = await installService(rosterB, {
       exec: seamB,
       platform: "darwin",
+      launchAgentsDir,
       uid: UID,
       execPath: "/bin/bun",
       cliEntryPath: "/bin/cli.js",
@@ -503,6 +515,7 @@ describe("two rosters", () => {
     const uninstall = await uninstallService(rosterA, {
       exec: uninstallSeam,
       platform: "darwin",
+      launchAgentsDir,
       uid: UID,
     });
     expect(uninstall.ok).toBe(true);

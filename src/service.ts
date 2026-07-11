@@ -15,6 +15,8 @@ import {
   openSync,
   unlinkSync,
 } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 import { stateDirFor } from "./discovery";
 import {
@@ -77,6 +79,12 @@ export interface ServiceDeps {
   verifyBudgetMs?: number;
   /** Poll interval for the install verification loop. Default 200ms. */
   verifyPollMs?: number;
+  /**
+   * Base directory for the launchd agent plist. Defaults to
+   * `~/Library/LaunchAgents`. Tests MUST inject a mkdtemp dir here — never
+   * exercise the default against the real filesystem.
+   */
+  launchAgentsDir?: string;
 }
 
 interface ResolvedDeps {
@@ -90,6 +98,7 @@ interface ResolvedDeps {
   now: () => number;
   verifyBudgetMs: number;
   verifyPollMs: number;
+  launchAgentsDir: string;
 }
 
 function defaultCliEntryPath(): string {
@@ -109,6 +118,8 @@ function resolveDeps(deps: ServiceDeps): ResolvedDeps {
     now: deps.now ?? Date.now,
     verifyBudgetMs: deps.verifyBudgetMs ?? DEFAULT_VERIFY_BUDGET_MS,
     verifyPollMs: deps.verifyPollMs ?? DEFAULT_VERIFY_POLL_MS,
+    launchAgentsDir:
+      deps.launchAgentsDir ?? join(homedir(), "Library", "LaunchAgents"),
   };
 }
 
@@ -144,11 +155,14 @@ interface ServiceIdentity {
   stateDir: string;
 }
 
-function identityFor(rosterPath: string): ServiceIdentity {
+function identityFor(
+  rosterPath: string,
+  launchAgentsDir: string,
+): ServiceIdentity {
   const label = serviceLabel(rosterPath);
   return {
     label,
-    plistFilePath: plistPath(label),
+    plistFilePath: plistPath(label, launchAgentsDir),
     stateDir: stateDirFor(rosterPath),
   };
 }
@@ -184,7 +198,10 @@ export async function installService(
   const gate = platformGate(resolved.platform);
   if (!gate.ok) return { ok: false, error: gate.error };
 
-  const { label, plistFilePath, stateDir } = identityFor(rosterPath);
+  const { label, plistFilePath, stateDir } = identityFor(
+    rosterPath,
+    resolved.launchAgentsDir,
+  );
 
   let warning: string | undefined;
   if (
@@ -306,7 +323,10 @@ export async function uninstallService(
   const gate = platformGate(resolved.platform);
   if (!gate.ok) return { ok: false, error: gate.error };
 
-  const { label, plistFilePath } = identityFor(rosterPath);
+  const { label, plistFilePath } = identityFor(
+    rosterPath,
+    resolved.launchAgentsDir,
+  );
 
   const job = await printJob(resolved.uid, label, resolved.exec);
   let jobRemoved = false;
@@ -366,7 +386,10 @@ export async function serviceStatus(
   const gate = platformGate(resolved.platform);
   if (!gate.ok) return { ok: false, error: gate.error };
 
-  const { label, plistFilePath } = identityFor(rosterPath);
+  const { label, plistFilePath } = identityFor(
+    rosterPath,
+    resolved.launchAgentsDir,
+  );
   const installed = existsSync(plistFilePath);
   const job = await printJob(resolved.uid, label, resolved.exec);
   const status: ServerStatus = resolved.serverStatus(rosterPath);
@@ -396,7 +419,7 @@ export async function stopService(
   const gate = platformGate(resolved.platform);
   if (!gate.ok) return { ok: false, error: gate.error };
 
-  const { label } = identityFor(rosterPath);
+  const { label } = identityFor(rosterPath, resolved.launchAgentsDir);
   const job = await printJob(resolved.uid, label, resolved.exec);
   if (!job.loaded) {
     return { ok: true, label, wasLoaded: false };
@@ -426,7 +449,10 @@ export async function startService(
   const gate = platformGate(resolved.platform);
   if (!gate.ok) return { ok: false, error: gate.error };
 
-  const { label, plistFilePath } = identityFor(rosterPath);
+  const { label, plistFilePath } = identityFor(
+    rosterPath,
+    resolved.launchAgentsDir,
+  );
   if (!existsSync(plistFilePath)) {
     return {
       ok: false,

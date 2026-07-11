@@ -49,11 +49,16 @@ describe("serviceLabel", () => {
 });
 
 describe("plistPath", () => {
-  test("lives under ~/Library/LaunchAgents/<label>.plist", () => {
+  test("default base dir resolves under Library/LaunchAgents/<label>.plist (pure string assertion, no fs touch)", () => {
     const label = "bot.fro.space-bus.deadbeefdeadbeef";
     expect(plistPath(label)).toMatch(
       /Library\/LaunchAgents\/bot\.fro\.space-bus\.deadbeefdeadbeef\.plist$/,
     );
+  });
+
+  test("injected baseDir overrides the default — never resolves under the real home", () => {
+    const label = "bot.fro.space-bus.deadbeefdeadbeef";
+    expect(plistPath(label, dir)).toBe(join(dir, `${label}.plist`));
   });
 });
 
