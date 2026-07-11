@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { join } from "node:path";
 import type { BunPlugin } from "bun";
 
 // CI-enforced browser-safety guard: the public browser-facing subpaths
@@ -104,4 +105,54 @@ describe("browser-safety: core/contract/format bundle for browser target", () =>
       }
     }
   }, 30_000);
+});
+
+// Dist-level browser-safety gate: the src-bundle test above proved the
+// module GRAPH is browser-safe, but that's not sufficient — it doesn't
+// catch the actual published artifacts. Bun's node-target build injects a
+// createRequire(node:module) prelude into every output of a build call,
+// even into files with no genuine node:* dependency, if that build call's
+// target is "node". The src-level test never runs the real build.ts, so it
+// can't see this. This gate runs `bun run build` and scans the PUBLISHED
+// dist/*.js files for these browser-facing subpaths directly.
+const projectRoot = join(import.meta.dir, "..");
+const DIST_BROWSER_SAFE_FILES = [
+  "dist/core.js",
+  "dist/contract.js",
+  "dist/format.js",
+  "dist/attach.js",
+];
+
+function runDistBuild() {
+  const bunPath = Bun.which("bun");
+  if (!bunPath) {
+    console.warn("bun not found on PATH, skipping dist browser-safety test");
+    return false;
+  }
+  const build = Bun.spawnSync(["bun", "run", "build"], {
+    cwd: projectRoot,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  if (build.exitCode !== 0) {
+    const stdout = build.stdout.toString();
+    const stderr = build.stderr.toString();
+    throw new Error(
+      `bun run build failed (exit ${build.exitCode}):\n${stdout}\n${stderr}`,
+    );
+  }
+  return true;
+}
+
+describe("browser-safety: published dist artifacts carry no node: imports", () => {
+  test("dist/core.js, dist/contract.js, dist/format.js, dist/attach.js are free of node: module imports", async () => {
+    if (!runDistBuild()) return;
+
+    for (const relativePath of DIST_BROWSER_SAFE_FILES) {
+      const text = await Bun.file(join(projectRoot, relativePath)).text();
+
+      expect(text).not.toMatch(/from\s+"node:/);
+      expect(text).not.toMatch(/require\(\s*"node:/);
+    }
+  }, 60_000);
 });
