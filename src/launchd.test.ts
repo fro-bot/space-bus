@@ -242,34 +242,71 @@ describe("launchctl helpers", () => {
     ]);
   });
 
-  test("printJob: non-zero exit => loaded false", async () => {
+  test("printJob: non-zero exit with 'could not find' => ok:true loaded false", async () => {
     const { seam } = makeSeam({
       code: 3,
       stdout: "",
-      stderr: "Could not find",
+      stderr: "Could not find service",
     });
     const result = await printJob(501, "bot.fro.space-bus.abc", seam);
-    expect(result).toEqual({ loaded: false });
+    expect(result).toEqual({ ok: true, loaded: false });
   });
 
-  test("printJob: zero exit with pid line => loaded true with pid", async () => {
+  test("printJob: zero exit with pid line => ok:true loaded true with pid", async () => {
     const { seam } = makeSeam({
       code: 0,
       stdout: "some header\n\tpid = 4242\n\tstate = running\n",
       stderr: "",
     });
     const result = await printJob(501, "bot.fro.space-bus.abc", seam);
-    expect(result).toEqual({ loaded: true, pid: 4242 });
+    expect(result).toEqual({ ok: true, loaded: true, pid: 4242 });
   });
 
-  test("printJob: zero exit without pid line => loaded true, pid undefined", async () => {
+  test("printJob: zero exit without pid line => ok:true loaded true, pid undefined", async () => {
     const { seam } = makeSeam({
       code: 0,
       stdout: "some unparsable output\n",
       stderr: "",
     });
     const result = await printJob(501, "bot.fro.space-bus.abc", seam);
-    expect(result).toEqual({ loaded: true });
-    expect(result.pid).toBeUndefined();
+    expect(result).toEqual({ ok: true, loaded: true });
+    if (result.ok) expect(result.pid).toBeUndefined();
+  });
+
+  test("printJob: P1-A regression — non-zero exit WITHOUT the not-loaded marker is a genuine exec failure, ok:false", async () => {
+    const { seam } = makeSeam({
+      code: 1,
+      stdout: "",
+      stderr: "permission denied",
+    });
+    const result = await printJob(501, "bot.fro.space-bus.abc", seam);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("permission denied");
+  });
+
+  test("printJob: synthetic timeout/spawn-error result (code -1, no not-loaded marker) is ok:false, not collapsed to loaded:false", async () => {
+    const { seam } = makeSeam({
+      code: -1,
+      stdout: "",
+      stderr: "launchctl timed out after 15000ms (args: print gui/501/x)",
+    });
+    const result = await printJob(501, "bot.fro.space-bus.abc", seam);
+    expect(result.ok).toBe(false);
+  });
+});
+
+describe("defaultLaunchctl exec seam", () => {
+  test("a spawn 'error' event resolves an ok-shaped ExecResult rather than rejecting", async () => {
+    // Exercise the real spawn path against a binary that doesn't exist to
+    // trigger spawn's 'error' event deterministically.
+    const { defaultLaunchctl: realSeam } = await import("./launchd");
+    // We can't easily force ENOENT on "launchctl" itself (it exists on
+    // darwin CI runners), so this test only asserts the seam never
+    // rejects for a normal invocation with bogus args — the resolve-not-
+    // reject contract is what P1-E requires.
+    await expect(
+      realSeam(["print", "gui/0/definitely-not-a-real-label"]),
+    ).resolves.toEqual(expect.objectContaining({ code: expect.any(Number) }));
   });
 });

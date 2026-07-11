@@ -9,14 +9,16 @@
  * those stay browser-safe.
  */
 import {
+  chmodSync,
   closeSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   openSync,
   unlinkSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 
 import { stateDirFor } from "./discovery";
 import {
@@ -26,6 +28,7 @@ import {
   type ExecResult,
   type ExecSeam,
   kickstart,
+  type PrintJobResult,
   plistPath,
   printJob,
   renderPlist,
@@ -50,8 +53,13 @@ const EPHEMERAL_CACHE_SEGMENTS = [
   "/.npm/_npx/",
 ];
 
-const DEFAULT_VERIFY_BUDGET_MS = 10_000;
+// Must exceed launchd's 10s ThrottleInterval (renderPlist) so a throttled
+// restart mid-verification doesn't false-fail a genuinely-healthy install.
+const DEFAULT_VERIFY_BUDGET_MS = 20_000;
 const DEFAULT_VERIFY_POLL_MS = 200;
+/** Short delay + single retry budget for the exit-5 state-aware retry in
+ * installService's reinstall-after-bootout path. */
+const EXIT5_RETRY_DELAY_MS = 500;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -167,15 +175,233 @@ function identityFor(
   };
 }
 
-function preCreateLog(path: string): void {
+export type PreCreateLogResult = { ok: true } | { ok: false; error: string };
+
+/**
+ * Ensures a service log file exists and is 0600, refusing a symlink at
+ * that path (a symlinked log path must never let install silently write
+ * through to an attacker-controlled target). Real IO errors (not just
+ * "already exists") fail honestly instead of being swallowed — install
+ * should not proceed believing logging is set up when it isn't.
+ */
+function preCreateLog(path: string): PreCreateLogResult {
+  try {
+    const linkStat = lstatSync(path);
+    if (linkStat.isSymbolicLink()) {
+      return { ok: false, error: `refusing symlinked log path: ${path}` };
+    }
+  } catch (err) {
+    if (!isEnoent(err)) {
+      return { ok: false, error: `failed to stat log ${path}: ${String(err)}` };
+    }
+  }
   try {
     // Append mode creates the file if absent (mode applied at creation)
     // without truncating an existing one.
     const fd = openSync(path, "a", 0o600);
     closeSync(fd);
-  } catch {
-    // best-effort — install verification below will surface real failures.
+  } catch (err) {
+    return { ok: false, error: `failed to create log ${path}: ${String(err)}` };
   }
+  try {
+    chmodSync(path, 0o600);
+  } catch (err) {
+    return { ok: false, error: `failed to chmod log ${path}: ${String(err)}` };
+  }
+  return { ok: true };
+}
+
+/**
+ * Ensures the roster's state directory exists at 0700, hardening an
+ * already-existing directory's mode rather than trusting `mkdirSync`'s
+ * `mode` option (which is a no-op when the directory already exists —
+ * e.g. left behind from a previous install with a looser umask).
+ */
+function ensureStateDir(stateDir: string): PreCreateLogResult {
+  try {
+    mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+  } catch (err) {
+    return {
+      ok: false,
+      error: `failed to create state directory ${stateDir}: ${String(err)}`,
+    };
+  }
+  try {
+    chmodSync(stateDir, 0o700);
+  } catch (err) {
+    return {
+      ok: false,
+      error: `failed to harden state directory ${stateDir}: ${String(err)}`,
+    };
+  }
+  return { ok: true };
+}
+
+/** Narrows a `PrintJobResult` for callers that must fail honestly rather
+ * than silently treating a probe failure as "job absent". */
+type JobProbeResult =
+  | { ok: true; loaded: boolean; pid?: number }
+  | { ok: false; error: string };
+
+async function probeJob(
+  resolved: ResolvedDeps,
+  label: string,
+): Promise<JobProbeResult> {
+  const result: PrintJobResult = await printJob(
+    resolved.uid,
+    label,
+    resolved.exec,
+  );
+  if (!result.ok) {
+    return { ok: false, error: result.error };
+  }
+  return result.pid !== undefined
+    ? { ok: true, loaded: result.loaded, pid: result.pid }
+    : { ok: true, loaded: result.loaded };
+}
+
+type ResolveResult<T> = { ok: true; value: T } | { ok: false; error: string };
+
+/**
+ * XDG_STATE_HOME split (P1-C): `stateDirFor` resolves under
+ * `XDG_STATE_HOME` when the installer's environment set it. If we don't
+ * pin the same value into the plist, the launchd-launched process runs
+ * under launchd's sparse env (no `XDG_STATE_HOME`) and falls back to
+ * `~/.local/state` — silently diverging from the installer's `stateDir`.
+ */
+function resolveXdgStateHome(): ResolveResult<string | undefined> {
+  const xdgStateHomeEnv = process.env["XDG_STATE_HOME"];
+  if (xdgStateHomeEnv === undefined) return { ok: true, value: undefined };
+  if (!isAbsolute(xdgStateHomeEnv)) {
+    return {
+      ok: false,
+      error: `XDG_STATE_HOME must be an absolute path to pin into the launchd environment, got: ${xdgStateHomeEnv}`,
+    };
+  }
+  return { ok: true, value: xdgStateHomeEnv };
+}
+
+type BootstrapOutcome = { ok: true } | { ok: false; error: string };
+
+/**
+ * Runs `bootstrap`, applying the exit-5 state-aware retry (Oracle recipe)
+ * for the reinstall-after-bootout path ONLY: exit 5 typically means
+ * "already bootstrapped". Re-probe rather than blindly retrying — if
+ * already loaded, treat as success (kickstart will proceed normally); if
+ * confirmed absent (a transient race with launchd's own teardown), wait
+ * briefly and retry exactly once; anything ambiguous (probe failure)
+ * fails honestly, reporting both attempts.
+ */
+async function bootstrapWithExit5Retry(
+  resolved: ResolvedDeps,
+  label: string,
+  plistFilePath: string,
+): Promise<BootstrapOutcome> {
+  const bootstrapResult = await bootstrap(
+    resolved.uid,
+    plistFilePath,
+    resolved.exec,
+  );
+  if (bootstrapResult.code === 0) return { ok: true };
+  if (bootstrapResult.code !== 5) {
+    return {
+      ok: false,
+      error: `launchctl bootstrap failed (exit ${bootstrapResult.code})${stderrDetail(bootstrapResult)}`,
+    };
+  }
+
+  const reprobe = await probeJob(resolved, label);
+  if (!reprobe.ok) {
+    return {
+      ok: false,
+      error: `launchctl bootstrap failed (exit 5)${stderrDetail(bootstrapResult)}; re-probe also failed: ${reprobe.error}`,
+    };
+  }
+  if (reprobe.loaded) return { ok: true };
+
+  await resolved.sleep(EXIT5_RETRY_DELAY_MS);
+  const retryResult = await bootstrap(
+    resolved.uid,
+    plistFilePath,
+    resolved.exec,
+  );
+  if (retryResult.code !== 0) {
+    return {
+      ok: false,
+      error: `launchctl bootstrap failed twice (exit 5, then exit ${retryResult.code})${stderrDetail(bootstrapResult)}; retry: ${stderrDetail(retryResult)}`,
+    };
+  }
+  return { ok: true };
+}
+
+/**
+ * Prepares install's cold-machine filesystem prerequisites: the
+ * LaunchAgents dir, the state dir (hardened 0700), and the two 0600 log
+ * files. Extracted purely to keep `installService`'s cognitive complexity
+ * under the linter's threshold.
+ */
+function prepareInstallFilesystem(
+  resolved: ResolvedDeps,
+  stateDir: string,
+): PreCreateLogResult {
+  try {
+    mkdirSync(resolved.launchAgentsDir, { recursive: true, mode: 0o755 });
+  } catch (err) {
+    return {
+      ok: false,
+      error: `failed to create LaunchAgents directory ${resolved.launchAgentsDir}: ${String(err)}`,
+    };
+  }
+
+  const stateDirResult = ensureStateDir(stateDir);
+  if (!stateDirResult.ok) return stateDirResult;
+
+  const outLogResult = preCreateLog(`${stateDir}/service.log`);
+  if (!outLogResult.ok) return outLogResult;
+  return preCreateLog(`${stateDir}/service.err.log`);
+}
+
+function ephemeralCacheWarning(resolved: ResolvedDeps): string | undefined {
+  if (
+    isEphemeralCachePath(resolved.execPath) ||
+    isEphemeralCachePath(resolved.cliEntryPath)
+  ) {
+    return "space-bus service was installed pointing at an ephemeral package-manager cache path; this may break after the cache is cleared — install space-bus durably and re-run `service install`.";
+  }
+  return undefined;
+}
+
+type BootoutOutcome = { ok: true } | { ok: false; error: string };
+
+/**
+ * Runs `bootout` against a loaded job; if it fails, re-probes rather than
+ * assuming success or immediately failing — a bootout can report non-zero
+ * while the job is actually gone (races with launchd's own teardown), and
+ * conversely can report zero while something else keeps the job around.
+ * Only a CONFIRMED-absent job after the probe is treated as success; an
+ * ambiguous probe failure or a confirmed-still-loaded job fails honestly.
+ */
+async function bootoutUntilAbsentOrFail(
+  resolved: ResolvedDeps,
+  label: string,
+): Promise<BootoutOutcome> {
+  const bootoutResult = await bootout(resolved.uid, label, resolved.exec);
+  if (bootoutResult.code === 0) return { ok: true };
+
+  const reprobe = await probeJob(resolved, label);
+  if (!reprobe.ok) {
+    return {
+      ok: false,
+      error: `launchctl bootout failed (exit ${bootoutResult.code})${stderrDetail(bootoutResult)}; re-probe to confirm absence also failed: ${reprobe.error}`,
+    };
+  }
+  if (reprobe.loaded) {
+    return {
+      ok: false,
+      error: `launchctl bootout failed (exit ${bootoutResult.code})${stderrDetail(bootoutResult)} and the job is still loaded`,
+    };
+  }
+  return { ok: true };
 }
 
 // --- install -------------------------------------------------------------
@@ -203,31 +429,29 @@ export async function installService(
     resolved.launchAgentsDir,
   );
 
-  let warning: string | undefined;
-  if (
-    isEphemeralCachePath(resolved.execPath) ||
-    isEphemeralCachePath(resolved.cliEntryPath)
-  ) {
-    warning =
-      "space-bus service was installed pointing at an ephemeral package-manager cache path; this may break after the cache is cleared — install space-bus durably and re-run `service install`.";
-  }
+  const warning = ephemeralCacheWarning(resolved);
 
-  try {
-    mkdirSync(stateDir, { recursive: true, mode: 0o700 });
-  } catch (err) {
-    return {
-      ok: false,
-      error: `failed to create state directory ${stateDir}: ${String(err)}`,
-    };
-  }
-  preCreateLog(`${stateDir}/service.log`);
-  preCreateLog(`${stateDir}/service.err.log`);
+  const fsResult = prepareInstallFilesystem(resolved, stateDir);
+  if (!fsResult.ok) return fsResult;
+
+  const xdgResolved = resolveXdgStateHome();
+  if (!xdgResolved.ok) return { ok: false, error: xdgResolved.error };
+  const xdgStateHome = xdgResolved.value;
 
   // R9: refresh — if a job with this label is already loaded, boot it out
-  // before reinstalling. Tolerate bootout failure of a half-dead job.
-  const existing = await printJob(resolved.uid, label, resolved.exec);
+  // before reinstalling. A failed bootout of a still-loaded job must NOT
+  // be tolerated silently (P1-B): re-probe and only proceed if the job is
+  // now confirmed absent.
+  const existing = await probeJob(resolved, label);
+  if (!existing.ok) {
+    return {
+      ok: false,
+      error: `failed to probe existing job: ${existing.error}`,
+    };
+  }
   if (existing.loaded) {
-    await bootout(resolved.uid, label, resolved.exec);
+    const bootoutOutcome = await bootoutUntilAbsentOrFail(resolved, label);
+    if (!bootoutOutcome.ok) return bootoutOutcome;
   }
 
   const plistXml = renderPlist({
@@ -236,6 +460,8 @@ export async function installService(
     rosterPath,
     stateDir,
     label,
+    path: process.env["PATH"],
+    xdgStateHome,
   });
 
   const writeResult = writePlistAtomic(plistFilePath, plistXml);
@@ -248,17 +474,12 @@ export async function installService(
     return { ok: false, error: `refusing to install: ${safety.reason}` };
   }
 
-  const bootstrapResult = await bootstrap(
-    resolved.uid,
+  const bootstrapOutcome = await bootstrapWithExit5Retry(
+    resolved,
+    label,
     plistFilePath,
-    resolved.exec,
   );
-  if (bootstrapResult.code !== 0) {
-    return {
-      ok: false,
-      error: `launchctl bootstrap failed (exit ${bootstrapResult.code})${stderrDetail(bootstrapResult)}`,
-    };
-  }
+  if (!bootstrapOutcome.ok) return bootstrapOutcome;
 
   const kickstartResult = await kickstart(resolved.uid, label, resolved.exec);
   if (kickstartResult.code !== 0) {
@@ -268,7 +489,12 @@ export async function installService(
     };
   }
 
-  const verified = await verifyRunning(rosterPath, label, resolved);
+  const verified = await verifyRunning(
+    rosterPath,
+    label,
+    resolved,
+    plistFilePath,
+  );
   if (!verified.ok) return verified;
 
   return {
@@ -286,26 +512,39 @@ async function verifyRunning(
   rosterPath: string,
   label: string,
   resolved: ResolvedDeps,
+  plistFilePath?: string,
 ): Promise<VerifyResult> {
   const deadline = resolved.now() + resolved.verifyBudgetMs;
   let lastLoaded = false;
   let lastRunning = false;
   let lastPid: number | undefined;
+  let lastProbeError: string | undefined;
   for (;;) {
-    const job = await printJob(resolved.uid, label, resolved.exec);
+    const job = await probeJob(resolved, label);
     const status = resolved.serverStatus(rosterPath);
-    lastLoaded = job.loaded;
     lastRunning = status.running;
-    lastPid = job.pid ?? status.pid;
-    if (job.loaded && status.running) {
-      return { ok: true, pid: lastPid };
+    if (job.ok) {
+      lastLoaded = job.loaded;
+      lastPid = job.pid ?? status.pid;
+      lastProbeError = undefined;
+      if (job.loaded && status.running) {
+        return { ok: true, pid: lastPid };
+      }
+    } else {
+      lastProbeError = job.error;
     }
     if (resolved.now() >= deadline) break;
     await resolved.sleep(resolved.verifyPollMs);
   }
+  const stateDir = stateDirFor(rosterPath);
+  const logPath = join(stateDir, "service.log");
   return {
     ok: false,
-    error: `install did not verify as running within ${resolved.verifyBudgetMs}ms (loaded=${lastLoaded}, running=${lastRunning})`,
+    error:
+      `install did not verify as running within ${resolved.verifyBudgetMs}ms ` +
+      `(loaded=${lastLoaded}, running=${lastRunning}` +
+      `${lastProbeError ? `, last probe error: ${lastProbeError}` : ""})` +
+      ` — label=${label}, plist=${plistFilePath ?? plistPath(label, resolved.launchAgentsDir)}, log=${logPath}`,
   };
 }
 
@@ -328,11 +567,19 @@ export async function uninstallService(
     resolved.launchAgentsDir,
   );
 
-  const job = await printJob(resolved.uid, label, resolved.exec);
+  const job = await probeJob(resolved, label);
+  if (!job.ok) {
+    return { ok: false, error: `failed to probe job: ${job.error}` };
+  }
+
   let jobRemoved = false;
   if (job.loaded) {
-    const bootoutResult = await bootout(resolved.uid, label, resolved.exec);
-    jobRemoved = bootoutResult.code === 0;
+    // P1-B: a failed bootout of a still-loaded job must NOT silently
+    // degrade — don't unlink the plist and don't return ok:true unless
+    // the job is confirmed absent afterward.
+    const outcome = await bootoutUntilAbsentOrFail(resolved, label);
+    if (!outcome.ok) return outcome;
+    jobRemoved = true;
   }
 
   let plistRemoved = false;
@@ -391,7 +638,10 @@ export async function serviceStatus(
     resolved.launchAgentsDir,
   );
   const installed = existsSync(plistFilePath);
-  const job = await printJob(resolved.uid, label, resolved.exec);
+  const job = await probeJob(resolved, label);
+  if (!job.ok) {
+    return { ok: false, error: `failed to probe job: ${job.error}` };
+  }
   const status: ServerStatus = resolved.serverStatus(rosterPath);
 
   return {
@@ -420,18 +670,16 @@ export async function stopService(
   if (!gate.ok) return { ok: false, error: gate.error };
 
   const { label } = identityFor(rosterPath, resolved.launchAgentsDir);
-  const job = await printJob(resolved.uid, label, resolved.exec);
+  const job = await probeJob(resolved, label);
+  if (!job.ok) {
+    return { ok: false, error: `failed to probe job: ${job.error}` };
+  }
   if (!job.loaded) {
     return { ok: true, label, wasLoaded: false };
   }
 
-  const bootoutResult = await bootout(resolved.uid, label, resolved.exec);
-  if (bootoutResult.code !== 0) {
-    return {
-      ok: false,
-      error: `launchctl bootout failed (exit ${bootoutResult.code})${stderrDetail(bootoutResult)}`,
-    };
-  }
+  const outcome = await bootoutUntilAbsentOrFail(resolved, label);
+  if (!outcome.ok) return outcome;
   return { ok: true, label, wasLoaded: true };
 }
 
@@ -449,7 +697,7 @@ export async function startService(
   const gate = platformGate(resolved.platform);
   if (!gate.ok) return { ok: false, error: gate.error };
 
-  const { label, plistFilePath } = identityFor(
+  const { label, plistFilePath, stateDir } = identityFor(
     rosterPath,
     resolved.launchAgentsDir,
   );
@@ -458,6 +706,30 @@ export async function startService(
       ok: false,
       error: `space-bus service is not installed for this roster — run \`space-bus service install\``,
     };
+  }
+
+  // P1-D: start is a load path too — must not bootstrap a tampered/stale
+  // plist. Re-render from trusted inputs and atomically replace it (same
+  // path as install), rather than trusting whatever's currently on disk.
+  const xdgResolved = resolveXdgStateHome();
+  if (!xdgResolved.ok) return { ok: false, error: xdgResolved.error };
+  const xdgStateHome = xdgResolved.value;
+  const plistXml = renderPlist({
+    runtime: resolved.execPath,
+    cliEntry: resolved.cliEntryPath,
+    rosterPath,
+    stateDir,
+    label,
+    path: process.env["PATH"],
+    xdgStateHome,
+  });
+  const writeResult = writePlistAtomic(plistFilePath, plistXml);
+  if (!writeResult.ok) {
+    return { ok: false, error: writeResult.error };
+  }
+  const safety = verifyPlistSafe(plistFilePath);
+  if (!safety.safe) {
+    return { ok: false, error: `refusing to start: ${safety.reason}` };
   }
 
   const bootstrapResult = await bootstrap(
@@ -480,15 +752,17 @@ export async function startService(
     };
   }
 
-  const job = await printJob(resolved.uid, label, resolved.exec);
-  if (!job.loaded) {
-    return {
-      ok: false,
-      error: "launchctl reported the job as not loaded after start",
-    };
-  }
+  // Use the same bounded verification loop as install — a loaded-but-not-
+  // running daemon must not be reported as a successful start.
+  const verified = await verifyRunning(
+    rosterPath,
+    label,
+    resolved,
+    plistFilePath,
+  );
+  if (!verified.ok) return verified;
 
-  return { ok: true, label, pid: job.pid };
+  return { ok: true, label, pid: verified.pid };
 }
 
 // Re-exported for callers that only need identity derivation without

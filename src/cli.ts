@@ -256,23 +256,61 @@ function isServiceVerb(value: string | undefined): value is ServiceVerb {
   return SERVICE_VERBS.includes(value as ServiceVerb);
 }
 
+type InstallOk = Extract<
+  Awaited<ReturnType<typeof installService>>,
+  { ok: true }
+>;
+type UninstallOk = Extract<
+  Awaited<ReturnType<typeof uninstallService>>,
+  { ok: true }
+>;
+type StatusOk = Extract<
+  Awaited<ReturnType<typeof serviceStatus>>,
+  { ok: true }
+>;
+type StopOk = Extract<Awaited<ReturnType<typeof stopService>>, { ok: true }>;
+type StartOk = Extract<Awaited<ReturnType<typeof startService>>, { ok: true }>;
+
+function installPlainMessage(result: InstallOk): string {
+  return `space-bus: service installed: ${result.label}${result.pid !== undefined ? ` (pid ${result.pid})` : ""}${result.warning ? `\nwarning: ${result.warning}` : ""}`;
+}
+
+function uninstallPlainMessage(result: UninstallOk): string {
+  return `space-bus: service uninstalled: ${result.label} (job removed: ${result.removed.job}, plist removed: ${result.removed.plist})`;
+}
+
+function statusPlainMessage(result: StatusOk): string {
+  return `space-bus: service ${result.label} — installed: ${result.installed}, loaded: ${result.loaded}, running: ${result.running}${result.pid !== undefined ? ` (pid ${result.pid})` : ""}`;
+}
+
+function stopPlainMessage(result: StopOk): string {
+  return `space-bus: service stopped: ${result.label} (was loaded: ${result.wasLoaded}); will start again at next login`;
+}
+
+function startPlainMessage(result: StartOk): string {
+  return `space-bus: service started: ${result.label}${result.pid !== undefined ? ` (pid ${result.pid})` : ""}`;
+}
+
+function servicePlainMessage(verb: "install", result: InstallOk): string;
+function servicePlainMessage(verb: "uninstall", result: UninstallOk): string;
+function servicePlainMessage(verb: "status", result: StatusOk): string;
+function servicePlainMessage(verb: "stop", result: StopOk): string;
+function servicePlainMessage(verb: "start", result: StartOk): string;
 function servicePlainMessage(
   verb: ServiceVerb,
-  result: { ok: true; [key: string]: unknown },
+  result: InstallOk | UninstallOk | StatusOk | StopOk | StartOk,
 ): string {
   switch (verb) {
     case "install":
-      return `space-bus: service installed: ${result["label"]}${result["pid"] !== undefined ? ` (pid ${result["pid"]})` : ""}${result["warning"] ? `\nwarning: ${result["warning"]}` : ""}`;
-    case "uninstall": {
-      const removed = result["removed"] as { job: boolean; plist: boolean };
-      return `space-bus: service uninstalled: ${result["label"]} (job removed: ${removed.job}, plist removed: ${removed.plist})`;
-    }
+      return installPlainMessage(result as InstallOk);
+    case "uninstall":
+      return uninstallPlainMessage(result as UninstallOk);
     case "status":
-      return `space-bus: service ${result["label"]} — installed: ${result["installed"]}, loaded: ${result["loaded"]}, running: ${result["running"]}${result["pid"] !== undefined ? ` (pid ${result["pid"]})` : ""}`;
+      return statusPlainMessage(result as StatusOk);
     case "stop":
-      return `space-bus: service stopped: ${result["label"]} (was loaded: ${result["wasLoaded"]})`;
+      return stopPlainMessage(result as StopOk);
     case "start":
-      return `space-bus: service started: ${result["label"]}${result["pid"] !== undefined ? ` (pid ${result["pid"]})` : ""}`;
+      return startPlainMessage(result as StartOk);
     default:
       return "space-bus: service ok";
   }
@@ -332,10 +370,22 @@ export async function runService(
     return 1;
   }
 
-  const plain = servicePlainMessage(
-    args.subcommand,
-    result as { ok: true; [key: string]: unknown },
-  );
+  const plain = ((): string => {
+    switch (args.subcommand) {
+      case "install":
+        return servicePlainMessage("install", result as InstallOk);
+      case "uninstall":
+        return servicePlainMessage("uninstall", result as UninstallOk);
+      case "status":
+        return servicePlainMessage("status", result as StatusOk);
+      case "stop":
+        return servicePlainMessage("stop", result as StopOk);
+      case "start":
+        return servicePlainMessage("start", result as StartOk);
+      default:
+        return "space-bus: service ok";
+    }
+  })();
   printJson(args.json, result, plain);
   return 0;
 }
