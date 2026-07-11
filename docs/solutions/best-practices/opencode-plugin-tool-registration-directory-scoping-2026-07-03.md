@@ -37,6 +37,8 @@ export default SpaceBusPlugin;
 
 **Loading.** The `plugin` config array (singular key) accepts bare absolute file paths (no `file://` prefix) and npm names including `@scope/pkg@version`; npm plugins are auto-installed by Bun at startup. A file-path reference resolves the package's `main` — the built output loads, not `src/`.
 
+**Reserved-subpath hazard (npm-name loads only).** For an npm-name pin, OpenCode resolves the plugin entry as `exports["./server"]` *before* `main` — so `./server` is reserved for the plugin factory. Publishing a library surface there breaks loading with `Plugin export is not a function`, and a **file-path ref won't catch it** (it bypasses exports-map resolution). See the linked integration doc.
+
 **Directory scoping.** On a shared server routing per-request via `x-opencode-directory`, each session's plugin instance receives the correct per-request workspace in `input.directory` (factory arg) and `ctx.directory` (per tool call). `process.cwd()` stays pinned to the server's launch directory — never use it. Resolution pattern:
 
 ```ts
@@ -69,3 +71,4 @@ Live probe shape that verified scoping: two workspaces on one `harness serve`, e
 
 - `fro-bot/agent/docs/solutions/best-practices/versioned-tool-config-plugin-pattern-2026-03-29.md` — plugin declaration and startup config resolution; this doc adds the scoping, lazy-loading, and double-registration rules.
 - `docs/solutions/integration-issues/opencode-session-diff-empty-v1-16-2026-07-02.md` — adjacent OpenCode server API behavior (session diffs) consumed by the same tools.
+- `docs/solutions/integration-issues/opencode-plugin-reserved-subpath-loader-resolution-2026-07-11.md` — plugin registration can be broken by package `exports`-map choices, not just the tool map: `./server` is a reserved plugin entrypoint.
