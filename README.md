@@ -106,6 +106,28 @@ Security posture: each spawn gets a freshly generated password (never reused, ne
 
 Programmatic consumers (e.g. Mothership) that want to drive the lifecycle directly without the CLI can import `@fro.bot/space-bus/managed-server` (Node-only; `ensureServer`/`serverStatus`/`stopServer`).
 
+## `space-bus service` (macOS, launchd v1)
+
+Reboot-persistent daemon on top of the managed server: registers a per-user launchd agent that wraps `serve --foreground`, so the roster's server survives host reboots and crashes without a live operator noticing it died.
+
+```sh
+space-bus service install [--json] [--config <path>]    install the launchd agent, start it now
+space-bus service uninstall [--json] [--config <path>]  bootout the job and remove the plist
+space-bus service status [--json] [--config <path>]     installed / loaded / running, with pid
+space-bus service stop [--json] [--config <path>]       bootout the loaded job (plist stays)
+space-bus service start [--json] [--config <path>]      bootstrap + kickstart the job
+```
+
+Semantics:
+
+- Starts at **login**, not boot — it's a `gui/$UID` launchd agent, not a system daemon.
+- Restarts only on abnormal exit (`KeepAlive.SuccessfulExit=false`), consuming the existing `serve --foreground` exit-code contract (0 = deliberate stop, no restart; 1 = death, restart). Restarts are throttled to once per 10s to avoid a crash loop.
+- `service stop` deregisters the job (`bootout`) but leaves the plist in place; `service start` re-registers it (`bootstrap` + `kickstart`). A stopped service comes back automatically at the next login (`RunAtLoad`) unless you `service start` it back sooner — there's no persistent "disabled" latch in v1.
+- Logs land at the roster's state dir: `service.log` (stdout) / `service.err.log` (stderr), created 0600.
+- Upgrades: the plist pins absolute paths to the runtime and CLI entry resolved at install time. After a version bump (or if you moved/reinstalled the runtime), re-run `space-bus service install` — it's idempotent and refreshes the pinned paths.
+- macOS only in v1; every verb fails fast with an explicit error on other platforms.
+- `install`/`uninstall` are explicit operator actions only — nothing auto-installs the service on your behalf.
+
 ## Library surface
 
 Experimental subpath exports expose the bus's internals directly — the functions the four tools run on, plus the managed-server lifecycle and the attach resolver — for renderers and other consumers that want structured state instead of formatted strings. Subpaths are experimental: shapes may change in minor releases; pin the version if you adopt them.
