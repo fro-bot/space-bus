@@ -14,6 +14,7 @@ import {
   pendingQuestionListSchema,
   questionListSchema,
   type SessionState,
+  type SessionStateInfo,
   sessionListSchema,
   sessionSchema,
   sessionStatusMapSchema,
@@ -1023,4 +1024,189 @@ export async function snapshot(
   );
 
   return { ok: true, projects: results };
+}
+
+// --- wait ------------------------------------------------------------------
+// Stateless, level-triggered long-poll over one or more sessions. Owns its
+// own deadline (opts.timeoutMs) independently of api()'s per-request 30s
+// abort — a single poll request stays bounded by api(), but the wait LOOP
+// keeps polling (each poll a fresh api() call) until a watched session needs
+// attention or the deadline elapses. Default kept comfortably below any
+// plugin/MCP-facade call ceiling; change these two constants together if the
+// live harness needs different tuning.
+const DEFAULT_WAIT_TIMEOUT_MS = 60_000;
+const DEFAULT_WAIT_POLL_INTERVAL_MS = 1_500;
+
+const NEEDS_ATTENTION_STATES: SessionState[] = [
+  "complete",
+  "blocked",
+  "failed",
+  "not_found",
+];
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export type WaitResult = {
+  sessions: SessionStateInfo[];
+  waker: string[];
+  timedOut: boolean;
+};
+
+type WaitLocation = { directory: string; project: string } | null;
+type WaitGroup = { directory: string; sessionIds: string[] };
+
+/**
+ * Resolves each session id -> directory/project once, up front. An
+ * unresolvable id never fails the whole call (R9) — it's kept as a
+ * permanent not_found entry for the rest of the wait. (Judgment call:
+ * there's no owning project for a not_found session, so `project` is the
+ * empty string — SessionStateInfo requires the field, and inventing a
+ * project name would be worse than an empty one.)
+ */
+async function resolveWaitSessions(
+  baseUrl: string,
+  credentials: Credentials,
+  projects: ProjectSchema[],
+  sessionIds: string[],
+): Promise<{
+  locationById: Map<string, WaitLocation>;
+  groupList: WaitGroup[];
+  lastKnown: Map<string, SessionStateInfo>;
+}> {
+  const locations = await mapWithConcurrency(sessionIds, 4, async (id) => {
+    const loc = await findSessionDirectory(baseUrl, credentials, projects, id);
+    return { id, loc };
+  });
+
+  const locationById = new Map<string, WaitLocation>();
+  for (const { id, loc } of locations) {
+    locationById.set(
+      id,
+      loc.ok ? { directory: loc.directory, project: loc.project } : null,
+    );
+  }
+
+  const groups = new Map<string, WaitGroup>();
+  for (const id of sessionIds) {
+    const loc = locationById.get(id);
+    if (!loc) continue;
+    const group = groups.get(loc.directory) ?? {
+      directory: loc.directory,
+      sessionIds: [],
+    };
+    group.sessionIds.push(id);
+    groups.set(loc.directory, group);
+  }
+
+  // Seed a last-known snapshot: not_found sessions are permanently not_found;
+  // resolved sessions start as "running" until the first poll reports
+  // otherwise. This is also what a poll failure falls back to (degrade
+  // gracefully rather than throw or fabricate "complete").
+  const lastKnown = new Map<string, SessionStateInfo>();
+  for (const id of sessionIds) {
+    const loc = locationById.get(id);
+    lastKnown.set(id, {
+      sessionId: id,
+      project: loc?.project ?? "",
+      state: loc ? "running" : "not_found",
+      resultAvailable: false,
+    });
+  }
+
+  return { locationById, groupList: Array.from(groups.values()), lastKnown };
+}
+
+export async function wait(
+  sessionIds: string[],
+  opts: CoreOpts & { timeoutMs?: number; pollIntervalMs?: number },
+): Promise<Result<WaitResult>> {
+  const ctx = validateContext(opts.context);
+  if (!ctx.ok) return ctx;
+  const { baseUrl, projects, credentials } = ctx;
+
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS;
+  const pollIntervalMs = opts.pollIntervalMs ?? DEFAULT_WAIT_POLL_INTERVAL_MS;
+  const deadline = Date.now() + timeoutMs;
+
+  const { locationById, groupList, lastKnown } = await resolveWaitSessions(
+    baseUrl,
+    credentials,
+    projects,
+    sessionIds,
+  );
+
+  async function pollGroup(group: {
+    directory: string;
+    sessionIds: string[];
+  }): Promise<void> {
+    const [statusRes, questionRes] = await Promise.all([
+      api(baseUrl, credentials, group.directory, "/session/status"),
+      api(baseUrl, credentials, group.directory, "/question"),
+    ]);
+    // A failed poll for this directory degrades gracefully: keep every
+    // session in that group at its last-known state rather than throwing,
+    // looping forever, or fabricating a state change.
+    if (!statusRes.res.ok) return;
+    let statusMap: z.infer<typeof sessionStatusMapSchema>;
+    try {
+      statusMap = sessionStatusMapSchema.parse(JSON.parse(statusRes.bodyText));
+    } catch {
+      return;
+    }
+    const pendingBySession = parsePendingQuestions(questionRes);
+    for (const id of group.sessionIds) {
+      const entry = statusMap[id];
+      const busy = entry
+        ? entry.type === "busy" || entry.type === "retry"
+        : false;
+      const pendingQuestion = pendingBySession.get(id);
+      const state = deriveSessionState({
+        busy,
+        pendingQuestion,
+        resolved: true,
+      });
+      lastKnown.set(id, {
+        sessionId: id,
+        project: locationById.get(id)?.project ?? "",
+        state,
+        resultAvailable: state === "complete",
+        pendingQuestion,
+      });
+    }
+  }
+
+  while (true) {
+    await mapWithConcurrency(groupList, 4, pollGroup);
+    const sessions = sessionIds.map(
+      (id) => lastKnown.get(id) as SessionStateInfo,
+    );
+    const waker = sessions
+      .filter((s) => NEEDS_ATTENTION_STATES.includes(s.state))
+      .map((s) => s.sessionId);
+    if (waker.length > 0) {
+      return { ok: true, sessions, waker, timedOut: false };
+    }
+    if (Date.now() >= deadline) {
+      return { ok: true, sessions, waker: [], timedOut: true };
+    }
+    const remaining = deadline - Date.now();
+    await sleep(Math.min(pollIntervalMs, Math.max(0, remaining)));
+  }
+}
+
+function parsePendingQuestions(questionRes: {
+  res: Response;
+  bodyText: string;
+}): Map<string, { preview: string; options: string[] }> {
+  if (!questionRes.res.ok) return new Map();
+  try {
+    const entries = pendingQuestionListSchema.parse(
+      JSON.parse(questionRes.bodyText),
+    );
+    return new Map(entries.map((e) => [e.sessionID, formatQuestionEntry(e)]));
+  } catch {
+    return new Map();
+  }
 }
