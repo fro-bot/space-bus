@@ -6,6 +6,7 @@ import { loadContext } from "./config";
 import {
   type CoreOpts,
   type DispatchArgs,
+  deriveSessionState,
   dispatch,
   result,
   roster,
@@ -280,6 +281,85 @@ describe("dispatch() steering", () => {
   });
 });
 
+describe("deriveSessionState()", () => {
+  test("busy -> running", () => {
+    expect(deriveSessionState({ busy: true, resolved: true })).toBe("running");
+  });
+
+  test("not-busy + resolved -> complete", () => {
+    expect(deriveSessionState({ busy: false, resolved: true })).toBe(
+      "complete",
+    );
+  });
+
+  test("pendingQuestion present -> blocked", () => {
+    expect(
+      deriveSessionState({
+        busy: false,
+        resolved: true,
+        pendingQuestion: { preview: "q", options: [] },
+      }),
+    ).toBe("blocked");
+  });
+
+  test("unresolved -> not_found", () => {
+    expect(deriveSessionState({ busy: false, resolved: false })).toBe(
+      "not_found",
+    );
+  });
+
+  test("failed -> failed", () => {
+    expect(
+      deriveSessionState({ busy: false, resolved: true, failed: true }),
+    ).toBe("failed");
+  });
+
+  test("busy AND pendingQuestion -> blocked (not running)", () => {
+    expect(
+      deriveSessionState({
+        busy: true,
+        resolved: true,
+        pendingQuestion: { preview: "q", options: [] },
+      }),
+    ).toBe("blocked");
+  });
+
+  test("not-busy AND pendingQuestion -> blocked (not complete)", () => {
+    expect(
+      deriveSessionState({
+        busy: false,
+        resolved: true,
+        pendingQuestion: { preview: "q", options: [] },
+      }),
+    ).toBe("blocked");
+  });
+
+  test("unresolved AND busy -> not_found (unresolved wins)", () => {
+    expect(deriveSessionState({ busy: true, resolved: false })).toBe(
+      "not_found",
+    );
+  });
+
+  test("failed AND busy -> failed (failed wins over running)", () => {
+    expect(
+      deriveSessionState({ busy: true, resolved: true, failed: true }),
+    ).toBe("failed");
+  });
+
+  test("resultAvailable-equivalent: state is complete only when not busy, no question, resolved, not failed", () => {
+    const complete = deriveSessionState({ busy: false, resolved: true });
+    const running = deriveSessionState({ busy: true, resolved: true });
+    const blocked = deriveSessionState({
+      busy: false,
+      resolved: true,
+      pendingQuestion: { preview: "q", options: [] },
+    });
+    expect(complete).toBe("complete");
+    expect(running).not.toBe("complete");
+    expect(blocked).not.toBe("complete");
+  });
+});
+
 describe("status()", () => {
   test("busy session with pendingQuestion populated", async () => {
     globalThis.fetch = mockFetch({
@@ -313,6 +393,74 @@ describe("status()", () => {
     await expect(callStatus("ses_1")).resolves.toEqual(
       expect.objectContaining({ ok: false }),
     );
+  });
+
+  test("busy session: state is running, existing fields unchanged", async () => {
+    globalThis.fetch = mockFetch({
+      "GET /session/ses_1": () => ({
+        body: { id: "ses_1", directory: dirA, title: "My session" },
+      }),
+      "GET /session/status": () => ({ body: { ses_1: { type: "busy" } } }),
+      "GET /session/ses_1/todo": () => ({ body: [] }),
+      "GET /session/ses_1/diff": () => ({ body: [] }),
+      "GET /question": () => ({ body: [] }),
+      "GET /vcs/status": () => ({ body: [] }),
+    });
+    const res = await callStatus("ses_1");
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.state).toBe("running");
+    expect(res.busy).toBe(true);
+    expect(res.title).toBe("My session");
+    expect(res.pendingQuestion).toBeUndefined();
+  });
+
+  test("idle session: state is complete, existing fields unchanged", async () => {
+    globalThis.fetch = mockFetch({
+      "GET /session/ses_1": () => ({
+        body: { id: "ses_1", directory: dirA, title: "My session" },
+      }),
+      "GET /session/status": () => ({ body: { ses_1: { type: "idle" } } }),
+      "GET /session/ses_1/todo": () => ({ body: [] }),
+      "GET /session/ses_1/diff": () => ({ body: [] }),
+      "GET /question": () => ({ body: [] }),
+      "GET /vcs/status": () => ({ body: [] }),
+    });
+    const res = await callStatus("ses_1");
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.state).toBe("complete");
+    expect(res.resultAvailable).toBe(true);
+    expect(res.busy).toBe(false);
+    expect(res.diff).toEqual({ files: 0, additions: 0, deletions: 0 });
+  });
+
+  test("blocked session (pendingQuestion): state is blocked, existing fields unchanged", async () => {
+    globalThis.fetch = mockFetch({
+      "GET /session/ses_1": () => ({
+        body: { id: "ses_1", directory: dirA, title: "My session" },
+      }),
+      "GET /session/status": () => ({ body: { ses_1: { type: "busy" } } }),
+      "GET /session/ses_1/todo": () => ({ body: [] }),
+      "GET /session/ses_1/diff": () => ({ body: [] }),
+      "GET /question": () => ({
+        body: [
+          {
+            id: "q_1",
+            sessionID: "ses_1",
+            questions: [{ question: "Proceed?", options: [{ label: "Yes" }] }],
+          },
+        ],
+      }),
+      "GET /vcs/status": () => ({ body: [] }),
+    });
+    const res = await callStatus("ses_1");
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.state).toBe("blocked");
+    expect(res.resultAvailable).toBe(false);
+    expect(res.busy).toBe(true);
+    expect(res.pendingQuestion?.preview).toBe("Proceed?");
   });
 });
 

@@ -4,6 +4,8 @@ import { join } from "node:path";
 import {
   pendingQuestionEntrySchema,
   sessionSchema,
+  sessionStateInfoSchema,
+  sessionStateSchema,
   sessionStatusMapSchema,
   turnMessageSchema,
   vcsStatusEntrySchema,
@@ -40,6 +42,43 @@ describe("contract schemas", () => {
     });
     expect(parsed["ses_1"]?.type).toBe("busy");
     expect((parsed["ses_2"] as Record<string, unknown>)["extra"]).toBe("field");
+  });
+
+  test("sessionStateSchema accepts the 5 normalized states", () => {
+    for (const s of [
+      "running",
+      "blocked",
+      "complete",
+      "failed",
+      "not_found",
+    ] as const) {
+      expect(sessionStateSchema.parse(s)).toBe(s);
+    }
+  });
+
+  test("sessionStateSchema rejects an unknown string", () => {
+    expect(() => sessionStateSchema.parse("bogus")).toThrow();
+  });
+
+  test("sessionStateInfoSchema round-trips a full object", () => {
+    const input = {
+      sessionId: "ses_1",
+      project: "alpha",
+      state: "blocked" as const,
+      resultAvailable: false,
+      pendingQuestion: { preview: "Proceed?", options: ["Yes", "No"] },
+    };
+    expect(sessionStateInfoSchema.parse(input)).toEqual(input);
+  });
+
+  test("sessionStateInfoSchema round-trips an object without pendingQuestion", () => {
+    const input = {
+      sessionId: "ses_2",
+      project: "beta",
+      state: "complete" as const,
+      resultAvailable: true,
+    };
+    expect(sessionStateInfoSchema.parse(input)).toEqual(input);
   });
 
   test("turnMessageSchema parses info.summary.diffs", () => {

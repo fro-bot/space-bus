@@ -129,6 +129,8 @@ describe("formatStatus", () => {
       todos: [],
       diff: { files: 0, additions: 0, deletions: 0 },
       diffSource: "session",
+      state: "running",
+      resultAvailable: false,
     });
     expect(out).toBe(
       [
@@ -151,6 +153,8 @@ describe("formatStatus", () => {
       todos: [],
       diff: { files: 3, additions: 10, deletions: 4 },
       diffSource: "session",
+      state: "complete",
+      resultAvailable: true,
     });
     expect(out).toContain("title: Fix bug");
     expect(out).toContain("busy: false");
@@ -168,6 +172,8 @@ describe("formatStatus", () => {
       ],
       diff: { files: 0, additions: 0, deletions: 0 },
       diffSource: "session",
+      state: "complete",
+      resultAvailable: true,
     });
     expect(out).toContain("  - [pending] Write tests (high)");
     expect(out).toContain("  - [in_progress] Ship it (medium)");
@@ -181,6 +187,8 @@ describe("formatStatus", () => {
       todos: [],
       diff: { files: 1, additions: 2, deletions: 1 },
       diffSource: "working-tree",
+      state: "complete",
+      resultAvailable: true,
     });
     expect(out).toContain(
       "diff (working tree — repo-wide, may include changes from other sessions): 1 files, +2/-1",
@@ -199,6 +207,8 @@ describe("formatStatus", () => {
         preview: "Should I proceed?",
         options: ["Yes", "No"],
       },
+      state: "blocked",
+      resultAvailable: false,
     });
     const lines = out.split("\n");
     expect(lines).toContain(
@@ -217,6 +227,8 @@ describe("formatStatus", () => {
       diff: { files: 0, additions: 0, deletions: 0 },
       diffSource: "session",
       pendingQuestion: { preview: "Continue?", options: [] },
+      state: "blocked",
+      resultAvailable: false,
     });
     expect(out).not.toContain("  options:");
     expect(out).toContain("  (answer with bus_task using sessionId)");

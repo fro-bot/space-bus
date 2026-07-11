@@ -13,6 +13,7 @@ import {
   type ProjectSchema,
   pendingQuestionListSchema,
   questionListSchema,
+  type SessionState,
   sessionListSchema,
   sessionSchema,
   sessionStatusMapSchema,
@@ -548,7 +549,38 @@ export type SessionStatusResult = {
   diff: { files: number; additions: number; deletions: number };
   diffSource: DiffSource;
   pendingQuestion?: { preview: string; options: string[] };
+  state: SessionState;
+  resultAvailable: boolean;
 };
+
+/**
+ * Maps raw session-status inputs to the normalized lifecycle enum. Called
+ * identically by status(), snapshot(), and bus_wait so the three emitters
+ * cannot diverge (R2).
+ *
+ * Precedence (highest first) — each check short-circuits the ones below it:
+ *   1. !resolved       -> "not_found"  (session id never resolved to a
+ *                          directory/session; nothing else can be derived)
+ *   2. failed          -> "failed"     (server-reported errored/aborted)
+ *   3. pendingQuestion -> "blocked"    (wins over both "running" and
+ *                          "complete" — a busy session with an open question
+ *                          is blocked, and a not-busy session with a still-
+ *                          open question is blocked, not complete)
+ *   4. busy            -> "running"
+ *   5. else            -> "complete"
+ */
+export function deriveSessionState(input: {
+  busy: boolean;
+  pendingQuestion?: { preview: string; options: string[] } | undefined;
+  resolved: boolean;
+  failed?: boolean;
+}): SessionState {
+  if (!input.resolved) return "not_found";
+  if (input.failed) return "failed";
+  if (input.pendingQuestion) return "blocked";
+  if (input.busy) return "running";
+  return "complete";
+}
 
 function formatQuestionEntry(
   entry: z.infer<typeof pendingQuestionListSchema>[number],
@@ -652,6 +684,12 @@ export async function status(
   const additions = diff.reduce((sum, d) => sum + d.additions, 0);
   const deletions = diff.reduce((sum, d) => sum + d.deletions, 0);
 
+  // resolved is true here — findSessionDirectory already succeeded above.
+  // failed-detection for a live session has no clear signal in status()'s
+  // current data (no errored/aborted status-map member observed); refined
+  // in a later unit rather than invented here.
+  const state = deriveSessionState({ busy, pendingQuestion, resolved: true });
+
   return {
     ok: true,
     sessionId,
@@ -662,6 +700,8 @@ export async function status(
     diff: { files: diff.length, additions, deletions },
     diffSource,
     pendingQuestion,
+    state,
+    resultAvailable: state === "complete",
   };
 }
 
