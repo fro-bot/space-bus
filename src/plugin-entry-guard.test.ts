@@ -61,6 +61,26 @@ describe('plugin entry guard: exports["./server"] must resolve to the plugin ent
     expect(typeof mod.default).toBe("function");
   }, 60_000);
 
+  test("negative control: dist/server.js fails the V1 shape check the loader applies", async () => {
+    if (!runBuild()) return;
+
+    // The pre-fix exports map pointed exports["./server"] at dist/server.js.
+    // Prove the guard's shape check actually discriminates: the lifecycle
+    // module's namespace must FAIL the exactly-one-default-function check
+    // (it exports functions plus numeric constants), i.e. re-pointing the
+    // subpath back would turn the positive test above red.
+    const mod = await import(join(projectRoot, "./dist/server.js"));
+    const entries = Object.entries(mod);
+
+    const passesV1Shape =
+      entries.length === 1 &&
+      entries[0]?.[0] === "default" &&
+      typeof mod.default === "function";
+    expect(passesV1Shape).toBe(false);
+    // Specifically because of non-function exports (the loader's actual trip):
+    expect(entries.some(([, v]) => typeof v !== "function")).toBe(true);
+  }, 60_000);
+
   test('exports["./managed-server"] resolves to dist/server.js and it exists post-build', () => {
     if (!runBuild()) return;
 
