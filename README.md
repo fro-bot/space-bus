@@ -104,7 +104,7 @@ MCP is attach-only by default — it never spawns. Set `SPACE_BUS_MCP_SPAWN=1` i
 
 Security posture: each spawn gets a freshly generated password (never reused, never in argv, never logged); the loopback guard travels with the discovery handshake, so an attached endpoint is re-validated as localhost-only regardless of source. Same-user process compromise is out of scope — anyone who can read your state dir or ptrace the child already has what they need.
 
-Programmatic consumers (e.g. Mothership) that want to drive the lifecycle directly without the CLI can import `@fro.bot/space-bus/server` (Node-only; `ensureServer`/`serverStatus`/`stopServer`).
+Programmatic consumers (e.g. Mothership) that want to drive the lifecycle directly without the CLI can import `@fro.bot/space-bus/managed-server` (Node-only; `ensureServer`/`serverStatus`/`stopServer`).
 
 ## Library surface
 
@@ -114,7 +114,7 @@ Experimental subpath exports expose the bus's internals directly — the functio
 - `@fro.bot/space-bus/config` — Node-only. `loadContext(directory?)` reads `spacebus.json` (honoring `SPACE_BUS_CONFIG` the same as the plugin) and returns a ready-to-use `BusContext`, with per-project `exists` flags and env-derived credentials attached. Build a fresh context per call; it's per-call/short-lived by contract, not meant to be cached across filesystem changes.
 - `@fro.bot/space-bus/contract` — the zod schemas (and inferred types) behind the OpenCode API and `BusContext`, for consumers hitting the server directly and wanting the same shapes. Schemas are zod v4.
 - `@fro.bot/space-bus/format` — the pure formatters the tools use to render output, for tool-identical text.
-- `@fro.bot/space-bus/server` — Node-only. The managed-server lifecycle (`ensureServer`/`serverStatus`/`stopServer`) for consumers driving spawn/attach/stop directly — see [Managed server](#managed-server).
+- `@fro.bot/space-bus/managed-server` — Node-only. The managed-server lifecycle (`ensureServer`/`serverStatus`/`stopServer`) for consumers driving spawn/attach/stop directly — see [Managed server](#managed-server).
 - `@fro.bot/space-bus/attach` — browser-safe. `resolveManagedServer(workspaceDir, seams)` resolves a managed roster's running endpoint by reading the discovery file through injected filesystem/env/crypto seams — re-checking the localhost guard and probing liveness — so an external attacher such as a Tauri webview can attach without any `node:*` imports or reimplementing the discovery contract. Returns `{ baseUrl, credentials, alive }` or an actionable error.
 
 Node example (`/config` + `/core`):
