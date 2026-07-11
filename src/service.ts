@@ -12,7 +12,8 @@ import {
   chmodSync,
   closeSync,
   existsSync,
-  lstatSync,
+  fchmodSync,
+  constants as fsConstants,
   mkdirSync,
   openSync,
   unlinkSync,
@@ -185,30 +186,46 @@ export type PreCreateLogResult = { ok: true } | { ok: false; error: string };
  * should not proceed believing logging is set up when it isn't.
  */
 function preCreateLog(path: string): PreCreateLogResult {
+  // Open atomically with O_NOFOLLOW so the kernel refuses a symlink at the
+  // path (no separate lstat check-then-open — that's a TOCTOU race). O_APPEND
+  // preserves an existing log; O_CREAT makes it when absent. Harden the mode
+  // via the open fd (fchmod), never by re-resolving the path.
+  let fd: number;
   try {
-    const linkStat = lstatSync(path);
-    if (linkStat.isSymbolicLink()) {
+    fd = openSync(
+      path,
+      fsConstants.O_WRONLY |
+        fsConstants.O_APPEND |
+        fsConstants.O_CREAT |
+        fsConstants.O_NOFOLLOW,
+      0o600,
+    );
+  } catch (err) {
+    if (isSymlinkError(err)) {
       return { ok: false, error: `refusing symlinked log path: ${path}` };
     }
-  } catch (err) {
-    if (!isEnoent(err)) {
-      return { ok: false, error: `failed to stat log ${path}: ${String(err)}` };
-    }
-  }
-  try {
-    // Append mode creates the file if absent (mode applied at creation)
-    // without truncating an existing one.
-    const fd = openSync(path, "a", 0o600);
-    closeSync(fd);
-  } catch (err) {
     return { ok: false, error: `failed to create log ${path}: ${String(err)}` };
   }
   try {
-    chmodSync(path, 0o600);
+    fchmodSync(fd, 0o600);
   } catch (err) {
     return { ok: false, error: `failed to chmod log ${path}: ${String(err)}` };
+  } finally {
+    closeSync(fd);
   }
   return { ok: true };
+}
+
+/** ELOOP is what `open(O_NOFOLLOW)` raises when the final path component is a
+ * symlink; treat it as the "refusing symlink" case rather than a generic IO
+ * failure. */
+function isSymlinkError(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    "code" in err &&
+    (err as { code?: string }).code === "ELOOP"
+  );
 }
 
 /**
