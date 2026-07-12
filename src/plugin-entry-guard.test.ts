@@ -93,4 +93,28 @@ describe('plugin entry guard: exports["./server"] must resolve to the plugin ent
     expect(managedServerImport).toBe("./dist/server.js");
     expect(existsSync(join(projectRoot, managedServerImport))).toBe(true);
   }, 60_000);
+
+  test('exports["./registry"] is NOT exports["./server"], and the loader-resolved entry is unaffected by its presence', async () => {
+    if (!runBuild()) return;
+
+    const pkg = JSON.parse(
+      readFileSync(join(projectRoot, "package.json"), "utf8"),
+    );
+
+    const registryImport: string = pkg.exports?.["./registry"]?.import;
+    const serverImport: string = pkg.exports?.["./server"]?.import;
+    expect(registryImport).toBeDefined();
+    expect(registryImport).not.toBe(serverImport);
+    expect(existsSync(join(projectRoot, registryImport))).toBe(true);
+
+    // Re-run the loader-emulation check: adding "./registry" to the exports
+    // map must not disturb exports["./server"] -> main -> dist/index.js
+    // single-default-function resolution.
+    const resolved: string = pkg.exports?.["./server"]?.import ?? pkg.main;
+    const mod = await import(join(projectRoot, resolved));
+    const entries = Object.entries(mod);
+    expect(entries.length).toBe(1);
+    expect(entries[0]?.[0]).toBe("default");
+    expect(typeof mod.default).toBe("function");
+  }, 60_000);
 });

@@ -44,6 +44,8 @@ const CLI_ONLY_MARKER = "thin CLI for the managed OpenCode bus server";
 const LAUNCHD_ONLY_MARKER = "launchd agent plist XML for a roster";
 const SERVICE_ONLY_MARKER =
   "space-bus service is not supported on this platform";
+const REGISTRY_ONLY_MARKER = "refusing to register a symlinked roster file";
+const ROSTER_EDIT_ONLY_MARKER = "refusing to overwrite existing roster file at";
 
 // Node-only constructs that must never appear in these browser-safe bundles.
 // Word-boundary regexes keep this pragmatic (avoid false positives inside
@@ -101,6 +103,8 @@ describe("browser-safety: core/contract/format bundle for browser target", () =>
       expect(text).not.toContain(CLI_ONLY_MARKER);
       expect(text).not.toContain(LAUNCHD_ONLY_MARKER);
       expect(text).not.toContain(SERVICE_ONLY_MARKER);
+      expect(text).not.toContain(REGISTRY_ONLY_MARKER);
+      expect(text).not.toContain(ROSTER_EDIT_ONLY_MARKER);
 
       // Node-only APIs (Buffer, process.env, require()) must never survive
       // into a browser bundle — this is what catches e.g. authHeader()
@@ -159,5 +163,22 @@ describe("browser-safety: published dist artifacts carry no node: imports", () =
       expect(text).not.toMatch(/from\s+"node:/);
       expect(text).not.toMatch(/require\(\s*"node:/);
     }
+  }, 60_000);
+
+  // dist/registry-entry.js is the ./registry subpath's Node-only artifact
+  // (registry.ts + roster-edit.ts, both fs/crypto/path consumers) — it is
+  // NOT part of the browser-safe set and MAY legitimately contain node:
+  // imports. Assert it's excluded from the browser-safe list above (a
+  // regression here would mean someone widened DIST_BROWSER_SAFE_FILES to
+  // include it) and that it actually exists post-build.
+  test("dist/registry-entry.js is Node-lane, not part of the browser-safe artifact set", async () => {
+    if (!runDistBuild()) return;
+
+    expect(DIST_BROWSER_SAFE_FILES).not.toContain("dist/registry-entry.js");
+
+    const text = await Bun.file(
+      join(projectRoot, "dist/registry-entry.js"),
+    ).text();
+    expect(text.length).toBeGreaterThan(0);
   }, 60_000);
 });

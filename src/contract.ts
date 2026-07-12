@@ -263,6 +263,58 @@ export const managedSpawnConfigSchema = z.object({
   port: z.number().int().nonnegative().optional(),
 });
 
+// --- Roster registry (per-user name -> path map) ----------------------------
+//
+// zod-only, browser-safe: describes the on-disk ~/.config/space-bus/
+// rosters.json contract. The Node-only reader/writer lives in registry.ts;
+// this schema joins the browser-safe lane (contract.ts) so other browser-safe
+// consumers (e.g. a future Mothership webview) can validate the shape
+// without pulling in node:fs/os/path.
+
+export const registryEntrySchema = z.object({
+  name: z
+    .string()
+    .regex(
+      /^[a-z0-9-]{1,64}$/,
+      "roster name must be 1-64 lowercase letters, digits, or hyphens",
+    ),
+  // Non-empty only here — zod stays platform-agnostic. Absolute-path
+  // enforcement happens at the Node read boundary (registry.ts's
+  // readRegistry), which knows the platform's path conventions.
+  path: z.string().min(1, "roster path must not be empty"),
+});
+export type RegistryEntry = z.infer<typeof registryEntrySchema>;
+
+export const registryFileSchema = z
+  .object({
+    version: z.literal(1),
+    default: z.string().optional(),
+    rosters: z.array(registryEntrySchema),
+  })
+  .superRefine((val, ctx) => {
+    const seen = new Set<string>();
+    for (const entry of val.rosters) {
+      const key = entry.name.toLowerCase();
+      if (seen.has(key)) {
+        ctx.addIssue({
+          code: "custom",
+          message: `space-bus: duplicate roster name "${entry.name}" (case-insensitive) in registry`,
+        });
+      }
+      seen.add(key);
+    }
+    if (val.default !== undefined) {
+      const matches = val.rosters.filter((entry) => entry.name === val.default);
+      if (matches.length !== 1) {
+        ctx.addIssue({
+          code: "custom",
+          message: `space-bus: registry's default "${val.default}" must match exactly one roster entry's name (matched ${matches.length})`,
+        });
+      }
+    }
+  });
+export type RegistryFile = z.infer<typeof registryFileSchema>;
+
 export const discoveryFileSchema = z.object({
   port: z.number().int().nonnegative(),
   // min(2), not .positive(): pid 0 or 1 flowing into a process-group signal
@@ -274,4 +326,18 @@ export const discoveryFileSchema = z.object({
   password: z.string(),
   spawnConfig: managedSpawnConfigSchema,
   baseUrl: z.url(),
+  // Optional/additive: the canonicalized roster path the spawn already
+  // held (ensureServer's argument, already resolved via
+  // resolveRosterPath — never re-canonicalized here). Lets reconciliation
+  // name an unregistered daemon's roster from its discovery file alone.
+  // The discovery RECORD as a whole is never serialized into logs or
+  // error messages — but the rosterPath VALUE itself is ordinary config
+  // metadata (a filesystem path, not a credential) and does appear in
+  // actionable errors elsewhere in the codebase (e.g. server.ts's
+  // ensureServer/stopServer error strings interpolate it by design, same
+  // as every other path-naming error in this project). This field exists
+  // solely to let reconciliation reads identify which roster an
+  // unregistered daemon belongs to. Optional so pre-field discovery files
+  // (written before this change) keep parsing.
+  rosterPath: z.string().optional(),
 });
