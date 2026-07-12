@@ -20,11 +20,31 @@ import {
 } from "./format";
 import { resolveRosterByName } from "./registry";
 import { ensureServer } from "./server";
+import {
+  BUS_REGISTRY_ARGS,
+  BUS_REGISTRY_DESCRIPTION,
+  type BusRegistryArgs,
+  runBusRegistryAction,
+} from "./tools/bus_registry";
 import { BUS_RESULT_DESCRIPTION } from "./tools/bus_result";
 import { BUS_ROSTER_DESCRIPTION } from "./tools/bus_roster";
 import { BUS_STATUS_DESCRIPTION } from "./tools/bus_status";
 import { BUS_TASK_DESCRIPTION } from "./tools/bus_task";
 import { BUS_WAIT_DESCRIPTION, MAX_WAIT_TIMEOUT_MS } from "./tools/bus_wait";
+
+// Ephemeral, connector-session-scoped active-roster default (R10): one
+// stdio process = one connector connection, so a single module-level
+// variable is an adequate "session" for this process — it resets to
+// undefined on every process restart, matching the KTD "MCP session state
+// is ephemeral" decision. NOT persisted, NOT shared across processes.
+let activeRoster: string | undefined;
+
+const registrySession = {
+  getActive: () => activeRoster,
+  setActive: (name: string) => {
+    activeRoster = name;
+  },
+};
 
 const ROSTER_PARAM_SCHEMA = z
   .string()
@@ -46,12 +66,13 @@ type McpLoadedContext = {
  * resolution rides SPACE_BUS_CONFIG alone (no process.cwd() threading).
  *
  * Resolution precedence (R9/R10, MCP side): an explicit `rosterName` param
- * wins over the ambient SPACE_BUS_CONFIG resolution. MCP session-state
- * (`use`) is Unit 5 — ambient here stays SPACE_BUS_CONFIG-only.
+ * wins over the connector-session active roster (`bus_registry` `use`),
+ * which in turn wins over the ambient SPACE_BUS_CONFIG resolution.
  */
 async function mcpLoadContext(rosterName?: string): Promise<McpLoadedContext> {
-  if (rosterName !== undefined) {
-    const resolved = resolveRosterByName(rosterName);
+  const effectiveRosterName = rosterName ?? activeRoster;
+  if (effectiveRosterName !== undefined) {
+    const resolved = resolveRosterByName(effectiveRosterName);
     if (!resolved.ok) throw new Error(resolved.error);
     const rosterPath = resolved.path;
     if (
@@ -60,8 +81,8 @@ async function mcpLoadContext(rosterName?: string): Promise<McpLoadedContext> {
     ) {
       await ensureServer(rosterPath);
     }
-    const { context } = loadContextForRoster(rosterName);
-    return { context, rosterName, rosterPath };
+    const { context } = loadContextForRoster(effectiveRosterName);
+    return { context, rosterName: effectiveRosterName, rosterPath };
   }
   if (process.env["SPACE_BUS_MCP_SPAWN"] && isManagedRoster()) {
     const rosterPath = resolveRosterPath();
@@ -295,6 +316,33 @@ server.registerTool(
     return {
       content: [{ type: "text", text: `${header}\n${formatWait(r)}` }],
     };
+  },
+);
+
+server.registerTool(
+  "bus_registry",
+  {
+    description: BUS_REGISTRY_DESCRIPTION,
+    inputSchema: BUS_REGISTRY_ARGS,
+  },
+  async (args) => {
+    try {
+      const { text, listMetadata } = await runBusRegistryAction(
+        args as BusRegistryArgs,
+        registrySession,
+      );
+      return listMetadata
+        ? {
+            content: [{ type: "text", text }],
+            structuredContent: { rosters: listMetadata },
+          }
+        : { content: [{ type: "text", text }] };
+    } catch (e) {
+      return {
+        content: [{ type: "text", text: (e as Error).message }],
+        isError: true,
+      };
+    }
   },
 );
 

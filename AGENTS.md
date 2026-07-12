@@ -1,11 +1,11 @@
 # @fro.bot/space-bus — Plugin Development
 
-This is the source repo for the `@fro.bot/space-bus` OpenCode plugin: five `bus_*` tools that let a control agent task per-project agents over the OpenCode server API, plus a stdio MCP facade for Claude Desktop.
+This is the source repo for the `@fro.bot/space-bus` OpenCode plugin: six `bus_*` tools that let a control agent task per-project agents over the OpenCode server API, plus a stdio MCP facade for Claude Desktop.
 
 ## Project structure
 
-- `src/index.ts` — plugin entry; default-exported factory returning the `tool` map (`bus_roster`, `bus_task`, `bus_status`, `bus_result`, `bus_wait`).
-- `src/tools/*.ts` — one file per tool: thin adapter factories (`makeBus*`) plus the shared description constants also consumed by `src/mcp.ts`.
+- `src/index.ts` — plugin entry; default-exported factory returning the `tool` map (`bus_roster`, `bus_task`, `bus_status`, `bus_result`, `bus_wait`, `bus_registry`).
+- `src/tools/*.ts` — one file per tool: thin adapter factories (`makeBus*`) plus the shared description constants also consumed by `src/mcp.ts`. `src/tools/bus_registry.ts` is the sixth tool — one action-discriminated tool for registry/roster-edit management (list/use/create/register/unregister/set-default/add-project/remove-project/update-project); `use` requires an injected `RegistrySession` seam (MCP-only — see `src/mcp.ts`'s ephemeral module-level `activeRoster`), absent on the plugin surface where it returns an actionable error (plugin resolution stays directory-first).
 - `src/core.ts` — all bus logic (roster lookups, dispatch, status, result, `snapshot()` composite). Discriminated-union returns, no throwing. Browser-safe: takes an injected `BusContext` (`{ roster, credentials? }`) per call instead of resolving one itself.
 - `src/config.ts` — `spacebus.json` roster resolution: `resolveRosterPath`/`getRoster`/`getProjects`, `SPACE_BUS_CONFIG` override, localhost guard. Node-only. `loadContext(directory?)` is the Node-side loader producing a `BusContext` for core.
 - `src/contract.ts` — zod schemas + inferred types for the OpenCode API and `BusContext`; zod-only imports, no Node deps. Core imports from contract, never the reverse. Also owns the discovery-file schemas (`discoveryFileSchema`/`managedSpawnConfigSchema`), shared by `discovery.ts` (Node writer) and `attach.ts` (browser-safe reader).

@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import SpaceBusPlugin from "./index";
+import { BUS_REGISTRY_DESCRIPTION } from "./tools/bus_registry";
 import { BUS_RESULT_DESCRIPTION } from "./tools/bus_result";
 import { BUS_ROSTER_DESCRIPTION } from "./tools/bus_roster";
 import { BUS_STATUS_DESCRIPTION } from "./tools/bus_status";
@@ -14,16 +15,18 @@ const DESCRIPTIONS: Record<string, string> = {
   bus_status: BUS_STATUS_DESCRIPTION,
   bus_result: BUS_RESULT_DESCRIPTION,
   bus_wait: BUS_WAIT_DESCRIPTION,
+  bus_registry: BUS_REGISTRY_DESCRIPTION,
 };
 
 describe("plugin factory <-> description constant parity", () => {
-  test("factory produces exactly the five tools, each matching its description constant", async () => {
+  test("factory produces exactly the six tools, each matching its description constant", async () => {
     const hooks = await SpaceBusPlugin(
       // biome-ignore lint: minimal stub, only `directory` is consumed
       { directory: "/tmp" } as any,
     );
     const tools = hooks.tool ?? {};
     expect(Object.keys(tools).sort()).toEqual([
+      "bus_registry",
       "bus_result",
       "bus_roster",
       "bus_status",
@@ -105,6 +108,28 @@ describe("plugin factory <-> description constant parity", () => {
     expect(Object.keys(args)).toEqual(["roster"]);
     expect(isOptionalZod(args["roster"])).toBe(true);
   });
+
+  test("bus_registry args: action required, everything else optional", async () => {
+    const hooks = await SpaceBusPlugin(
+      // biome-ignore lint: minimal stub, only `directory` is consumed
+      { directory: "/tmp" } as any,
+    );
+    const args = hooks.tool?.bus_registry?.args as Record<string, unknown>;
+    expect(Object.keys(args).sort()).toEqual([
+      "action",
+      "name",
+      "patch",
+      "path",
+      "project",
+      "projectName",
+      "roster",
+      "server",
+    ]);
+    expect(isOptionalZod(args["action"])).toBe(false);
+    expect(isOptionalZod(args["roster"])).toBe(true);
+    expect(isOptionalZod(args["name"])).toBe(true);
+    expect(isOptionalZod(args["path"])).toBe(true);
+  });
 });
 
 describe("roster param + MCP inputSchema parity (Unit 4)", () => {
@@ -149,17 +174,19 @@ describe("mcp.ts source-text parity guard", () => {
     expect(mcpSource).toContain("BUS_STATUS_DESCRIPTION");
     expect(mcpSource).toContain("BUS_RESULT_DESCRIPTION");
     expect(mcpSource).toContain("BUS_WAIT_DESCRIPTION");
+    expect(mcpSource).toContain("BUS_REGISTRY_DESCRIPTION");
   });
 
-  test("registers exactly five server.registerTool( calls, one per bus tool", () => {
+  test("registers exactly six server.registerTool( calls, one per bus tool", () => {
     const matches = mcpSource.match(/server\.registerTool\(\s*\n?\s*"(\w+)"/g);
     expect(matches).not.toBeNull();
-    expect(matches).toHaveLength(5);
+    expect(matches).toHaveLength(6);
     const names = (matches ?? []).map((m) => {
       const nameMatch = m.match(/"(\w+)"/);
       return nameMatch?.[1];
     });
     expect(names.sort()).toEqual([
+      "bus_registry",
       "bus_result",
       "bus_roster",
       "bus_status",

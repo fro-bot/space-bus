@@ -67,6 +67,7 @@ Set `SPACE_BUS_CONFIG` to override roster discovery — it must be an absolute p
 - `bus_status` — Report a space-bus session's status plus a summary of its latest todo and diff. Also reports when the session is blocked on an interactive question awaiting a reply.
 - `bus_result` — Return a completed space-bus session's final assistant message and diff. Errors if the session is still running — use `bus_status` to check first.
 - `bus_wait` — Block until any of the given sessions needs attention (completes, blocks on a question, fails, or is not found) or a bounded timeout elapses. Returns each watched session's normalized state and which session(s) woke the wait; on timeout returns the current snapshot, not an error.
+- `bus_registry` — Manage the roster registry: list registered rosters, create/register/unregister rosters, set the default, select an active roster for this connector session (`use`, MCP only), and add/remove/update projects on a registered roster.
 
 ## Managed server
 
