@@ -263,6 +263,32 @@ export const managedSpawnConfigSchema = z.object({
   port: z.number().int().nonnegative().optional(),
 });
 
+// --- Roster registry (per-user name -> path map) ----------------------------
+//
+// zod-only, browser-safe: describes the on-disk ~/.config/space-bus/
+// rosters.json contract. The Node-only reader/writer lives in registry.ts;
+// this schema joins the browser-safe lane (contract.ts) so other browser-safe
+// consumers (e.g. a future Mothership webview) can validate the shape
+// without pulling in node:fs/os/path.
+
+export const registryEntrySchema = z.object({
+  name: z
+    .string()
+    .regex(
+      /^[a-z0-9-]{1,64}$/,
+      "roster name must be 1-64 lowercase letters, digits, or hyphens",
+    ),
+  path: z.string(),
+});
+export type RegistryEntry = z.infer<typeof registryEntrySchema>;
+
+export const registryFileSchema = z.object({
+  version: z.literal(1),
+  default: z.string().optional(),
+  rosters: z.array(registryEntrySchema),
+});
+export type RegistryFile = z.infer<typeof registryFileSchema>;
+
 export const discoveryFileSchema = z.object({
   port: z.number().int().nonnegative(),
   // min(2), not .positive(): pid 0 or 1 flowing into a process-group signal
