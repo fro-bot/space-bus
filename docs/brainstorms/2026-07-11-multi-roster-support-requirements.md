@@ -66,7 +66,7 @@ Verified substrate facts that shape the work: core is already N-roster-capable (
 
 **Roster addressing (tool surfaces)**
 - R9. The five `bus_*` tools gain an optional `roster` parameter (a registry name) that overrides ambient resolution on both surfaces, and every tool result names the roster the call resolved. Two-surface parity holds: plugin tools and MCP registrations stay byte-identical.
-- R10. When `roster` is omitted, MCP calls resolve the session's active roster — ephemeral in-memory state per MCP server process (one per stdio connection), initialized from `SPACE_BUS_CONFIG` when set, else the registry default, reset on restart, selectable via the management tool. Plugin calls keep directory-first resolution (`ctx.directory`) when `roster` is omitted.
+- R10. When `roster` is omitted, MCP calls resolve in precedence order: explicit `roster` param > the session's active roster (ephemeral in-memory state per MCP server process, one per stdio connection, selectable via the management tool, reset on restart) > `SPACE_BUS_CONFIG` (ambient resolution) > the registry default (`bus_registry set-default`), consulted only when `SPACE_BUS_CONFIG` is unset. Plugin calls keep directory-first resolution (`ctx.directory`) when `roster` is omitted — the registry-default fallback is MCP-only.
 - R11. One new management tool (single tool, both surfaces) covers roster listing, active-roster selection, creation, registration, and project mutation — the tool surface grows by exactly one, with a narrow action enum, per-action input validation, and per-action errors.
 - R12. When a named roster is not in the registry, the call fails with an actionable error listing known roster names.
 

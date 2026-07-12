@@ -1,7 +1,7 @@
 import { type ToolDefinition, tool } from "@opencode-ai/plugin";
 import { wait } from "../core";
 import { formatRosterHeader, formatWait } from "../format";
-import { ensureAndLoadContext } from "./shared";
+import { ensureAndLoadContext, withRosterHeader } from "./shared";
 
 export const BUS_WAIT_DESCRIPTION =
   "Block until any of the given space-bus sessions needs attention (completes, blocks on a question, fails, or is not found) or a timeout elapses. Returns every watched session's normalized state and which session(s) woke the wait. A bounded, level-triggered long-poll — an already-done session wakes immediately; on timeout it returns the current snapshot, not an error.";
@@ -33,7 +33,7 @@ export function makeBusWait(defaultDirectory?: string): ToolDefinition {
         .string()
         .optional()
         .describe(
-          "Registry roster name to target instead of the ambient/default roster (see bus_registry to list)",
+          "Registry roster name to target. Resolution precedence: this param > workspace directory (see bus_registry to list)",
         ),
     },
     async execute(args, ctx) {
@@ -54,15 +54,13 @@ export function makeBusWait(defaultDirectory?: string): ToolDefinition {
         args.timeoutMs !== undefined
           ? Math.min(args.timeoutMs, MAX_WAIT_TIMEOUT_MS)
           : undefined;
+      const source = { name: resolved.rosterName, path: resolved.rosterPath };
       const r = await wait(args.sessionIds, {
         context: resolved.context,
         timeoutMs,
       });
-      if (!r.ok) throw new Error(r.error);
-      const header = formatRosterHeader({
-        name: resolved.rosterName,
-        path: resolved.rosterPath,
-      });
+      if (!r.ok) throw new Error(withRosterHeader(source, r.error));
+      const header = formatRosterHeader(source);
       return `${header}\n${formatWait(r)}`;
     },
   });

@@ -197,26 +197,43 @@ describe("mcp.ts source-text parity guard", () => {
 
   test("ensureServer is gated on SPACE_BUS_MCP_SPAWN — never called unconditionally", () => {
     // Attach-only-by-default posture: mcp.ts must only call ensureServer()
-    // inside a conditional that checks SPACE_BUS_MCP_SPAWN.
+    // inside a conditional that checks SPACE_BUS_MCP_SPAWN. ensureServer is
+    // called from two helpers: resolveByName (the explicit-name / registry-
+    // default paths) and mcpLoadContext (the ambient SPACE_BUS_CONFIG
+    // path) — both must gate the call, and nothing outside either helper
+    // may call ensureServer.
     expect(mcpSource).toContain("SPACE_BUS_MCP_SPAWN");
-    const fnMatch = mcpSource.match(
-      /async function mcpLoadContext[\s\S]*?\n\}/,
+    const resolveByNameMatch = mcpSource.match(
+      /async function resolveByName[\s\S]*?\n\}/,
     );
-    expect(fnMatch).not.toBeNull();
-    const fnBody = fnMatch?.[0] ?? "";
-    const gateMatch = fnBody.match(
-      /if\s*\(\s*process\.env\["SPACE_BUS_MCP_SPAWN"\][\s\S]*?\)\s*\{[\s\S]*?ensureServer[\s\S]*?\}/,
+    const mcpLoadContextMatch = mcpSource.match(
+      /async function mcpLoadContext[\s\S]*?throw ambientError;\n\}/,
     );
-    expect(gateMatch).not.toBeNull();
-    // ensureServer must not appear anywhere outside mcpLoadContext.
-    const outsideFn = mcpSource.replace(fnBody, "");
-    expect(outsideFn).not.toContain("ensureServer(");
+    expect(resolveByNameMatch).not.toBeNull();
+    expect(mcpLoadContextMatch).not.toBeNull();
+    const resolveByNameBody = resolveByNameMatch?.[0] ?? "";
+    const mcpLoadContextBody = mcpLoadContextMatch?.[0] ?? "";
+    // Both helpers call the injected `ensure` (default: ensureServer, see
+    // mcpLoadContext's parameter default), gated behind SPACE_BUS_MCP_SPAWN.
+    const gatePattern =
+      /if\s*\(\s*process\.env\["SPACE_BUS_MCP_SPAWN"\][\s\S]*?\)\s*\{[\s\S]*?await ensure\([\s\S]*?\}/;
+    expect(resolveByNameBody).toMatch(gatePattern);
+    expect(mcpLoadContextBody).toMatch(gatePattern);
+    // The literal ensureServer identifier must not appear anywhere outside
+    // mcpLoadContext's own parameter default (its one legitimate reference).
+    const outside = mcpSource.replace(
+      "ensure: (rosterPath: string) => Promise<unknown> = ensureServer,",
+      "",
+    );
+    expect(outside).not.toContain("ensureServer(");
   });
 
-  test("all four handlers route through the shared mcpLoadContext helper, not loadContext() directly", () => {
-    // Every registerTool handler must call mcpLoadContext(), not
-    // loadContext() bare — otherwise the SPACE_BUS_MCP_SPAWN gate would be
-    // bypassed for that handler.
+  test("all five roster-bearing handlers route through the shared mcpLoadContext helper, not loadContext() directly", () => {
+    // Every registerTool handler that resolves a roster (bus_roster,
+    // bus_task, bus_status, bus_result, bus_wait — bus_registry manages
+    // the registry itself and has no roster context to resolve) must call
+    // mcpLoadContext(), not loadContext() bare — otherwise the
+    // SPACE_BUS_MCP_SPAWN gate would be bypassed for that handler.
     const bareLoadContextCalls = mcpSource.match(/[^.\w]loadContext\(\)/g);
     expect(bareLoadContextCalls).not.toBeNull();
     // Only the one call inside mcpLoadContext() itself should invoke the

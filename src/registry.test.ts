@@ -80,7 +80,7 @@ describe("registry: happy path", () => {
     expect(afterDefault.registry.default).toBe("alpha");
 
     const resolved = resolveRosterByName("beta");
-    expect(resolved).toEqual({ ok: true, path: rosterB });
+    expect(resolved).toEqual({ ok: true, path: rosterB, name: "beta" });
   });
 });
 
@@ -141,7 +141,11 @@ describe("registry: integration", () => {
     const rosterA = realpathSync(makeRosterFile());
     expect(registerRoster("iota", rosterA)).toEqual({ ok: true });
     expect(setDefaultRoster("iota")).toEqual({ ok: true });
-    expect(resolveRosterByName("iota")).toEqual({ ok: true, path: rosterA });
+    expect(resolveRosterByName("iota")).toEqual({
+      ok: true,
+      path: rosterA,
+      name: "iota",
+    });
 
     const path = registryPath();
     const fileStat = statSync(path);

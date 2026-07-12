@@ -15,8 +15,11 @@
  * when present (MCP, wired to an in-memory module-level variable — see
  * mcp.ts), `use` mutates it after revalidating the name resolves.
  */
+
+import { isAbsolute } from "node:path";
 import { type ToolDefinition, tool } from "@opencode-ai/plugin";
 import { z } from "zod";
+
 import { type ServerConfig, serverConfigSchema } from "../config";
 import { formatRosterHeader } from "../format";
 import {
@@ -44,6 +47,7 @@ export const BUS_REGISTRY_DESCRIPTION =
 export interface RegistrySession {
   getActive(): string | undefined;
   setActive(name: string): void;
+  clearActive(): void;
 }
 
 const projectInputSchema = z.object({
@@ -52,17 +56,25 @@ const projectInputSchema = z.object({
   description: z.string(),
 });
 
-const projectPatchSchema = z.object({
-  name: z.string().min(1).optional(),
-  path: z.string().min(1).optional(),
-  description: z.string().optional(),
-});
+const projectPatchSchema = z
+  .object({
+    name: z.string().min(1).optional(),
+    path: z.string().min(1).optional(),
+    description: z.string().optional(),
+  })
+  .refine((patch) => Object.keys(patch).length > 0, {
+    message:
+      "patch must include at least one field (name, path, or description)",
+  });
 
-// Flat, top-level argument shape — both `tool()`'s args and MCP's
-// inputSchema require a ZodRawShape (flat key/value map), not a nested
-// discriminated union. Per-action requirement combinations are validated
-// internally against ACTION_SCHEMA (below) so each action still gets a
-// precise, actionable zod error naming exactly what's missing.
+// Flat, top-level argument shape for the PLUGIN surface only — `tool()`'s
+// args requires a ZodRawShape (flat key/value map), not a nested
+// discriminated union. The MCP surface instead registers ACTION_SCHEMA
+// (below) directly as its inputSchema, so MCP connectors can discover the
+// precise per-action required-field combinations; the plugin surface
+// re-validates every call against ACTION_SCHEMA internally
+// (runBusRegistryAction) regardless of which raw shape it was called
+// with, so both surfaces get the same actionable, action-named errors.
 export const BUS_REGISTRY_ARGS = {
   action: z.enum([
     "list",
@@ -132,37 +144,47 @@ export type BusRegistryArgs = {
   patch?: ProjectPatch;
 };
 
-// Internal-only: precise per-action shape validation. Never used as
-// tool.args/inputSchema directly (those must stay a flat ZodRawShape) —
-// this re-parses the flat args object to produce an actionable,
-// action-named error when a required combination is missing.
-const ACTION_SCHEMA = z.discriminatedUnion("action", [
-  z.object({ action: z.literal("list") }),
-  z.object({ action: z.literal("use"), roster: z.string().min(1) }),
-  z.object({
+// Precise per-action shape validation, discriminated on `action`. Used two
+// ways: (1) internally by runBusRegistryAction to re-parse the flat args
+// object and produce an actionable, action-named error when a required
+// combination is missing or an irrelevant field is present (every branch
+// is a `z.strictObject`, so e.g. passing `path` to `unregister` is
+// rejected rather than silently stripped); (2) directly as the MCP
+// surface's `inputSchema` (mcp.ts), since MCP's registerTool accepts a
+// full zod schema (not only a raw shape) — connectors get precise
+// per-action required-field discovery. The PLUGIN surface still uses the
+// flat BUS_REGISTRY_ARGS raw shape (tool.args requires ZodRawShape).
+export const ACTION_SCHEMA = z.discriminatedUnion("action", [
+  z.strictObject({ action: z.literal("list") }),
+  z.strictObject({ action: z.literal("use"), roster: z.string().min(1) }),
+  z.strictObject({
     action: z.literal("create"),
     name: z.string().min(1),
-    path: z.string().min(1),
+    path: z.string().min(1).refine(isAbsolute, {
+      message: "path must be an absolute filesystem path",
+    }),
     server: serverConfigSchema.optional(),
   }),
-  z.object({
+  z.strictObject({
     action: z.literal("register"),
     name: z.string().min(1),
-    path: z.string().min(1),
+    path: z.string().min(1).refine(isAbsolute, {
+      message: "path must be an absolute filesystem path",
+    }),
   }),
-  z.object({ action: z.literal("unregister"), name: z.string().min(1) }),
-  z.object({ action: z.literal("set-default"), name: z.string().min(1) }),
-  z.object({
+  z.strictObject({ action: z.literal("unregister"), name: z.string().min(1) }),
+  z.strictObject({ action: z.literal("set-default"), name: z.string().min(1) }),
+  z.strictObject({
     action: z.literal("add-project"),
     roster: z.string().min(1),
     project: projectInputSchema,
   }),
-  z.object({
+  z.strictObject({
     action: z.literal("remove-project"),
     roster: z.string().min(1),
     projectName: z.string().min(1),
   }),
-  z.object({
+  z.strictObject({
     action: z.literal("update-project"),
     roster: z.string().min(1),
     projectName: z.string().min(1),
@@ -232,9 +254,9 @@ function runUse(
   }
   const resolved = resolveRosterByName(args.roster);
   if (!resolved.ok) throw new Error(`bus_registry use: ${resolved.error}`);
-  session.setActive(args.roster);
+  session.setActive(resolved.name);
   return {
-    text: `bus_registry use: active roster set to "${args.roster}" (${resolved.path})`,
+    text: `bus_registry use: active roster set to "${resolved.name}" (${resolved.path})`,
   };
 }
 
@@ -264,9 +286,20 @@ function runRegister(
 
 function runUnregister(
   args: Extract<ActionArgs, { action: "unregister" }>,
+  session: RegistrySession | undefined,
 ): ActionResult {
   const result = unregisterRoster(args.name);
   if (!result.ok) throw new Error(`bus_registry unregister: ${result.error}`);
+  const active = session?.getActive();
+  if (
+    active !== undefined &&
+    active.toLowerCase() === args.name.toLowerCase()
+  ) {
+    session?.clearActive();
+    return {
+      text: `bus_registry unregister: "${args.name}" unregistered — session-active roster cleared — omitted-roster calls fall back to ambient`,
+    };
+  }
   return { text: `bus_registry unregister: "${args.name}" unregistered` };
 }
 
@@ -336,8 +369,12 @@ export async function runBusRegistryAction(
 ): Promise<ActionResult> {
   const parsed = ACTION_SCHEMA.safeParse(rawArgs);
   if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    const detail = issue
+      ? `${issue.path.length > 0 ? `${issue.path.join(".")}: ` : ""}${issue.message}`
+      : parsed.error.message;
     throw new Error(
-      `bus_registry ${rawArgs.action}: invalid input — ${parsed.error.issues[0]?.message ?? parsed.error.message}`,
+      `bus_registry ${rawArgs.action}: invalid input — ${detail}`,
     );
   }
   const args = parsed.data;
@@ -352,7 +389,7 @@ export async function runBusRegistryAction(
     case "register":
       return runRegister(args);
     case "unregister":
-      return runUnregister(args);
+      return runUnregister(args, session);
     case "set-default":
       return runSetDefault(args);
     case "add-project":

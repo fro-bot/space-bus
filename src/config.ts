@@ -234,10 +234,20 @@ export function loadContext(directory?: string): BusContext {
  * matching `resolveRosterByName`'s error shape and `loadContext`'s
  * throw-on-missing behavior; adapters convert to a discriminated-union
  * Result / MCP `isError` at the boundary, same as `loadContext`.
+ *
+ * Returns the CANONICAL registered name (not necessarily the caller's
+ * spelling — resolution is case-insensitive) so callers echo the name as
+ * actually registered.
+ *
+ * TOCTOU note: this resolves the name a SECOND time. Callers that already
+ * resolved the name once (e.g. to decide whether to `ensureServer()`) must
+ * use `loadContextForRosterPath` instead, passing the already-resolved
+ * path, so the name is only ever resolved once per call.
  */
 export function loadContextForRoster(rosterName: string): {
   context: BusContext;
   rosterPath: string;
+  rosterName: string;
 } {
   const resolved = resolveRosterByName(rosterName);
   if (!resolved.ok) {
@@ -246,7 +256,23 @@ export function loadContextForRoster(rosterName: string): {
   return {
     context: loadContextAtPath(resolved.path),
     rosterPath: resolved.path,
+    rosterName: resolved.name,
   };
+}
+
+/**
+ * @experimental
+ * Path-based loader: loads a `BusContext` from an ALREADY-RESOLVED roster
+ * path, skipping name resolution entirely. Exists so callers that resolve
+ * a registry name once (e.g. `ensureAndLoadContext` in tools/shared.ts,
+ * `mcpLoadContext` in mcp.ts) can ensureServer() against the resolved path
+ * and then load context from that SAME path — never re-resolving the
+ * (mutable) registry name a second time, which would be a TOCTOU window
+ * where the name could have been re-registered to a different path
+ * in between.
+ */
+export function loadContextForRosterPath(rosterPath: string): BusContext {
+  return loadContextAtPath(rosterPath);
 }
 
 /**

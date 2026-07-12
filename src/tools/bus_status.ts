@@ -1,7 +1,7 @@
 import { type ToolDefinition, tool } from "@opencode-ai/plugin";
 import { status } from "../core";
 import { formatRosterHeader, formatStatus } from "../format";
-import { ensureAndLoadContext } from "./shared";
+import { ensureAndLoadContext, withRosterHeader } from "./shared";
 
 export const BUS_STATUS_DESCRIPTION =
   "Report a space-bus session's status plus a summary of its latest todo and diff. Also reports when the session is blocked on an interactive question awaiting a reply.";
@@ -17,7 +17,7 @@ export function makeBusStatus(defaultDirectory?: string): ToolDefinition {
         .string()
         .optional()
         .describe(
-          "Registry roster name to target instead of the ambient/default roster (see bus_registry to list)",
+          "Registry roster name to target. Resolution precedence: this param > workspace directory (see bus_registry to list)",
         ),
     },
     async execute(args, ctx) {
@@ -28,12 +28,10 @@ export function makeBusStatus(defaultDirectory?: string): ToolDefinition {
       } catch (e) {
         throw new Error((e as Error).message);
       }
+      const source = { name: resolved.rosterName, path: resolved.rosterPath };
       const r = await status(args.sessionId, { context: resolved.context });
-      if (!r.ok) throw new Error(r.error);
-      const header = formatRosterHeader({
-        name: resolved.rosterName,
-        path: resolved.rosterPath,
-      });
+      if (!r.ok) throw new Error(withRosterHeader(source, r.error));
+      const header = formatRosterHeader(source);
       return `${header}\n${formatStatus(r)}`;
     },
   });

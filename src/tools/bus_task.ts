@@ -5,7 +5,7 @@ import {
   formatDispatch,
   formatRosterHeader,
 } from "../format";
-import { ensureAndLoadContext } from "./shared";
+import { ensureAndLoadContext, withRosterHeader } from "./shared";
 
 export const BUS_TASK_DESCRIPTION =
   "Dispatch a prompt to an agent in the given space-bus manifest project, or steer an existing session by passing sessionId (answers its pending question, else sends a follow-up prompt). Returns immediately; does not wait for completion.";
@@ -39,7 +39,7 @@ export function makeBusTask(defaultDirectory?: string): ToolDefinition {
         .string()
         .optional()
         .describe(
-          "Registry roster name to target instead of the ambient/default roster (see bus_registry to list)",
+          "Registry roster name to target. Resolution precedence: this param > workspace directory (see bus_registry to list)",
         ),
     },
     async execute(args, ctx) {
@@ -54,12 +54,10 @@ export function makeBusTask(defaultDirectory?: string): ToolDefinition {
       } catch (e) {
         throw new Error((e as Error).message);
       }
+      const source = { name: resolved.rosterName, path: resolved.rosterPath };
       const r = await dispatch(dispatchArgs, { context: resolved.context });
-      if (!r.ok) throw new Error(r.error);
-      const header = formatRosterHeader({
-        name: resolved.rosterName,
-        path: resolved.rosterPath,
-      });
+      if (!r.ok) throw new Error(withRosterHeader(source, r.error));
+      const header = formatRosterHeader(source);
       return {
         output: `${header}\n${formatDispatch(r)}`,
         metadata: dispatchMetadata(r),

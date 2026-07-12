@@ -47,6 +47,9 @@ describe("mcp session-state seam (Unit 5)", () => {
         setActive: (name) => {
           activeRoster = name;
         },
+        clearActive: () => {
+          activeRoster = undefined;
+        },
       };
 
       const busRegistry = makeBusRegistry(session);
@@ -72,6 +75,9 @@ describe("mcp session-state seam (Unit 5)", () => {
       getActive: () => activeRoster,
       setActive: (name) => {
         activeRoster = name;
+      },
+      clearActive: () => {
+        activeRoster = undefined;
       },
     };
     expect(session.getActive()).toBeUndefined();

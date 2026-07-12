@@ -1,7 +1,7 @@
 import { type ToolDefinition, tool } from "@opencode-ai/plugin";
 import { result } from "../core";
 import { formatResult, formatRosterHeader } from "../format";
-import { ensureAndLoadContext } from "./shared";
+import { ensureAndLoadContext, withRosterHeader } from "./shared";
 
 export const BUS_RESULT_DESCRIPTION =
   "Return a completed space-bus session's final assistant message and diff. Errors if the session is still running — use bus_status to check first.";
@@ -17,7 +17,7 @@ export function makeBusResult(defaultDirectory?: string): ToolDefinition {
         .string()
         .optional()
         .describe(
-          "Registry roster name to target instead of the ambient/default roster (see bus_registry to list)",
+          "Registry roster name to target. Resolution precedence: this param > workspace directory (see bus_registry to list)",
         ),
     },
     async execute(args, ctx) {
@@ -28,12 +28,10 @@ export function makeBusResult(defaultDirectory?: string): ToolDefinition {
       } catch (e) {
         throw new Error((e as Error).message);
       }
+      const source = { name: resolved.rosterName, path: resolved.rosterPath };
       const r = await result(args.sessionId, { context: resolved.context });
-      if (!r.ok) throw new Error(r.error);
-      const header = formatRosterHeader({
-        name: resolved.rosterName,
-        path: resolved.rosterPath,
-      });
+      if (!r.ok) throw new Error(withRosterHeader(source, r.error));
+      const header = formatRosterHeader(source);
       return `${header}\n${formatResult(r)}`;
     },
   });

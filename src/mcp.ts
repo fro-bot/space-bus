@@ -5,7 +5,7 @@ import {
   isManagedRoster,
   isManagedRosterAtPath,
   loadContext,
-  loadContextForRoster,
+  loadContextForRosterPath,
   resolveRosterPath,
 } from "./config";
 import { dispatch, result, roster, status, toDispatchArgs, wait } from "./core";
@@ -18,10 +18,10 @@ import {
   formatStatus,
   formatWait,
 } from "./format";
-import { resolveRosterByName } from "./registry";
+import { readRegistry, resolveRosterByName } from "./registry";
 import { ensureServer } from "./server";
 import {
-  BUS_REGISTRY_ARGS,
+  ACTION_SCHEMA,
   BUS_REGISTRY_DESCRIPTION,
   type BusRegistryArgs,
   runBusRegistryAction,
@@ -31,6 +31,7 @@ import { BUS_ROSTER_DESCRIPTION } from "./tools/bus_roster";
 import { BUS_STATUS_DESCRIPTION } from "./tools/bus_status";
 import { BUS_TASK_DESCRIPTION } from "./tools/bus_task";
 import { BUS_WAIT_DESCRIPTION, MAX_WAIT_TIMEOUT_MS } from "./tools/bus_wait";
+import { withRosterHeader } from "./tools/shared";
 
 // Ephemeral, connector-session-scoped active-roster default (R10): one
 // stdio process = one connector connection, so a single module-level
@@ -44,13 +45,19 @@ const registrySession = {
   setActive: (name: string) => {
     activeRoster = name;
   },
+  clearActive: () => {
+    activeRoster = undefined;
+  },
 };
 
 const ROSTER_PARAM_SCHEMA = z
   .string()
   .optional()
   .describe(
-    "Registry roster name to target instead of the ambient/default roster (see bus_registry to list)",
+    "Registry roster name to target. Resolution precedence: this param > " +
+      "connector-session active roster (bus_registry use) > " +
+      "SPACE_BUS_CONFIG > registry default (bus_registry set-default) " +
+      "(see bus_registry to list)",
   );
 
 type McpLoadedContext = {
@@ -65,31 +72,63 @@ type McpLoadedContext = {
  * tools' behavior. MCP is single-directory-per-process: ambient directory
  * resolution rides SPACE_BUS_CONFIG alone (no process.cwd() threading).
  *
- * Resolution precedence (R9/R10, MCP side): an explicit `rosterName` param
- * wins over the connector-session active roster (`bus_registry` `use`),
- * which in turn wins over the ambient SPACE_BUS_CONFIG resolution.
+ * Resolution precedence (R9/R10, MCP side), full chain:
+ *   1. explicit `rosterName` param
+ *   2. connector-session active roster (`bus_registry` `use`)
+ *   3. SPACE_BUS_CONFIG (ambient directory resolution)
+ *   4. registry default (`bus_registry set-default`) — only consulted
+ *      when SPACE_BUS_CONFIG is unset (Fix 8 / R10)
+ *   5. error listing the available options
  */
-async function mcpLoadContext(rosterName?: string): Promise<McpLoadedContext> {
+async function resolveByName(
+  name: string,
+  ensure: (rosterPath: string) => Promise<unknown>,
+): Promise<McpLoadedContext> {
+  // Resolve the name to a path ONCE — the managed check, ensureServer, and
+  // context load all use this same resolved path, never re-resolving the
+  // (mutable) registry name a second time (Fix 2 — closes a TOCTOU window
+  // where the name could be re-registered to a different path in between).
+  const resolved = resolveRosterByName(name);
+  if (!resolved.ok) throw new Error(resolved.error);
+  const rosterPath = resolved.path;
+  if (process.env["SPACE_BUS_MCP_SPAWN"] && isManagedRosterAtPath(rosterPath)) {
+    await ensure(rosterPath);
+  }
+  const context = loadContextForRosterPath(rosterPath);
+  return { context, rosterName: resolved.name, rosterPath };
+}
+
+async function mcpLoadContext(
+  rosterName?: string,
+  ensure: (rosterPath: string) => Promise<unknown> = ensureServer,
+): Promise<McpLoadedContext> {
   const effectiveRosterName = rosterName ?? activeRoster;
   if (effectiveRosterName !== undefined) {
-    const resolved = resolveRosterByName(effectiveRosterName);
-    if (!resolved.ok) throw new Error(resolved.error);
-    const rosterPath = resolved.path;
-    if (
-      process.env["SPACE_BUS_MCP_SPAWN"] &&
-      isManagedRosterAtPath(rosterPath)
-    ) {
-      await ensureServer(rosterPath);
-    }
-    const { context } = loadContextForRoster(effectiveRosterName);
-    return { context, rosterName: effectiveRosterName, rosterPath };
+    return resolveByName(effectiveRosterName, ensure);
   }
-  if (process.env["SPACE_BUS_MCP_SPAWN"] && isManagedRoster()) {
+  // No explicit roster and no session-active roster: try ambient
+  // SPACE_BUS_CONFIG resolution first.
+  let ambientError: Error | undefined;
+  try {
     const rosterPath = resolveRosterPath();
-    await ensureServer(rosterPath);
+    if (process.env["SPACE_BUS_MCP_SPAWN"] && isManagedRoster()) {
+      await ensure(rosterPath);
+    }
+    return { context: loadContext(), rosterPath };
+  } catch (e) {
+    ambientError = e as Error;
   }
-  const rosterPath = resolveRosterPath();
-  return { context: loadContext(), rosterPath };
+  // SPACE_BUS_CONFIG is unset (or ambient resolution otherwise failed) —
+  // fall back to the registry default (Fix 8 / R10), resolved as if it
+  // were the session-active name (same path-based load, same header echo
+  // with the canonical name).
+  const read = readRegistry();
+  if (read.ok && read.registry.default !== undefined) {
+    return resolveByName(read.registry.default, ensure);
+  }
+  // Nothing to fall back to — surface the original ambient-resolution
+  // error naming SPACE_BUS_CONFIG / spacebus.json.
+  throw ambientError;
 }
 
 // Injected at build time via build.ts's Bun.build `define` (reads
@@ -124,13 +163,14 @@ server.registerTool(
         isError: true,
       };
     }
+    const source = { name: loaded.rosterName, path: loaded.rosterPath };
     const r = await roster({ context: loaded.context });
     if (!r.ok)
-      return { content: [{ type: "text", text: r.error }], isError: true };
-    const header = formatRosterHeader({
-      name: loaded.rosterName,
-      path: loaded.rosterPath,
-    });
+      return {
+        content: [{ type: "text", text: withRosterHeader(source, r.error) }],
+        isError: true,
+      };
+    const header = formatRosterHeader(source);
     return {
       content: [
         { type: "text", text: `${header}\n${formatRoster(r.projects)}` },
@@ -191,13 +231,14 @@ server.registerTool(
         isError: true,
       };
     }
+    const source = { name: loaded.rosterName, path: loaded.rosterPath };
     const r = await dispatch(dispatchArgs, { context: loaded.context });
     if (!r.ok)
-      return { content: [{ type: "text", text: r.error }], isError: true };
-    const header = formatRosterHeader({
-      name: loaded.rosterName,
-      path: loaded.rosterPath,
-    });
+      return {
+        content: [{ type: "text", text: withRosterHeader(source, r.error) }],
+        isError: true,
+      };
+    const header = formatRosterHeader(source);
     return {
       content: [{ type: "text", text: `${header}\n${formatDispatch(r)}` }],
       structuredContent: dispatchMetadata(r),
@@ -224,13 +265,14 @@ server.registerTool(
         isError: true,
       };
     }
+    const source = { name: loaded.rosterName, path: loaded.rosterPath };
     const r = await status(args.sessionId, { context: loaded.context });
     if (!r.ok)
-      return { content: [{ type: "text", text: r.error }], isError: true };
-    const header = formatRosterHeader({
-      name: loaded.rosterName,
-      path: loaded.rosterPath,
-    });
+      return {
+        content: [{ type: "text", text: withRosterHeader(source, r.error) }],
+        isError: true,
+      };
+    const header = formatRosterHeader(source);
     return {
       content: [{ type: "text", text: `${header}\n${formatStatus(r)}` }],
     };
@@ -256,13 +298,14 @@ server.registerTool(
         isError: true,
       };
     }
+    const source = { name: loaded.rosterName, path: loaded.rosterPath };
     const r = await result(args.sessionId, { context: loaded.context });
     if (!r.ok)
-      return { content: [{ type: "text", text: r.error }], isError: true };
-    const header = formatRosterHeader({
-      name: loaded.rosterName,
-      path: loaded.rosterPath,
-    });
+      return {
+        content: [{ type: "text", text: withRosterHeader(source, r.error) }],
+        isError: true,
+      };
+    const header = formatRosterHeader(source);
     return {
       content: [{ type: "text", text: `${header}\n${formatResult(r)}` }],
     };
@@ -303,16 +346,17 @@ server.registerTool(
       args.timeoutMs !== undefined
         ? Math.min(args.timeoutMs, MAX_WAIT_TIMEOUT_MS)
         : undefined;
+    const source = { name: loaded.rosterName, path: loaded.rosterPath };
     const r = await wait(args.sessionIds, {
       context: loaded.context,
       timeoutMs,
     });
     if (!r.ok)
-      return { content: [{ type: "text", text: r.error }], isError: true };
-    const header = formatRosterHeader({
-      name: loaded.rosterName,
-      path: loaded.rosterPath,
-    });
+      return {
+        content: [{ type: "text", text: withRosterHeader(source, r.error) }],
+        isError: true,
+      };
+    const header = formatRosterHeader(source);
     return {
       content: [{ type: "text", text: `${header}\n${formatWait(r)}` }],
     };
@@ -323,7 +367,24 @@ server.registerTool(
   "bus_registry",
   {
     description: BUS_REGISTRY_DESCRIPTION,
-    inputSchema: BUS_REGISTRY_ARGS,
+    // MCP-only: the full discriminated-union schema (not a raw shape) so
+    // connectors discover per-action required fields (Fix 4). The plugin
+    // surface (tools/bus_registry.ts's makeBusRegistry) keeps the flat
+    // BUS_REGISTRY_ARGS raw shape — tool.args requires a ZodRawShape.
+    inputSchema: ACTION_SCHEMA,
+    outputSchema: {
+      rosters: z
+        .array(
+          z.object({
+            name: z.string(),
+            path: z.string(),
+            default: z.boolean(),
+            active: z.boolean(),
+          }),
+        )
+        .optional()
+        .describe("Populated for the `list` action only"),
+    },
   },
   async (args) => {
     try {

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readRegistry } from "../registry";
@@ -53,6 +53,9 @@ function makeFakeSession(): RegistrySession {
     getActive: () => active,
     setActive: (name: string) => {
       active = name;
+    },
+    clearActive: () => {
+      active = undefined;
     },
   };
 }
@@ -327,6 +330,201 @@ describe("bus_registry: edge — session state is ephemeral per factory instance
     );
     expect(sessionA.getActive()).toBe("zeta");
     expect(sessionB.getActive()).toBeUndefined();
+  });
+});
+
+describe("bus_registry: unregister clears a matching session-active roster (Fix 5)", () => {
+  test("unregistering the active roster clears session state", async () => {
+    const path = writeRosterFile("alpha");
+    const session = makeFakeSession();
+    const busRegistry = makeBusRegistry(session);
+    await busRegistry.execute(
+      { action: "register", name: "alpha", path },
+      // biome-ignore lint: minimal stub
+      {} as any,
+    );
+    await busRegistry.execute(
+      { action: "use", roster: "alpha" },
+      // biome-ignore lint: minimal stub
+      {} as any,
+    );
+    expect(session.getActive()).toBe("alpha");
+    const out = (await busRegistry.execute(
+      { action: "unregister", name: "alpha" },
+      // biome-ignore lint: minimal stub
+      {} as any,
+    )) as string;
+    expect(session.getActive()).toBeUndefined();
+    expect(out).toContain("session-active roster cleared");
+  });
+
+  test("unregistering a NON-active roster leaves the active roster intact", async () => {
+    const pathA = writeRosterFile("alpha");
+    const pathB = writeRosterFile("beta");
+    const session = makeFakeSession();
+    const busRegistry = makeBusRegistry(session);
+    await busRegistry.execute(
+      { action: "register", name: "alpha", path: pathA },
+      // biome-ignore lint: minimal stub
+      {} as any,
+    );
+    await busRegistry.execute(
+      { action: "register", name: "beta", path: pathB },
+      // biome-ignore lint: minimal stub
+      {} as any,
+    );
+    await busRegistry.execute(
+      { action: "use", roster: "alpha" },
+      // biome-ignore lint: minimal stub
+      {} as any,
+    );
+    await busRegistry.execute(
+      { action: "unregister", name: "beta" },
+      // biome-ignore lint: minimal stub
+      {} as any,
+    );
+    expect(session.getActive()).toBe("alpha");
+  });
+});
+
+describe("bus_registry: canonical name on use/echo (Fix 6)", () => {
+  test("use with different casing stores/echoes the canonical registered name", async () => {
+    const path = writeRosterFile("main");
+    const session = makeFakeSession();
+    const busRegistry = makeBusRegistry(session);
+    await busRegistry.execute(
+      { action: "register", name: "main", path },
+      // biome-ignore lint: minimal stub
+      {} as any,
+    );
+    const out = (await busRegistry.execute(
+      { action: "use", roster: "MAIN" },
+      // biome-ignore lint: minimal stub
+      {} as any,
+    )) as string;
+    expect(session.getActive()).toBe("main");
+    expect(out).toContain('"main"');
+    const listOut = outputText(
+      await busRegistry.execute(
+        { action: "list" },
+        // biome-ignore lint: minimal stub
+        {} as any,
+      ),
+    );
+    expect(listOut).toContain("active");
+  });
+});
+
+describe("bus_registry: absolute-path validation + empty-patch rejection (Fix 7)", () => {
+  test("create with a relative path is rejected, no file created", async () => {
+    const busRegistry = makeBusRegistry();
+    const relPath = "relative/roster.json";
+    await expect(
+      busRegistry.execute(
+        { action: "create", name: "relcheck", path: relPath },
+        // biome-ignore lint: minimal stub
+        {} as any,
+      ),
+    ).rejects.toThrow(/absolute/);
+    const read = readRegistry();
+    expect(read.ok).toBe(true);
+    if (read.ok) {
+      expect(read.registry.rosters.some((r) => r.name === "relcheck")).toBe(
+        false,
+      );
+    }
+  });
+
+  test("update-project with an empty patch is rejected, roster file byte-identical", async () => {
+    const path = writeRosterFile("gammapatch");
+    const busRegistry = makeBusRegistry();
+    await busRegistry.execute(
+      { action: "register", name: "gammapatch", path },
+      // biome-ignore lint: minimal stub
+      {} as any,
+    );
+    await busRegistry.execute(
+      {
+        action: "add-project",
+        roster: "gammapatch",
+        project: { name: "svc", path: scratchDir, description: "d" },
+      },
+      // biome-ignore lint: minimal stub
+      {} as any,
+    );
+    const before = readFileSync(path, "utf8");
+    await expect(
+      busRegistry.execute(
+        {
+          action: "update-project",
+          roster: "gammapatch",
+          projectName: "svc",
+          patch: {},
+        },
+        // biome-ignore lint: minimal stub
+        {} as any,
+      ),
+    ).rejects.toThrow();
+    const after = readFileSync(path, "utf8");
+    expect(after).toBe(before);
+  });
+});
+
+describe("bus_registry: strict per-action schemas reject foreign fields (Fix 3)", () => {
+  test.each([
+    ["list", { action: "list", roster: "x" }, "roster"],
+    ["use", { action: "use", roster: "x", path: "/abs" }, "path"],
+    [
+      "create",
+      { action: "create", name: "x", path: "/abs", projectName: "y" },
+      "projectName",
+    ],
+    [
+      "register",
+      { action: "register", name: "x", path: "/abs", roster: "y" },
+      "roster",
+    ],
+    ["unregister", { action: "unregister", name: "x", path: "/abs" }, "path"],
+    [
+      "set-default",
+      { action: "set-default", name: "x", roster: "y" },
+      "roster",
+    ],
+    [
+      "add-project",
+      {
+        action: "add-project",
+        roster: "x",
+        project: { name: "a", path: "/b", description: "c" },
+        name: "y",
+      },
+      "name",
+    ],
+    [
+      "remove-project",
+      { action: "remove-project", roster: "x", projectName: "y", path: "/z" },
+      "path",
+    ],
+    [
+      "update-project",
+      {
+        action: "update-project",
+        roster: "x",
+        projectName: "y",
+        patch: { description: "d" },
+        server: {},
+      },
+      "server",
+    ],
+  ] as const)("%s rejects a foreign field naming it", async (_action, args, foreignField) => {
+    const busRegistry = makeBusRegistry();
+    await expect(
+      busRegistry.execute(
+        args,
+        // biome-ignore lint: minimal stub
+        {} as any,
+      ),
+    ).rejects.toThrow(new RegExp(foreignField));
   });
 });
 
