@@ -6,6 +6,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -18,6 +19,7 @@ import {
   logFilePath,
   provisionalFilePath,
   readDiscovery,
+  stateDirFor,
   writeDiscovery,
   writeProvisional,
 } from "./discovery";
@@ -183,6 +185,39 @@ describe("server lifecycle", () => {
     // spawn was already called with — no re-canonicalization at the write
     // site.
     expect(discovery?.rosterPath).toBe(rosterPath);
+  });
+
+  // --- R15: ensureServer canonicalizes a symlinked rosterPath -------------
+
+  test("R15: ensureServer given a SYMLINK to the roster keys state dir and discovery.rosterPath by the canonical path, not the symlink", async () => {
+    // `dir` and `rosterPath` are already canonical (realpathSync'd in
+    // beforeEach). Build a symlink elsewhere that points at the real
+    // roster file, then call ensureServer with the symlink path.
+    const linkDir = realpathSync(
+      mkdtempSync(join(tmpdir(), "space-bus-server-test-link-")),
+    );
+    const symlinkPath = join(linkDir, "spacebus-link.json");
+    symlinkSync(rosterPath, symlinkPath);
+
+    try {
+      const handle = await ensureServer(symlinkPath, {
+        readinessBudgetMs: 5000,
+      });
+      spawnedPids.push(handle.pid);
+
+      // The discovery file must live under the CANONICAL path's state dir,
+      // not one keyed off the symlink path — reading discovery via the
+      // canonical rosterPath must find it.
+      const discovery = readDiscovery(rosterPath);
+      expect(discovery?.pid).toBe(handle.pid);
+      expect(discovery?.rosterPath).toBe(rosterPath);
+
+      // And reading via stateDirFor(symlinkPath) must NOT be where it
+      // landed — a different hash key than the canonical path's.
+      expect(stateDirFor(symlinkPath)).not.toBe(stateDirFor(rosterPath));
+    } finally {
+      rmSync(linkDir, { recursive: true, force: true });
+    }
   });
 
   test("ensureServer with a small readinessBudgetMs still succeeds against the healthy stub (phase 1 isn't starved)", async () => {

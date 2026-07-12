@@ -66,7 +66,7 @@ const realRegistryPath = join(
   "rosters.json",
 );
 
-interface RegistrySnapshot {
+export interface RegistrySnapshot {
   exists: boolean;
   mtimeMs: number | null;
 }
@@ -82,22 +82,37 @@ function snapshotRealRegistry(): RegistrySnapshot {
 
 const realRegistryBefore = snapshotRealRegistry();
 
-function checkRealRegistryLeak(): void {
-  const after = snapshotRealRegistry();
-  const gainedContent = !realRegistryBefore.exists && after.exists;
+/**
+ * Pure comparison extracted so the leak guard's logic can be unit-tested
+ * without touching the real filesystem: given a before/after snapshot pair,
+ * throws with the guard message if the "after" state indicates the real
+ * registry file was written to (appeared from nothing, or mutated in
+ * place); otherwise returns without side effects.
+ *
+ * `path` is only used to compose the error message — callers pass the real
+ * path in production, tests pass a fabricated label.
+ */
+export function assertNoRealConfigLeak(
+  before: RegistrySnapshot,
+  after: RegistrySnapshot,
+  path: string = realRegistryPath,
+): void {
+  const gainedContent = !before.exists && after.exists;
   const mutated =
-    realRegistryBefore.exists &&
-    after.exists &&
-    after.mtimeMs !== realRegistryBefore.mtimeMs;
+    before.exists && after.exists && after.mtimeMs !== before.mtimeMs;
   if (gainedContent || mutated) {
     throw new Error(
-      `Real config leak guard: ${realRegistryPath} was written to during ` +
+      `Real config leak guard: ${path} was written to during ` +
         `the test run. A test wrote to the real ~/.config/space-bus instead ` +
         `of relying on the XDG_CONFIG_HOME isolation preloaded in ` +
         `test/setup.ts — see docs/solutions/best-practices/` +
         `test-isolation-xdg-state-home-2026-07-05.md for the same bug class.`,
     );
   }
+}
+
+function checkRealRegistryLeak(): void {
+  assertNoRealConfigLeak(realRegistryBefore, snapshotRealRegistry());
 }
 
 afterEach(checkRealRegistryLeak);
@@ -132,9 +147,17 @@ function listSpaceBusPlists(): Set<string> {
 
 const plistsBefore = listSpaceBusPlists();
 
-function checkLaunchAgentsLeak(): void {
-  const plistsAfter = listSpaceBusPlists();
-  const leaked = [...plistsAfter].filter((name) => !plistsBefore.has(name));
+/**
+ * Pure comparison extracted for unit-testability, same rationale as
+ * `assertNoRealConfigLeak` above: given a before/after set of plist
+ * filenames, throws with the guard message if any name in `after` is
+ * absent from `before`; otherwise returns without side effects.
+ */
+export function assertNoLaunchAgentsLeak(
+  before: Set<string>,
+  after: Set<string>,
+): void {
+  const leaked = [...after].filter((name) => !before.has(name));
   if (leaked.length > 0) {
     throw new Error(
       `LaunchAgents leak guard: ${leaked.length} new bot.fro.space-bus.*.plist ` +
@@ -145,6 +168,10 @@ function checkLaunchAgentsLeak(): void {
         `test-isolation-xdg-state-home-2026-07-05.md for the same bug class.`,
     );
   }
+}
+
+function checkLaunchAgentsLeak(): void {
+  assertNoLaunchAgentsLeak(plistsBefore, listSpaceBusPlists());
 }
 
 afterAll(checkLaunchAgentsLeak);
