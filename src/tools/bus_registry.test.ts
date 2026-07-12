@@ -149,6 +149,37 @@ describe("bus_registry: create", () => {
   });
 });
 
+describe("bus_registry: create with server field (plugin-facing flat args)", () => {
+  test("happy path: create with a server:{baseUrl} block through the flat args shape writes the file + registers it", async () => {
+    const path = rosterPathFor("created-with-server");
+    const busRegistry = makeBusRegistry();
+    const out = outputText(
+      await busRegistry.execute(
+        {
+          action: "create",
+          name: "created-with-server",
+          path,
+          server: { baseUrl: "http://127.0.0.1:4096" },
+        },
+        // biome-ignore lint: minimal stub
+        {} as any,
+      ),
+    );
+    expect(out).toContain("created-with-server");
+
+    const written = JSON.parse(readFileSync(path, "utf-8"));
+    expect(written.server).toEqual({ baseUrl: "http://127.0.0.1:4096" });
+
+    const read = readRegistry();
+    expect(read.ok).toBe(true);
+    if (read.ok) {
+      expect(
+        read.registry.rosters.some((r) => r.name === "created-with-server"),
+      ).toBe(true);
+    }
+  });
+});
+
 describe("bus_registry: register/unregister/set-default round-trip", () => {
   test("happy path", async () => {
     const path = writeRosterFile("beta");

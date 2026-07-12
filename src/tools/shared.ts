@@ -63,11 +63,10 @@ export async function ensureAndLoadContext(
     const context = loadContextForRosterPath(rosterPath);
     return { context, rosterName: resolved.name, rosterPath };
   }
+  const rosterPath = resolveRosterPath(directory);
   if (isManagedRoster(directory)) {
-    const rosterPath = resolveRosterPath(directory);
     await ensure(rosterPath);
   }
-  const rosterPath = resolveRosterPath(directory);
   return { context: loadContext(directory), rosterPath };
 }
 

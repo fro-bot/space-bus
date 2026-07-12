@@ -56,6 +56,9 @@ const projectInputSchema = z.object({
   description: z.string(),
 });
 
+const PATCH_NONEMPTY_MESSAGE =
+  "patch must include at least one field (name, path, or description)";
+
 const projectPatchSchema = z
   .object({
     name: z.string().min(1).optional(),
@@ -63,8 +66,81 @@ const projectPatchSchema = z
     description: z.string().optional(),
   })
   .refine((patch) => Object.keys(patch).length > 0, {
-    message:
-      "patch must include at least one field (name, path, or description)",
+    message: PATCH_NONEMPTY_MESSAGE,
+  });
+
+// Field descriptions shared between the two independently-built schema
+// sources below (plugin tool.schema vs. ACTION_SCHEMA's top-level z), so
+// the surfaces can't drift on wording even though they no longer share
+// schema objects.
+const ROSTER_FIELD_DESCRIPTION =
+  "Registry roster name — required by use/add-project/remove-project/update-project";
+const NAME_FIELD_DESCRIPTION =
+  "Roster name to create/register/unregister/set-default — required by those actions";
+const PATH_FIELD_DESCRIPTION =
+  "Absolute path to a spacebus.json — required by create/register";
+const SERVER_FIELD_DESCRIPTION =
+  "Server block for create (baseUrl XOR managed; defaults to managed {})";
+const PROJECT_FIELD_DESCRIPTION =
+  "{name, path, description} — required by add-project";
+const PROJECT_NAME_FIELD_DESCRIPTION =
+  "Existing project name — required by remove-project/update-project";
+const PATCH_FIELD_DESCRIPTION =
+  "Partial project fields to apply — required by update-project";
+
+// Plugin-facing schema fragments, built with `tool.schema` — the zod
+// namespace bundled inside @opencode-ai/plugin. `tool()`'s args type
+// requires a ZodRawShape built from THAT nested zod copy (not the
+// top-level `zod` package this file otherwise uses for ACTION_SCHEMA /
+// MCP), so every field and every embedded object schema below is built
+// from `tool.schema`, mirroring bus_task.ts/bus_wait.ts/etc. These
+// duplicate (rather than share) serverConfigSchema/projectInputSchema/
+// projectPatchSchema above, which stay on the top-level `zod` for
+// ACTION_SCHEMA and MCP's inputSchema — MCP's SDK resolves the top-level
+// zod, so mixing zod copies there would reintroduce the same mismatch.
+const pluginManagedServerConfigSchema = tool.schema.object({
+  command: tool.schema.array(tool.schema.string()).optional(),
+  cwd: tool.schema.string().optional(),
+  port: tool.schema.number().int().nonnegative().optional(),
+});
+
+const pluginServerConfigSchema = tool.schema
+  .object({
+    baseUrl: tool.schema.url().optional(),
+    managed: pluginManagedServerConfigSchema.optional(),
+  })
+  .superRefine((val, ctx) => {
+    const hasBaseUrl = val.baseUrl !== undefined;
+    const hasManaged = val.managed !== undefined;
+    if (hasBaseUrl && hasManaged) {
+      ctx.addIssue({
+        code: "custom",
+        message:
+          "space-bus: roster's server block must specify exactly one of `baseUrl` or `managed`, not both",
+      });
+    } else if (!hasBaseUrl && !hasManaged) {
+      ctx.addIssue({
+        code: "custom",
+        message:
+          "space-bus: roster's server block must specify one of `baseUrl` (externally-managed) or `managed` (plugin-spawned) — neither was present",
+      });
+    }
+  });
+
+const pluginProjectInputSchema = tool.schema.object({
+  name: tool.schema.string().min(1),
+  path: tool.schema.string().min(1),
+  description: tool.schema.string(),
+});
+
+const pluginProjectPatchSchema = tool.schema
+  .object({
+    name: tool.schema.string().min(1).optional(),
+    path: tool.schema.string().min(1).optional(),
+    description: tool.schema.string().optional(),
+  })
+  .refine((patch) => Object.keys(patch).length > 0, {
+    message: PATCH_NONEMPTY_MESSAGE,
   });
 
 // Flat, top-level argument shape for the PLUGIN surface only — `tool()`'s
@@ -75,8 +151,8 @@ const projectPatchSchema = z
 // re-validates every call against ACTION_SCHEMA internally
 // (runBusRegistryAction) regardless of which raw shape it was called
 // with, so both surfaces get the same actionable, action-named errors.
-export const BUS_REGISTRY_ARGS = {
-  action: z.enum([
+const BUS_REGISTRY_ARGS = {
+  action: tool.schema.enum([
     "list",
     "use",
     "create",
@@ -87,39 +163,20 @@ export const BUS_REGISTRY_ARGS = {
     "remove-project",
     "update-project",
   ]),
-  roster: z
+  roster: tool.schema.string().optional().describe(ROSTER_FIELD_DESCRIPTION),
+  name: tool.schema.string().optional().describe(NAME_FIELD_DESCRIPTION),
+  path: tool.schema.string().optional().describe(PATH_FIELD_DESCRIPTION),
+  server: pluginServerConfigSchema
+    .optional()
+    .describe(SERVER_FIELD_DESCRIPTION),
+  project: pluginProjectInputSchema
+    .optional()
+    .describe(PROJECT_FIELD_DESCRIPTION),
+  projectName: tool.schema
     .string()
     .optional()
-    .describe(
-      "Registry roster name — required by use/add-project/remove-project/update-project",
-    ),
-  name: z
-    .string()
-    .optional()
-    .describe(
-      "Roster name to create/register/unregister/set-default — required by those actions",
-    ),
-  path: z
-    .string()
-    .optional()
-    .describe("Absolute path to a spacebus.json — required by create/register"),
-  server: serverConfigSchema
-    .optional()
-    .describe(
-      "Server block for create (baseUrl XOR managed; defaults to managed {})",
-    ),
-  project: projectInputSchema
-    .optional()
-    .describe("{name, path, description} — required by add-project"),
-  projectName: z
-    .string()
-    .optional()
-    .describe(
-      "Existing project name — required by remove-project/update-project",
-    ),
-  patch: projectPatchSchema
-    .optional()
-    .describe("Partial project fields to apply — required by update-project"),
+    .describe(PROJECT_NAME_FIELD_DESCRIPTION),
+  patch: pluginProjectPatchSchema.optional().describe(PATCH_FIELD_DESCRIPTION),
 };
 
 export type BusRegistryAction =
