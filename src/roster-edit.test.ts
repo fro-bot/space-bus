@@ -1,8 +1,18 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { manifestSchema } from "./config";
+import { captureIdentity, removeDiscovery, writeDiscovery } from "./discovery";
 import { readRegistry } from "./registry";
 import {
   addProject,
@@ -71,7 +81,7 @@ describe("roster-edit: createRoster", () => {
     }
   });
 
-  test("registration collision: file created, ok:false naming both facts", () => {
+  test("registration collision (name already registered): preflight rejects BEFORE any write — no file created", () => {
     const firstPath = rosterPathFor();
     expect(createRoster({ name: "gamma", rosterPath: firstPath })).toEqual({
       ok: true,
@@ -81,12 +91,155 @@ describe("roster-edit: createRoster", () => {
     const result = createRoster({ name: "gamma", rosterPath: secondPath });
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.error).toContain("created");
-      expect(result.error).toContain(secondPath);
       expect(result.error).toContain("gamma");
     }
-    // The file must exist on disk despite the registration failure.
-    expect(() => readFileSync(secondPath, "utf8")).not.toThrow();
+    // Preflight collision check runs before any write — the file must NOT
+    // exist on disk.
+    expect(existsSync(secondPath)).toBe(false);
+  });
+});
+
+describe("roster-edit: createRoster mode + concurrency", () => {
+  test("created file is mode 0644", () => {
+    const path = rosterPathFor();
+    expect(createRoster({ name: "modetest", rosterPath: path })).toEqual({
+      ok: true,
+    });
+    const mode = statSync(path).mode & 0o777;
+    expect(mode).toBe(0o644);
+  });
+
+  test("concurrent createRoster at the same path: exactly one wins, the other fails, file is valid", async () => {
+    const path = rosterPathFor();
+    const [a, b] = await Promise.all([
+      Promise.resolve().then(() =>
+        createRoster({ name: "race-a", rosterPath: path }),
+      ),
+      Promise.resolve().then(() =>
+        createRoster({ name: "race-b", rosterPath: path }),
+      ),
+    ]);
+    const results = [a, b];
+    const oks = results.filter((r) => r.ok);
+    const fails = results.filter((r) => !r.ok);
+    expect(oks.length).toBe(1);
+    expect(fails.length).toBe(1);
+
+    const parsed = manifestSchema.safeParse(
+      JSON.parse(readFileSync(path, "utf8")),
+    );
+    expect(parsed.success).toBe(true);
+  });
+});
+
+describe("roster-edit: symlinked roster edit refusal", () => {
+  test("editing a symlinked roster file is rejected, link and target left byte-identical", () => {
+    const targetPath = rosterPathFor();
+    expect(createRoster({ name: "symtarget", rosterPath: targetPath })).toEqual(
+      { ok: true },
+    );
+    const linkPath = join(scratchDir, "spacebus-link.json");
+    symlinkSync(targetPath, linkPath);
+
+    const beforeTarget = readFileSync(targetPath);
+    const beforeLinkResolved = readFileSync(linkPath); // via symlink, same bytes
+
+    const result = addProject(linkPath, {
+      name: "svc-a",
+      path: "~/a",
+      description: "A",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("symlink");
+    }
+
+    const afterTarget = readFileSync(targetPath);
+    const afterLinkResolved = readFileSync(linkPath);
+    expect(Buffer.compare(beforeTarget, afterTarget)).toBe(0);
+    expect(Buffer.compare(beforeLinkResolved, afterLinkResolved)).toBe(0);
+  });
+});
+
+describe("roster-edit: mode preservation on edit", () => {
+  test("editing a 0600 roster file preserves 0600", () => {
+    const path = rosterPathFor();
+    expect(createRoster({ name: "modepreserve", rosterPath: path })).toEqual({
+      ok: true,
+    });
+    chmodSync(path, 0o600);
+
+    expect(
+      addProject(path, { name: "svc-a", path: "~/a", description: "A" }),
+    ).toEqual({ ok: true });
+
+    const mode = statSync(path).mode & 0o777;
+    expect(mode).toBe(0o600);
+  });
+});
+
+describe("roster-edit: updateProject rename collision", () => {
+  test("renaming a project to an already-existing name is rejected", () => {
+    const path = rosterPathFor();
+    expect(createRoster({ name: "renametest", rosterPath: path })).toEqual({
+      ok: true,
+    });
+    expect(
+      addProject(path, { name: "svc-a", path: "~/a", description: "A" }),
+    ).toEqual({ ok: true });
+    expect(
+      addProject(path, { name: "svc-b", path: "~/b", description: "B" }),
+    ).toEqual({ ok: true });
+
+    const result = updateProject(path, "svc-a", { name: "svc-b" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("svc-b");
+    }
+  });
+
+  test("hand-authored roster with duplicate project names is rejected by mutation validation", () => {
+    const path = rosterPathFor();
+    writeFileSync(
+      path,
+      JSON.stringify({
+        server: { managed: {} },
+        projects: [
+          { name: "dup", path: "~/a", description: "A" },
+          { name: "dup", path: "~/b", description: "B" },
+        ],
+      }),
+    );
+    const result = updateProject(path, "dup", { description: "changed" });
+    expect(result.ok).toBe(false);
+  });
+});
+
+describe("roster-edit: editServer live-daemon guard", () => {
+  test("editServer is rejected when a live discovery record exists for the roster", () => {
+    const path = rosterPathFor();
+    expect(createRoster({ name: "livedaemon", rosterPath: path })).toEqual({
+      ok: true,
+    });
+
+    const identity = captureIdentity(process.pid) ?? "";
+    writeDiscovery(path, {
+      port: 4096,
+      pid: process.pid,
+      identity,
+      password: "test-password",
+      spawnConfig: {},
+      baseUrl: "http://127.0.0.1:4096",
+      rosterPath: path,
+    });
+
+    const result = editServer(path, { baseUrl: "http://127.0.0.1:5000" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("stop");
+    }
+
+    removeDiscovery(path);
   });
 });
 

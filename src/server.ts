@@ -14,7 +14,7 @@
  */
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { openSync, readFileSync } from "node:fs";
+import { existsSync, openSync, readFileSync, realpathSync } from "node:fs";
 import { dirname } from "node:path";
 
 import { type ManagedServerConfig, manifestSchema } from "./config";
@@ -637,6 +637,16 @@ export async function ensureServer(
   rosterPath: string,
   options: EnsureServerOptions = {},
 ): Promise<ServerHandle> {
+  // Canonicalize once at the public boundary, before ANY stateDirFor/
+  // manifest/spawn use below — mirrors config.ts's resolveRosterPath
+  // existsSync?realpathSync pattern, so a library caller passing a
+  // non-canonical (but valid) path still gets discovery.rosterPath and
+  // state-dir keying that matches what resolveRosterPath would have
+  // produced for the same file.
+  if (existsSync(rosterPath)) {
+    rosterPath = realpathSync(rosterPath);
+  }
+
   const readinessBudgetMs =
     options.readinessBudgetMs ?? DEFAULT_READINESS_BUDGET_MS;
   const lockWaitBudgetMs =

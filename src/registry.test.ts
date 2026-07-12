@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   realpathSync,
   rmSync,
   statSync,
@@ -150,6 +151,74 @@ describe("registry: integration", () => {
   });
 });
 
+describe("registry: R3 ENOENT-only empty-registry semantics", () => {
+  test("registry path being a directory (not ENOENT) is ok:false, not treated as empty", () => {
+    const path = registryPath();
+    const dir = join(path, "..");
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    // Make the target itself a directory instead of a file.
+    mkdirSync(path, { recursive: true });
+
+    const result = readRegistry();
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).not.toContain("empty");
+    }
+  });
+});
+
+describe("registry: R5 resolution revalidation", () => {
+  test("resolve fails after the registered roster file is deleted", () => {
+    const rosterA = realpathSync(makeRosterFile());
+    expect(registerRoster("resolve-deleted", rosterA)).toEqual({ ok: true });
+    rmSync(rosterA, { force: true });
+
+    const result = resolveRosterByName("resolve-deleted");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("no longer exists");
+    }
+  });
+
+  test("resolve fails after the registered roster file is replaced with a symlink", () => {
+    const rosterA = realpathSync(makeRosterFile());
+    expect(registerRoster("resolve-symlinked", rosterA)).toEqual({
+      ok: true,
+    });
+
+    const target = makeRosterFile();
+    rmSync(rosterA, { force: true });
+    symlinkSync(target, rosterA);
+
+    const result = resolveRosterByName("resolve-symlinked");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("symlink");
+    }
+  });
+});
+
+describe("registry: R7 lock — concurrent mutation lost-update regression", () => {
+  test("two concurrent registerRoster calls with different names both persist", async () => {
+    const rosterA = realpathSync(makeRosterFile());
+    const rosterB = realpathSync(makeRosterFile());
+
+    const [resultA, resultB] = await Promise.all([
+      Promise.resolve().then(() => registerRoster("concurrent-a", rosterA)),
+      Promise.resolve().then(() => registerRoster("concurrent-b", rosterB)),
+    ]);
+    expect(resultA).toEqual({ ok: true });
+    expect(resultB).toEqual({ ok: true });
+
+    const listed = readRegistry();
+    expect(listed.ok).toBe(true);
+    if (listed.ok) {
+      const names = listed.registry.rosters.map((r) => r.name).sort();
+      expect(names).toEqual(["concurrent-a", "concurrent-b"]);
+    }
+  });
+});
+
 describe("registry: error cases", () => {
   test("registering a nonexistent roster path fails", () => {
     const missing = join(tmpdir(), "space-bus-does-not-exist", "spacebus.json");
@@ -185,11 +254,12 @@ describe("registry: error cases", () => {
     }
   });
 
-  test("corrupted registry JSON: readRegistry ok:false actionable; registerRoster does not clobber it", () => {
+  test("corrupted registry JSON: readRegistry ok:false actionable; registerRoster does not clobber it (byte-identical)", () => {
     const path = registryPath();
     const dir = join(path, "..");
     mkdirSync(dir, { recursive: true, mode: 0o700 });
-    writeFileSync(path, "{ this is not valid json");
+    const corruptContent = "{ this is not valid json";
+    writeFileSync(path, corruptContent);
 
     const read = readRegistry();
     expect(read.ok).toBe(false);
@@ -197,12 +267,33 @@ describe("registry: error cases", () => {
       expect(read.error).toContain("not valid JSON");
     }
 
+    const before = readFileSync(path);
+
     const rosterA = makeRosterFile();
     const register = registerRoster("theta", rosterA);
     expect(register.ok).toBe(false);
 
-    // The corrupt file must not have been clobbered by the failed register.
-    const stillCorrupt = readRegistry();
-    expect(stillCorrupt.ok).toBe(false);
+    // The corrupt file must not have been clobbered by the failed register
+    // — assert byte-identical, not just "still fails to parse".
+    const after = readFileSync(path);
+    expect(Buffer.compare(before, after)).toBe(0);
+    expect(after.toString("utf8")).toBe(corruptContent);
+  });
+
+  test("registering a directory path is rejected (not a regular file)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "space-bus-dir-as-roster-"));
+    const result = registerRoster("dirtest", dir);
+    expect(result.ok).toBe(false);
+  });
+
+  test("registering a non-roster JSON file is rejected by manifest validation", () => {
+    const dir = mkdtempSync(join(tmpdir(), "space-bus-nonroster-"));
+    const path = join(dir, "notaroster.json");
+    writeFileSync(path, JSON.stringify({ nonsense: true }));
+    const result = registerRoster("nonroster", path);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("not a valid spacebus.json");
+    }
   });
 });

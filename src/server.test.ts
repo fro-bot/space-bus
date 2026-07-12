@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -101,7 +102,14 @@ async function killAllSpawned(): Promise<void> {
 
 describe("server lifecycle", () => {
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "space-bus-server-test-"));
+    // realpathSync: on macOS, tmpdir() is a symlink (/tmp -> /private/tmp)
+    // — ensureServer now canonicalizes rosterPath at its public boundary
+    // (R15), so tests that independently derive state-dir paths
+    // (writeProvisional/writeDiscovery/provisionalFilePath/etc.) must use
+    // the SAME canonical path ensureServer will key its state dir with,
+    // or they'd look in a different (non-canonical) state dir than the
+    // one ensureServer actually uses.
+    dir = realpathSync(mkdtempSync(join(tmpdir(), "space-bus-server-test-")));
     rosterPath = join(dir, "spacebus.json");
     writeRoster(makeRoster());
   });
