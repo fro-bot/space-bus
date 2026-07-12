@@ -171,6 +171,10 @@ describe("server lifecycle", () => {
 
     const discovery = readDiscovery(rosterPath);
     expect(discovery?.pid).toBe(handle.pid);
+    // R13: the discovery file records the canonicalized roster path this
+    // spawn was already called with — no re-canonicalization at the write
+    // site.
+    expect(discovery?.rosterPath).toBe(rosterPath);
   });
 
   test("ensureServer with a small readinessBudgetMs still succeeds against the healthy stub (phase 1 isn't starved)", async () => {

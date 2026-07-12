@@ -15,6 +15,7 @@ const result = await Bun.build({
     "./src/cli.ts",
     "./src/config.ts",
     "./src/server.ts",
+    "./src/registry-entry.ts",
   ],
   outdir: "./dist",
   target: "node",

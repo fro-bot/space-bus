@@ -612,6 +612,10 @@ async function spawnAndWaitReady(
     password,
     spawnConfig: { command, cwd, port: requestedPort },
     baseUrl,
+    // rosterPath here is exactly the canonicalized path this function was
+    // already called with (ensureServer's argument, resolved upstream via
+    // resolveRosterPath) — no re-canonicalization.
+    rosterPath,
   });
 
   return {

@@ -300,4 +300,12 @@ export const discoveryFileSchema = z.object({
   password: z.string(),
   spawnConfig: managedSpawnConfigSchema,
   baseUrl: z.url(),
+  // Optional/additive: the canonicalized roster path the spawn already
+  // held (ensureServer's argument, already resolved via
+  // resolveRosterPath — never re-canonicalized here). Lets reconciliation
+  // name an unregistered daemon's roster from its discovery file alone.
+  // Never logged or included in error messages (see server.ts/discovery.ts
+  // — no log/error path serializes discovery file contents). Optional so
+  // pre-field discovery files (written before this change) keep parsing.
+  rosterPath: z.string().optional(),
 });

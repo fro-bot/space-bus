@@ -164,4 +164,21 @@ describe("browser-safety: published dist artifacts carry no node: imports", () =
       expect(text).not.toMatch(/require\(\s*"node:/);
     }
   }, 60_000);
+
+  // dist/registry-entry.js is the ./registry subpath's Node-only artifact
+  // (registry.ts + roster-edit.ts, both fs/crypto/path consumers) — it is
+  // NOT part of the browser-safe set and MAY legitimately contain node:
+  // imports. Assert it's excluded from the browser-safe list above (a
+  // regression here would mean someone widened DIST_BROWSER_SAFE_FILES to
+  // include it) and that it actually exists post-build.
+  test("dist/registry-entry.js is Node-lane, not part of the browser-safe artifact set", async () => {
+    if (!runDistBuild()) return;
+
+    expect(DIST_BROWSER_SAFE_FILES).not.toContain("dist/registry-entry.js");
+
+    const text = await Bun.file(
+      join(projectRoot, "dist/registry-entry.js"),
+    ).text();
+    expect(text.length).toBeGreaterThan(0);
+  }, 60_000);
 });

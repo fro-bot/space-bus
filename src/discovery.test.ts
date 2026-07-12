@@ -78,6 +78,38 @@ describe("discovery", () => {
     expect(readDiscovery(rosterPath)).toBeNull();
   });
 
+  test("readDiscovery round-trips a written file with rosterPath present", () => {
+    const data = makeDiscovery({ rosterPath });
+    writeDiscovery(rosterPath, data);
+    expect(readDiscovery(rosterPath)).toEqual(data);
+  });
+
+  test("readDiscovery parses a pre-field discovery file (no rosterPath) — regression", () => {
+    // Simulates a discovery file written before this field existed: no
+    // rosterPath key at all, not merely undefined.
+    const { rosterPath: _omit, ...preFieldData } = makeDiscovery();
+    const dir2 = stateDirFor(rosterPath);
+    mkdirSync(dir2, { recursive: true });
+    writeFileSync(discoveryFilePath(rosterPath), JSON.stringify(preFieldData));
+
+    const parsed = readDiscovery(rosterPath);
+    expect(parsed).toEqual(preFieldData);
+    expect(parsed?.rosterPath).toBeUndefined();
+  });
+
+  test("attachLive still attaches against a pre-field discovery file — regression", () => {
+    const { rosterPath: _omit, ...preFieldData } = makeDiscovery({
+      baseUrl: "http://127.0.0.1:4096",
+    });
+    const dir2 = stateDirFor(rosterPath);
+    mkdirSync(dir2, { recursive: true });
+    writeFileSync(discoveryFilePath(rosterPath), JSON.stringify(preFieldData));
+
+    const live = attachLive(rosterPath);
+    expect(live).not.toBeNull();
+    expect(live?.pid).toBe(preFieldData.pid);
+  });
+
   test("readDiscovery returns null when the file fails schema validation", () => {
     writeDiscovery(rosterPath, makeDiscovery());
     writeFileSync(

@@ -39,6 +39,10 @@
     "./attach": {
       "types": "./dist/attach.d.ts",
       "import": "./dist/attach.js"
+    },
+    "./registry": {
+      "types": "./dist/registry-entry.d.ts",
+      "import": "./dist/registry-entry.js"
     }
   },
   "bin": {
