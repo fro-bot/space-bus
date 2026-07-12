@@ -10,6 +10,22 @@ import type {
   WaitResult,
 } from "./core";
 
+/**
+ * Shared roster-echo header (R9): every bus tool result names the roster
+ * it resolved against — the split-brain/confused-deputy mitigation from
+ * document review. `source.name` is the registry name when the call
+ * resolved via a registry name (`roster: personal`); otherwise `source.path`
+ * (the ambient spacebus.json path) is used (`roster: /path/to/spacebus.json`).
+ * Both surfaces (plugin tools, MCP) prepend this line to result TEXT only —
+ * structured metadata (e.g. bus_task's sessionId/project/mode) is untouched.
+ */
+export function formatRosterHeader(source: {
+  name?: string;
+  path: string;
+}): string {
+  return `roster: ${source.name ?? source.path}`;
+}
+
 export function formatRoster(projects: RosterProject[]): string {
   return projects
     .map((p) => {

@@ -67,6 +67,12 @@ Set `SPACE_BUS_CONFIG` to override roster discovery — it must be an absolute p
 - `bus_status` — Report a space-bus session's status plus a summary of its latest todo and diff. Also reports when the session is blocked on an interactive question awaiting a reply.
 - `bus_result` — Return a completed space-bus session's final assistant message and diff. Errors if the session is still running — use `bus_status` to check first.
 - `bus_wait` — Block until any of the given sessions needs attention (completes, blocks on a question, fails, or is not found) or a bounded timeout elapses. Returns each watched session's normalized state and which session(s) woke the wait; on timeout returns the current snapshot, not an error.
+- `bus_registry` — Manage the roster registry: list registered rosters, create/register/unregister rosters, set the default, select an active roster for this connector session (`use`, MCP only), and add/remove/update projects on a registered roster. `set-default` also becomes the MCP ambient-resolution fallback (see below) once `SPACE_BUS_CONFIG` is unset.
+
+All five `bus_*` tools accept an optional `roster` param (a registry name — see `bus_registry`) to target a roster other than the ambient one, and every tool result opens with a `roster: <name-or-path>` line naming the roster it resolved against, on both surfaces. Resolution precedence:
+
+- **Plugin surface:** explicit `roster` param > workspace directory (`ctx.directory`).
+- **MCP surface:** explicit `roster` param > connector-session active roster (`bus_registry use`) > `SPACE_BUS_CONFIG` (ambient) > registry default (`bus_registry set-default`), consulted only when `SPACE_BUS_CONFIG` is unset > an actionable error listing the available rosters.
 
 ## Managed server
 
@@ -133,7 +139,7 @@ Semantics:
 Experimental subpath exports expose the bus's internals directly — the functions the four tools run on, plus the managed-server lifecycle and the attach resolver — for renderers and other consumers that want structured state instead of formatted strings. Subpaths are experimental: shapes may change in minor releases; pin the version if you adopt them.
 
 - `@fro.bot/space-bus/core` — browser-safe; no Node builtins, no ambient env reads. Every exported function takes a `context: BusContext` (`{ roster, credentials? }`) that you build yourself and pass in — core never resolves it for you. Includes `snapshot()`, a one-call composite of roster + per-project status + pending questions with bounded fan-out.
-- `@fro.bot/space-bus/config` — Node-only. `loadContext(directory?)` reads `spacebus.json` (honoring `SPACE_BUS_CONFIG` the same as the plugin) and returns a ready-to-use `BusContext`, with per-project `exists` flags and env-derived credentials attached. Build a fresh context per call; it's per-call/short-lived by contract, not meant to be cached across filesystem changes.
+- `@fro.bot/space-bus/config` — Node-only. `loadContext(directory?)` reads `spacebus.json` (honoring `SPACE_BUS_CONFIG` the same as the plugin) and returns a ready-to-use `BusContext`, with per-project `exists` flags and env-derived credentials attached. Build a fresh context per call; it's per-call/short-lived by contract, not meant to be cached across filesystem changes. `loadContextForRoster(name)` resolves a registered roster name instead (via `registry.resolveRosterByName`) through the same read/attach/credentials pipeline, returning the canonical registered name alongside the context and path. `loadContextForRosterPath(path)` — experimental, like its siblings — loads a `BusContext` from an *already-resolved* roster path, skipping name resolution entirely; callers that resolve a name once (to decide whether to `ensureServer()`) use this to avoid a second, TOCTOU-prone re-resolution of the same name.
 - `@fro.bot/space-bus/contract` — the zod schemas (and inferred types) behind the OpenCode API and `BusContext`, for consumers hitting the server directly and wanting the same shapes. Schemas are zod v4.
 - `@fro.bot/space-bus/format` — the pure formatters the tools use to render output, for tool-identical text.
 - `@fro.bot/space-bus/managed-server` — Node-only. The managed-server lifecycle (`ensureServer`/`serverStatus`/`stopServer`) for consumers driving spawn/attach/stop directly — see [Managed server](#managed-server).

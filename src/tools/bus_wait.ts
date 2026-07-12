@@ -1,7 +1,7 @@
 import { type ToolDefinition, tool } from "@opencode-ai/plugin";
 import { wait } from "../core";
-import { formatWait } from "../format";
-import { ensureAndLoadContext } from "./shared";
+import { formatRosterHeader, formatWait } from "../format";
+import { ensureAndLoadContext, withRosterHeader } from "./shared";
 
 export const BUS_WAIT_DESCRIPTION =
   "Block until any of the given space-bus sessions needs attention (completes, blocks on a question, fails, or is not found) or a timeout elapses. Returns every watched session's normalized state and which session(s) woke the wait. A bounded, level-triggered long-poll — an already-done session wakes immediately; on timeout it returns the current snapshot, not an error.";
@@ -29,6 +29,12 @@ export function makeBusWait(defaultDirectory?: string): ToolDefinition {
         .describe(
           `Max time to wait in milliseconds before returning a timeout snapshot (default 60s, capped at ${MAX_WAIT_TIMEOUT_MS}ms; soft deadline, may overshoot by up to ~30s if a request is slow)`,
         ),
+      roster: tool.schema
+        .string()
+        .optional()
+        .describe(
+          "Registry roster name to target. Resolution precedence: this param > workspace directory (see bus_registry to list)",
+        ),
     },
     async execute(args, ctx) {
       // Explicit runtime guard: schema .min(1) may not be enforced ahead of
@@ -38,9 +44,9 @@ export function makeBusWait(defaultDirectory?: string): ToolDefinition {
         throw new Error("bus_wait requires at least one sessionId");
       }
       const directory = ctx.directory ?? defaultDirectory;
-      let context: Awaited<ReturnType<typeof ensureAndLoadContext>>;
+      let resolved: Awaited<ReturnType<typeof ensureAndLoadContext>>;
       try {
-        context = await ensureAndLoadContext(directory);
+        resolved = await ensureAndLoadContext(directory, args.roster);
       } catch (e) {
         throw new Error((e as Error).message);
       }
@@ -48,9 +54,14 @@ export function makeBusWait(defaultDirectory?: string): ToolDefinition {
         args.timeoutMs !== undefined
           ? Math.min(args.timeoutMs, MAX_WAIT_TIMEOUT_MS)
           : undefined;
-      const r = await wait(args.sessionIds, { context, timeoutMs });
-      if (!r.ok) throw new Error(r.error);
-      return formatWait(r);
+      const source = { name: resolved.rosterName, path: resolved.rosterPath };
+      const r = await wait(args.sessionIds, {
+        context: resolved.context,
+        timeoutMs,
+      });
+      if (!r.ok) throw new Error(withRosterHeader(source, r.error));
+      const header = formatRosterHeader(source);
+      return `${header}\n${formatWait(r)}`;
     },
   });
 }

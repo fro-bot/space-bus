@@ -487,7 +487,7 @@ export function setDefaultRoster(name: string): Result {
  */
 export function resolveRosterByName(
   name: string,
-): { ok: true; path: string } | { ok: false; error: string } {
+): { ok: true; path: string; name: string } | { ok: false; error: string } {
   const readResult = readRegistry();
   if (!readResult.ok) return readResult;
   const registry = readResult.registry;
@@ -538,5 +538,5 @@ export function resolveRosterByName(
     };
   }
 
-  return { ok: true, path: canonicalPath };
+  return { ok: true, path: canonicalPath, name: entry.name };
 }
