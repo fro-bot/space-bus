@@ -87,7 +87,7 @@ Everything above the substrate is single-roster today: `src/mcp.ts` pins one ros
 
 ### Phase A — substrate (releasable as a minor: library-only)
 
-- [ ] **Unit 1: Registry schema + module**
+- [x] **Unit 1: Registry schema + module**
 
 **Goal:** Per-user roster registry: list/register/unregister/set-default/resolve-name, hardened per R15.
 
@@ -113,7 +113,7 @@ Everything above the substrate is single-roster today: `src/mcp.ts` pins one ros
 
 **Verification:** Suite green with zero real `~/.config/space-bus` writes; browser-safety test proves registry unreachable from browser lanes.
 
-- [ ] **Unit 2: Roster mutation module**
+- [x] **Unit 2: Roster mutation module**
 
 **Goal:** Create/edit roster files programmatically: `createRoster` (write + register in one op), add/remove/update project, edit server block.
 
@@ -137,7 +137,7 @@ Everything above the substrate is single-roster today: `src/mcp.ts` pins one ros
 
 **Verification:** AE1/AE4 semantics pass; no partial writes under injected write failures.
 
-- [ ] **Unit 3: Discovery `rosterPath` + `/registry` subpath packaging**
+- [x] **Unit 3: Discovery `rosterPath` + `/registry` subpath packaging**
 
 **Goal:** Discovery files record their roster path at spawn; the new library surface ships as `/registry`.
 
