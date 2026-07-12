@@ -2,6 +2,7 @@
 module: space-bus
 category: best-practices
 date: 2026-07-10
+last_updated: 2026-07-11
 problem_type: best_practice
 component: development_workflow
 severity: medium
@@ -50,6 +51,34 @@ The right-sizing half matters too: reviewers flagged a Linux zombie-leader edge 
 - Moving from "owned, verified process" semantics to "possibly stale/recycled pid" semantics.
 - Any cleanup/reap code on error or death paths.
 - Any review where the fix is signaling, killing, or process-group manipulation — get an independent pass and audit reused helpers' failure modes explicitly.
+- More broadly: any **wrapper/probe helper whose failure-mode inference feeds a destructive action** — the same shape appears whenever a helper collapses "I couldn't determine X" into "X is safely absent."
+
+## Second instance — a probe that conflates failure with absence (`printJob`, #80)
+
+The same failure family surfaced in the `space-bus service` launchd work, in a non-kill helper. `printJob` wraps `launchctl print` to answer "is this job loaded?" — and its teardown callers (`uninstallService`, `installService`) act destructively on the answer (delete the plist, overwrite a running job). The original helper collapsed **every** non-zero exit into `{ loaded: false }`:
+
+```ts
+// Before — a permission error, an IO error, and a timeout all look identical
+// to "job not found", so a probe *failure* reads as *absence*:
+if (result.code !== 0) return { loaded: false };
+```
+
+That is the identical hazard to the bare-pid fallback: a helper's degraded/failure branch widens the blast radius of a caller that trusts it. Uninstall would `unlinkSync` the plist and return `ok:true` while the job was still loaded, because a failed `launchctl print` was misread as "gone."
+
+The fix makes the helper distinguish failure from absence with a discriminated union — only launchd's own "not found" wording counts as not-loaded; every other non-zero is `ok:false` so callers fail honestly:
+
+```ts
+export type PrintJobResult =
+  | { ok: true; loaded: boolean; pid?: number }
+  | { ok: false; error: string };
+
+const NOT_LOADED_MARKERS = ["could not find", "no such process"];
+
+// ...only these markers on a non-zero exit mean not-loaded; anything else is
+// { ok: false, error } — a probe failure the caller must not treat as absence.
+```
+
+...and teardown refuses to delete unless absence is *confirmed* (`bootoutUntilAbsentOrFail` re-probes after a failed `bootout`; a still-loaded or un-probeable job leaves the plist in place and returns `ok:false`). Same lesson, generalized: **don't let a helper's failure branch turn "couldn't prove absence" into "safe to do the destructive thing."**
 
 ## Examples
 
@@ -97,6 +126,7 @@ Right-sizing: the blast-radius bug was fixed now (`signalGroupOnly`); the narrow
 ## Related
 
 - [../integration-issues/managed-stop-leaked-wrapper-child-2026-07-05.md](../integration-issues/managed-stop-leaked-wrapper-child-2026-07-05.md) — the process-group signaling precedent (stop path); this is the same family (stop → hung → died), and the died-path fallback risk is its sibling.
+- [./launchd-ambient-env-plist-pinning-2026-07-11.md](./launchd-ambient-env-plist-pinning-2026-07-11.md) — a sibling best-practice from the same `space-bus service` feature (#80) that surfaced the `printJob` second instance above.
 - [./managed-server-lifecycle-first-caller-spawns-2026-07-05.md](./managed-server-lifecycle-first-caller-spawns-2026-07-05.md) — the managed-server lifecycle checklist: identity-gated kill, group signaling, orphan reaping.
 - [./verify-reviewer-empirical-claims-2026-07-05.md](./verify-reviewer-empirical-claims-2026-07-05.md) — independent (Oracle) review of security-relevant claims; this doc extends it specifically to kill/signal fallback audits.
 - [../workflow-issues/orchestrator-verify-claims-not-assertions-2026-07-05.md](../workflow-issues/orchestrator-verify-claims-not-assertions-2026-07-05.md) — right-sizing scope and not over-trusting the obvious framing.
