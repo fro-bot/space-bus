@@ -4,9 +4,24 @@ import {
   formatDispatch,
   formatResult,
   formatRoster,
+  formatRosterHeader,
   formatStatus,
   formatWait,
 } from "./format";
+
+describe("formatRosterHeader", () => {
+  test("registry name present: uses the name", () => {
+    expect(
+      formatRosterHeader({ name: "personal", path: "/tmp/spacebus.json" }),
+    ).toBe("roster: personal");
+  });
+
+  test("no registry name (ambient resolution): uses the path", () => {
+    expect(formatRosterHeader({ path: "/tmp/spacebus.json" })).toBe(
+      "roster: /tmp/spacebus.json",
+    );
+  });
+});
 
 describe("formatRoster", () => {
   test("normal project with busy/session counts", () => {

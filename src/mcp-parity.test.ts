@@ -37,7 +37,7 @@ describe("plugin factory <-> description constant parity", () => {
     }
   });
 
-  test("bus_task args: prompt required; project, title, sessionId optional", async () => {
+  test("bus_task args: prompt required; project, title, sessionId, roster optional", async () => {
     const hooks = await SpaceBusPlugin(
       // biome-ignore lint: minimal stub, only `directory` is consumed
       { directory: "/tmp" } as any,
@@ -46,6 +46,7 @@ describe("plugin factory <-> description constant parity", () => {
     expect(Object.keys(args).sort()).toEqual([
       "project",
       "prompt",
+      "roster",
       "sessionId",
       "title",
     ]);
@@ -54,46 +55,64 @@ describe("plugin factory <-> description constant parity", () => {
     expect(isOptionalZod(args["project"])).toBe(true);
     expect(isOptionalZod(args["title"])).toBe(true);
     expect(isOptionalZod(args["sessionId"])).toBe(true);
+    expect(isOptionalZod(args["roster"])).toBe(true);
   });
 
-  test("bus_status args: sessionId required, only key", async () => {
+  test("bus_status args: sessionId required, roster optional", async () => {
     const hooks = await SpaceBusPlugin(
       // biome-ignore lint: minimal stub, only `directory` is consumed
       { directory: "/tmp" } as any,
     );
     const args = hooks.tool?.bus_status?.args as Record<string, unknown>;
-    expect(Object.keys(args)).toEqual(["sessionId"]);
+    expect(Object.keys(args).sort()).toEqual(["roster", "sessionId"]);
     expect(isOptionalZod(args["sessionId"])).toBe(false);
+    expect(isOptionalZod(args["roster"])).toBe(true);
   });
 
-  test("bus_result args: sessionId required, only key", async () => {
+  test("bus_result args: sessionId required, roster optional", async () => {
     const hooks = await SpaceBusPlugin(
       // biome-ignore lint: minimal stub, only `directory` is consumed
       { directory: "/tmp" } as any,
     );
     const args = hooks.tool?.bus_result?.args as Record<string, unknown>;
-    expect(Object.keys(args)).toEqual(["sessionId"]);
+    expect(Object.keys(args).sort()).toEqual(["roster", "sessionId"]);
     expect(isOptionalZod(args["sessionId"])).toBe(false);
+    expect(isOptionalZod(args["roster"])).toBe(true);
   });
 
-  test("bus_wait args: sessionIds required, timeoutMs optional", async () => {
+  test("bus_wait args: sessionIds required, timeoutMs and roster optional", async () => {
     const hooks = await SpaceBusPlugin(
       // biome-ignore lint: minimal stub, only `directory` is consumed
       { directory: "/tmp" } as any,
     );
     const args = hooks.tool?.bus_wait?.args as Record<string, unknown>;
-    expect(Object.keys(args).sort()).toEqual(["sessionIds", "timeoutMs"]);
+    expect(Object.keys(args).sort()).toEqual([
+      "roster",
+      "sessionIds",
+      "timeoutMs",
+    ]);
     expect(isOptionalZod(args["sessionIds"])).toBe(false);
     expect(isOptionalZod(args["timeoutMs"])).toBe(true);
+    expect(isOptionalZod(args["roster"])).toBe(true);
   });
 
-  test("bus_roster args: no args", async () => {
+  test("bus_roster args: roster optional, only key", async () => {
     const hooks = await SpaceBusPlugin(
       // biome-ignore lint: minimal stub, only `directory` is consumed
       { directory: "/tmp" } as any,
     );
     const args = hooks.tool?.bus_roster?.args as Record<string, unknown>;
-    expect(Object.keys(args)).toEqual([]);
+    expect(Object.keys(args)).toEqual(["roster"]);
+    expect(isOptionalZod(args["roster"])).toBe(true);
+  });
+});
+
+describe("roster param + MCP inputSchema parity (Unit 4)", () => {
+  test("mcp.ts declares a ROSTER_PARAM_SCHEMA reused across all five inputSchemas", () => {
+    const mcpSource = readFileSync(join(__dirname, "mcp.ts"), "utf8");
+    expect(mcpSource).toContain("ROSTER_PARAM_SCHEMA");
+    const usages = mcpSource.match(/roster: ROSTER_PARAM_SCHEMA/g);
+    expect(usages).toHaveLength(5);
   });
 });
 
@@ -176,7 +195,7 @@ describe("mcp.ts source-text parity guard", () => {
     // Only the one call inside mcpLoadContext() itself should invoke the
     // bare loadContext().
     expect(bareLoadContextCalls).toHaveLength(1);
-    const mcpLoadContextCalls = mcpSource.match(/mcpLoadContext\(\)/g);
+    const mcpLoadContextCalls = mcpSource.match(/mcpLoadContext\(/g);
     expect(mcpLoadContextCalls?.length).toBeGreaterThanOrEqual(5);
   });
 });

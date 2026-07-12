@@ -1,6 +1,6 @@
 import { type ToolDefinition, tool } from "@opencode-ai/plugin";
 import { wait } from "../core";
-import { formatWait } from "../format";
+import { formatRosterHeader, formatWait } from "../format";
 import { ensureAndLoadContext } from "./shared";
 
 export const BUS_WAIT_DESCRIPTION =
@@ -29,6 +29,12 @@ export function makeBusWait(defaultDirectory?: string): ToolDefinition {
         .describe(
           `Max time to wait in milliseconds before returning a timeout snapshot (default 60s, capped at ${MAX_WAIT_TIMEOUT_MS}ms; soft deadline, may overshoot by up to ~30s if a request is slow)`,
         ),
+      roster: tool.schema
+        .string()
+        .optional()
+        .describe(
+          "Registry roster name to target instead of the ambient/default roster (see bus_registry to list)",
+        ),
     },
     async execute(args, ctx) {
       // Explicit runtime guard: schema .min(1) may not be enforced ahead of
@@ -38,9 +44,9 @@ export function makeBusWait(defaultDirectory?: string): ToolDefinition {
         throw new Error("bus_wait requires at least one sessionId");
       }
       const directory = ctx.directory ?? defaultDirectory;
-      let context: Awaited<ReturnType<typeof ensureAndLoadContext>>;
+      let resolved: Awaited<ReturnType<typeof ensureAndLoadContext>>;
       try {
-        context = await ensureAndLoadContext(directory);
+        resolved = await ensureAndLoadContext(directory, args.roster);
       } catch (e) {
         throw new Error((e as Error).message);
       }
@@ -48,9 +54,16 @@ export function makeBusWait(defaultDirectory?: string): ToolDefinition {
         args.timeoutMs !== undefined
           ? Math.min(args.timeoutMs, MAX_WAIT_TIMEOUT_MS)
           : undefined;
-      const r = await wait(args.sessionIds, { context, timeoutMs });
+      const r = await wait(args.sessionIds, {
+        context: resolved.context,
+        timeoutMs,
+      });
       if (!r.ok) throw new Error(r.error);
-      return formatWait(r);
+      const header = formatRosterHeader({
+        name: resolved.rosterName,
+        path: resolved.rosterPath,
+      });
+      return `${header}\n${formatWait(r)}`;
     },
   });
 }

@@ -1,16 +1,24 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { isManagedRoster, loadContext, resolveRosterPath } from "./config";
+import {
+  isManagedRoster,
+  isManagedRosterAtPath,
+  loadContext,
+  loadContextForRoster,
+  resolveRosterPath,
+} from "./config";
 import { dispatch, result, roster, status, toDispatchArgs, wait } from "./core";
 import {
   dispatchMetadata,
   formatDispatch,
   formatResult,
   formatRoster,
+  formatRosterHeader,
   formatStatus,
   formatWait,
 } from "./format";
+import { resolveRosterByName } from "./registry";
 import { ensureServer } from "./server";
 import { BUS_RESULT_DESCRIPTION } from "./tools/bus_result";
 import { BUS_ROSTER_DESCRIPTION } from "./tools/bus_roster";
@@ -18,18 +26,49 @@ import { BUS_STATUS_DESCRIPTION } from "./tools/bus_status";
 import { BUS_TASK_DESCRIPTION } from "./tools/bus_task";
 import { BUS_WAIT_DESCRIPTION, MAX_WAIT_TIMEOUT_MS } from "./tools/bus_wait";
 
+const ROSTER_PARAM_SCHEMA = z
+  .string()
+  .optional()
+  .describe(
+    "Registry roster name to target instead of the ambient/default roster (see bus_registry to list)",
+  );
+
+type McpLoadedContext = {
+  context: Awaited<ReturnType<typeof loadContext>>;
+  rosterName?: string;
+  rosterPath: string;
+};
+
 /**
  * MCP is attach-only by default (never spawns) — set SPACE_BUS_MCP_SPAWN
  * (any truthy value) to opt in to ensure-on-demand, matching the plugin
- * tools' behavior. MCP is single-directory-per-process: directory
+ * tools' behavior. MCP is single-directory-per-process: ambient directory
  * resolution rides SPACE_BUS_CONFIG alone (no process.cwd() threading).
+ *
+ * Resolution precedence (R9/R10, MCP side): an explicit `rosterName` param
+ * wins over the ambient SPACE_BUS_CONFIG resolution. MCP session-state
+ * (`use`) is Unit 5 — ambient here stays SPACE_BUS_CONFIG-only.
  */
-async function mcpLoadContext(): Promise<ReturnType<typeof loadContext>> {
+async function mcpLoadContext(rosterName?: string): Promise<McpLoadedContext> {
+  if (rosterName !== undefined) {
+    const resolved = resolveRosterByName(rosterName);
+    if (!resolved.ok) throw new Error(resolved.error);
+    const rosterPath = resolved.path;
+    if (
+      process.env["SPACE_BUS_MCP_SPAWN"] &&
+      isManagedRosterAtPath(rosterPath)
+    ) {
+      await ensureServer(rosterPath);
+    }
+    const { context } = loadContextForRoster(rosterName);
+    return { context, rosterName, rosterPath };
+  }
   if (process.env["SPACE_BUS_MCP_SPAWN"] && isManagedRoster()) {
     const rosterPath = resolveRosterPath();
     await ensureServer(rosterPath);
   }
-  return loadContext();
+  const rosterPath = resolveRosterPath();
+  return { context: loadContext(), rosterPath };
 }
 
 // Injected at build time via build.ts's Bun.build `define` (reads
@@ -49,24 +88,33 @@ server.registerTool(
   "bus_roster",
   {
     description: BUS_ROSTER_DESCRIPTION,
-    inputSchema: {},
+    inputSchema: { roster: ROSTER_PARAM_SCHEMA },
   },
-  async () => {
-    let context: Awaited<ReturnType<typeof mcpLoadContext>>;
+  async (args) => {
+    let loaded: McpLoadedContext;
     try {
       // MCP is single-directory-per-process: no per-call directory exists, so
-      // resolution rides SPACE_BUS_CONFIG alone. Do not thread process.cwd() in.
-      context = await mcpLoadContext();
+      // ambient resolution rides SPACE_BUS_CONFIG alone. Do not thread
+      // process.cwd() in.
+      loaded = await mcpLoadContext(args.roster);
     } catch (e) {
       return {
         content: [{ type: "text", text: (e as Error).message }],
         isError: true,
       };
     }
-    const r = await roster({ context });
+    const r = await roster({ context: loaded.context });
     if (!r.ok)
       return { content: [{ type: "text", text: r.error }], isError: true };
-    return { content: [{ type: "text", text: formatRoster(r.projects) }] };
+    const header = formatRosterHeader({
+      name: loaded.rosterName,
+      path: loaded.rosterPath,
+    });
+    return {
+      content: [
+        { type: "text", text: `${header}\n${formatRoster(r.projects)}` },
+      ],
+    };
   },
 );
 
@@ -94,6 +142,7 @@ server.registerTool(
         .describe(
           "Existing session ID to steer instead of starting a new session",
         ),
+      roster: ROSTER_PARAM_SCHEMA,
     },
     outputSchema: {
       sessionId: z.string().describe("The dispatched or steered session ID"),
@@ -112,20 +161,24 @@ server.registerTool(
         content: [{ type: "text", text: dispatchArgs.error }],
         isError: true,
       };
-    let context: Awaited<ReturnType<typeof mcpLoadContext>>;
+    let loaded: McpLoadedContext;
     try {
-      context = await mcpLoadContext();
+      loaded = await mcpLoadContext(args.roster);
     } catch (e) {
       return {
         content: [{ type: "text", text: (e as Error).message }],
         isError: true,
       };
     }
-    const r = await dispatch(dispatchArgs, { context });
+    const r = await dispatch(dispatchArgs, { context: loaded.context });
     if (!r.ok)
       return { content: [{ type: "text", text: r.error }], isError: true };
+    const header = formatRosterHeader({
+      name: loaded.rosterName,
+      path: loaded.rosterPath,
+    });
     return {
-      content: [{ type: "text", text: formatDispatch(r) }],
+      content: [{ type: "text", text: `${header}\n${formatDispatch(r)}` }],
       structuredContent: dispatchMetadata(r),
     };
   },
@@ -137,22 +190,29 @@ server.registerTool(
     description: BUS_STATUS_DESCRIPTION,
     inputSchema: {
       sessionId: z.string().describe("Session ID returned by bus_task"),
+      roster: ROSTER_PARAM_SCHEMA,
     },
   },
   async (args) => {
-    let context: Awaited<ReturnType<typeof mcpLoadContext>>;
+    let loaded: McpLoadedContext;
     try {
-      context = await mcpLoadContext();
+      loaded = await mcpLoadContext(args.roster);
     } catch (e) {
       return {
         content: [{ type: "text", text: (e as Error).message }],
         isError: true,
       };
     }
-    const r = await status(args.sessionId, { context });
+    const r = await status(args.sessionId, { context: loaded.context });
     if (!r.ok)
       return { content: [{ type: "text", text: r.error }], isError: true };
-    return { content: [{ type: "text", text: formatStatus(r) }] };
+    const header = formatRosterHeader({
+      name: loaded.rosterName,
+      path: loaded.rosterPath,
+    });
+    return {
+      content: [{ type: "text", text: `${header}\n${formatStatus(r)}` }],
+    };
   },
 );
 
@@ -162,22 +222,29 @@ server.registerTool(
     description: BUS_RESULT_DESCRIPTION,
     inputSchema: {
       sessionId: z.string().describe("Session ID returned by bus_task"),
+      roster: ROSTER_PARAM_SCHEMA,
     },
   },
   async (args) => {
-    let context: Awaited<ReturnType<typeof mcpLoadContext>>;
+    let loaded: McpLoadedContext;
     try {
-      context = await mcpLoadContext();
+      loaded = await mcpLoadContext(args.roster);
     } catch (e) {
       return {
         content: [{ type: "text", text: (e as Error).message }],
         isError: true,
       };
     }
-    const r = await result(args.sessionId, { context });
+    const r = await result(args.sessionId, { context: loaded.context });
     if (!r.ok)
       return { content: [{ type: "text", text: r.error }], isError: true };
-    return { content: [{ type: "text", text: formatResult(r) }] };
+    const header = formatRosterHeader({
+      name: loaded.rosterName,
+      path: loaded.rosterPath,
+    });
+    return {
+      content: [{ type: "text", text: `${header}\n${formatResult(r)}` }],
+    };
   },
 );
 
@@ -198,12 +265,13 @@ server.registerTool(
         .describe(
           `Max time to wait in milliseconds before returning a timeout snapshot (default 60s, capped at ${MAX_WAIT_TIMEOUT_MS}ms; soft deadline, may overshoot by up to ~30s if a request is slow)`,
         ),
+      roster: ROSTER_PARAM_SCHEMA,
     },
   },
   async (args) => {
-    let context: Awaited<ReturnType<typeof mcpLoadContext>>;
+    let loaded: McpLoadedContext;
     try {
-      context = await mcpLoadContext();
+      loaded = await mcpLoadContext(args.roster);
     } catch (e) {
       return {
         content: [{ type: "text", text: (e as Error).message }],
@@ -214,10 +282,19 @@ server.registerTool(
       args.timeoutMs !== undefined
         ? Math.min(args.timeoutMs, MAX_WAIT_TIMEOUT_MS)
         : undefined;
-    const r = await wait(args.sessionIds, { context, timeoutMs });
+    const r = await wait(args.sessionIds, {
+      context: loaded.context,
+      timeoutMs,
+    });
     if (!r.ok)
       return { content: [{ type: "text", text: r.error }], isError: true };
-    return { content: [{ type: "text", text: formatWait(r) }] };
+    const header = formatRosterHeader({
+      name: loaded.rosterName,
+      path: loaded.rosterPath,
+    });
+    return {
+      content: [{ type: "text", text: `${header}\n${formatWait(r)}` }],
+    };
   },
 );
 

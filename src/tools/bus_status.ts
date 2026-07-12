@@ -1,6 +1,6 @@
 import { type ToolDefinition, tool } from "@opencode-ai/plugin";
 import { status } from "../core";
-import { formatStatus } from "../format";
+import { formatRosterHeader, formatStatus } from "../format";
 import { ensureAndLoadContext } from "./shared";
 
 export const BUS_STATUS_DESCRIPTION =
@@ -13,18 +13,28 @@ export function makeBusStatus(defaultDirectory?: string): ToolDefinition {
       sessionId: tool.schema
         .string()
         .describe("Session ID returned by bus_task"),
+      roster: tool.schema
+        .string()
+        .optional()
+        .describe(
+          "Registry roster name to target instead of the ambient/default roster (see bus_registry to list)",
+        ),
     },
     async execute(args, ctx) {
       const directory = ctx.directory ?? defaultDirectory;
-      let context: Awaited<ReturnType<typeof ensureAndLoadContext>>;
+      let resolved: Awaited<ReturnType<typeof ensureAndLoadContext>>;
       try {
-        context = await ensureAndLoadContext(directory);
+        resolved = await ensureAndLoadContext(directory, args.roster);
       } catch (e) {
         throw new Error((e as Error).message);
       }
-      const r = await status(args.sessionId, { context });
+      const r = await status(args.sessionId, { context: resolved.context });
       if (!r.ok) throw new Error(r.error);
-      return formatStatus(r);
+      const header = formatRosterHeader({
+        name: resolved.rosterName,
+        path: resolved.rosterPath,
+      });
+      return `${header}\n${formatStatus(r)}`;
     },
   });
 }

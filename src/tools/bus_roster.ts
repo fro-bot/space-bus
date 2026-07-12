@@ -1,6 +1,6 @@
 import { type ToolDefinition, tool } from "@opencode-ai/plugin";
 import { roster } from "../core";
-import { formatRoster } from "../format";
+import { formatRoster, formatRosterHeader } from "../format";
 import { ensureAndLoadContext } from "./shared";
 
 export const BUS_ROSTER_DESCRIPTION =
@@ -9,18 +9,29 @@ export const BUS_ROSTER_DESCRIPTION =
 export function makeBusRoster(defaultDirectory?: string): ToolDefinition {
   return tool({
     description: BUS_ROSTER_DESCRIPTION,
-    args: {},
-    async execute(_args, ctx) {
+    args: {
+      roster: tool.schema
+        .string()
+        .optional()
+        .describe(
+          "Registry roster name to target instead of the ambient/default roster (see bus_registry to list)",
+        ),
+    },
+    async execute(args, ctx) {
       const directory = ctx.directory ?? defaultDirectory;
-      let context: Awaited<ReturnType<typeof ensureAndLoadContext>>;
+      let resolved: Awaited<ReturnType<typeof ensureAndLoadContext>>;
       try {
-        context = await ensureAndLoadContext(directory);
+        resolved = await ensureAndLoadContext(directory, args.roster);
       } catch (e) {
         throw new Error((e as Error).message);
       }
-      const r = await roster({ context });
+      const r = await roster({ context: resolved.context });
       if (!r.ok) throw new Error(r.error);
-      return formatRoster(r.projects);
+      const header = formatRosterHeader({
+        name: resolved.rosterName,
+        path: resolved.rosterPath,
+      });
+      return `${header}\n${formatRoster(r.projects)}`;
     },
   });
 }

@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { registerRoster } from "../registry";
 import { makeBusWait } from "./bus_wait";
 
 describe("bus_wait tool", () => {
@@ -112,5 +113,139 @@ describe("bus_wait tool", () => {
     } finally {
       teardown();
     }
+  });
+
+  describe("roster param (Unit 4)", () => {
+    // Registers rosters — isolate XDG_CONFIG_HOME per test so scenarios
+    // never contaminate each other's registry.json, same pattern as
+    // registry.test.ts / config.test.ts's registry describe block.
+    let perTestConfigHome: string;
+    let originalXdgConfigHome: string | undefined;
+
+    function setupWithBeforeEach(): void {
+      originalXdgConfigHome = process.env["XDG_CONFIG_HOME"];
+      perTestConfigHome = mkdtempSync(
+        join(tmpdir(), "space-bus-wait-registry-test-"),
+      );
+      process.env["XDG_CONFIG_HOME"] = perTestConfigHome;
+    }
+
+    function teardownRegistryIsolation(): void {
+      rmSync(perTestConfigHome, { recursive: true, force: true });
+      if (originalXdgConfigHome === undefined) {
+        delete process.env["XDG_CONFIG_HOME"];
+      } else {
+        process.env["XDG_CONFIG_HOME"] = originalXdgConfigHome;
+      }
+    }
+
+    test("happy path: roster param resolves a registered roster's context and echoes it (AE2)", async () => {
+      setup();
+      setupWithBeforeEach();
+      try {
+        const rosterPath = realpathSync(join(configDir, "spacebus.json"));
+        expect(registerRoster("personal", rosterPath)).toEqual({ ok: true });
+
+        globalThis.fetch = mockFetch({
+          "/session/ses_a": () =>
+            new Response(JSON.stringify({ id: "ses_a", directory: dir }), {
+              status: 200,
+            }),
+          "/session/status": () =>
+            new Response(JSON.stringify({ ses_a: { type: "idle" } }), {
+              status: 200,
+            }),
+          "/question": () => new Response(JSON.stringify([]), { status: 200 }),
+        });
+        // Deliberately pass a directory that has no ambient spacebus.json —
+        // the explicit roster param must still resolve.
+        const noAmbientDir = mkdtempSync(
+          join(tmpdir(), "space-bus-wait-no-ambient-"),
+        );
+        delete process.env["SPACE_BUS_CONFIG"];
+        try {
+          const busWait = makeBusWait(noAmbientDir);
+          const out = (await busWait.execute(
+            { sessionIds: ["ses_a"], roster: "personal" },
+            // biome-ignore lint: minimal stub, only `directory` is consumed
+            { directory: noAmbientDir } as any,
+          )) as string;
+          expect(out).toStartWith("roster: personal\n");
+          expect(out).toContain("woke on: ses_a");
+        } finally {
+          rmSync(noAmbientDir, { recursive: true, force: true });
+        }
+      } finally {
+        teardownRegistryIsolation();
+        teardown();
+      }
+    });
+
+    test("omitted roster param: behavior + echo byte-identical to ambient path (AE3), header names the resolved path", async () => {
+      setup();
+      try {
+        globalThis.fetch = mockFetch({
+          "/session/ses_a": () =>
+            new Response(JSON.stringify({ id: "ses_a", directory: dir }), {
+              status: 200,
+            }),
+          "/session/status": () =>
+            new Response(JSON.stringify({ ses_a: { type: "idle" } }), {
+              status: 200,
+            }),
+          "/question": () => new Response(JSON.stringify([]), { status: 200 }),
+        });
+        const busWait = makeBusWait(dir);
+        const out = (await busWait.execute(
+          { sessionIds: ["ses_a"] },
+          // biome-ignore lint: minimal stub, only `directory` is consumed
+          { directory: dir } as any,
+        )) as string;
+        const expectedPath = realpathSync(join(configDir, "spacebus.json"));
+        expect(out).toStartWith(`roster: ${expectedPath}\n`);
+        expect(out).toContain("woke on: ses_a");
+      } finally {
+        teardown();
+      }
+    });
+
+    test("error: unknown roster name surfaces an actionable error listing known names (AE5)", async () => {
+      setup();
+      setupWithBeforeEach();
+      try {
+        const rosterPath = realpathSync(join(configDir, "spacebus.json"));
+        expect(registerRoster("workspace", rosterPath)).toEqual({ ok: true });
+
+        const busWait = makeBusWait(dir);
+        await expect(
+          busWait.execute(
+            { sessionIds: ["ses_a"], roster: "blog" },
+            // biome-ignore lint: minimal stub, only `directory` is consumed
+            { directory: dir } as any,
+          ),
+        ).rejects.toThrow(/workspace/);
+      } finally {
+        teardownRegistryIsolation();
+        teardown();
+      }
+    });
+
+    test("edge: zero rosters registered + roster param names 'no rosters are registered'", async () => {
+      setup();
+      setupWithBeforeEach();
+      try {
+        const busWait = makeBusWait(dir);
+        await expect(
+          busWait.execute(
+            { sessionIds: ["ses_a"], roster: "anything" },
+            // biome-ignore lint: minimal stub, only `directory` is consumed
+            { directory: dir } as any,
+          ),
+        ).rejects.toThrow(/no rosters are registered/);
+      } finally {
+        teardownRegistryIsolation();
+        teardown();
+      }
+    });
   });
 });

@@ -9,6 +9,7 @@ import { z } from "zod";
 import type { BusContext } from "./contract";
 import { LOOPBACK_HOSTS } from "./contract";
 import { attachLive } from "./discovery";
+import { resolveRosterByName } from "./registry";
 
 export const managedServerConfigSchema = z.object({
   command: z.array(z.string()).optional(),
@@ -108,9 +109,14 @@ export function resolveRosterPath(directory?: string): string {
   );
 }
 
-/** Reads, validates, and expands the roster for a given workspace directory. No caching — reads per call. */
-export function getRoster(directory?: string): Manifest {
-  const manifestPath = resolveRosterPath(directory);
+/**
+ * Reads, validates, and expands the roster manifest at an already-resolved
+ * path. Extracted from `getRoster` so both directory-based resolution and
+ * registry-name-based resolution (`loadContextForRoster`) share the exact
+ * same read/parse/validate/localhost-guard pipeline — no parallel
+ * resolution path.
+ */
+export function getRosterAtPath(manifestPath: string): Manifest {
   let raw: string;
   try {
     raw = readFileSync(manifestPath, "utf8");
@@ -145,6 +151,12 @@ export function getRoster(directory?: string): Manifest {
   return parsed.data;
 }
 
+/** Reads, validates, and expands the roster for a given workspace directory. No caching — reads per call. */
+export function getRoster(directory?: string): Manifest {
+  const manifestPath = resolveRosterPath(directory);
+  return getRosterAtPath(manifestPath);
+}
+
 export type Project = Manifest["projects"][number] & {
   expandedPath: string;
   exists: boolean;
@@ -169,16 +181,13 @@ export function getCredentials(): { username?: string; password?: string } {
 }
 
 /**
- * Node-side loader producing a `BusContext` (see contract.ts) for a given
- * workspace directory: roster with `exists`-flagged projects, plus
- * env-derived credentials. Per-call/short-lived by contract — build a fresh
- * one per call, never cache across filesystem changes. Throws on
- * missing/invalid roster (same as `getRoster`); callers convert to a
- * discriminated-union Result at the core boundary.
+ * Loads a `BusContext` from an already-resolved roster path. Extracted so
+ * both directory-based resolution (`loadContext`) and registry-name-based
+ * resolution (`loadContextForRoster`) share the exact same
+ * read/attach/credentials pipeline — no parallel resolution path.
  */
-export function loadContext(directory?: string): BusContext {
-  const rosterPath = resolveRosterPath(directory);
-  const manifest = getRoster(directory);
+function loadContextAtPath(rosterPath: string): BusContext {
+  const manifest = getRosterAtPath(rosterPath);
   const projects = getProjects(manifest);
   if (manifest.server.baseUrl === undefined) {
     // Managed roster: attach-only, never spawn. Spawning is ensureServer()'s
@@ -199,6 +208,56 @@ export function loadContext(directory?: string): BusContext {
     roster: { server: { baseUrl: manifest.server.baseUrl }, projects },
     credentials: getCredentials(),
   };
+}
+
+/**
+ * Node-side loader producing a `BusContext` (see contract.ts) for a given
+ * workspace directory: roster with `exists`-flagged projects, plus
+ * env-derived credentials. Per-call/short-lived by contract — build a fresh
+ * one per call, never cache across filesystem changes. Throws on
+ * missing/invalid roster (same as `getRoster`); callers convert to a
+ * discriminated-union Result at the core boundary.
+ */
+export function loadContext(directory?: string): BusContext {
+  const rosterPath = resolveRosterPath(directory);
+  return loadContextAtPath(rosterPath);
+}
+
+/**
+ * Registry-name-based loader: resolves `rosterName` via
+ * `registry.resolveRosterByName` (Node-only import; config.ts is already
+ * Node-only), then loads that roster through the exact same
+ * `loadContextAtPath` pipeline `loadContext` uses for directory resolution
+ * — the localhost guard and schema validation apply identically, no
+ * parallel resolution path. Unknown name (or a registry with zero
+ * rosters) throws an Error whose message lists the known roster names,
+ * matching `resolveRosterByName`'s error shape and `loadContext`'s
+ * throw-on-missing behavior; adapters convert to a discriminated-union
+ * Result / MCP `isError` at the boundary, same as `loadContext`.
+ */
+export function loadContextForRoster(rosterName: string): {
+  context: BusContext;
+  rosterPath: string;
+} {
+  const resolved = resolveRosterByName(rosterName);
+  if (!resolved.ok) {
+    throw new Error(resolved.error);
+  }
+  return {
+    context: loadContextAtPath(resolved.path),
+    rosterPath: resolved.path,
+  };
+}
+
+/**
+ * Cheap check for whether the roster at an already-resolved path is managed
+ * (spawn-eligible) vs. externally-managed (baseUrl). Extracted so both
+ * directory-based (`isManagedRoster`) and registry-name-based
+ * (`ensureAndLoadContext` in tools/shared.ts) callers share the same check.
+ */
+export function isManagedRosterAtPath(rosterPath: string): boolean {
+  const manifest = getRosterAtPath(rosterPath);
+  return manifest.server.managed !== undefined;
 }
 
 /**

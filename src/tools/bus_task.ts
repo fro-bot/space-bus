@@ -1,6 +1,10 @@
 import { type ToolDefinition, tool } from "@opencode-ai/plugin";
 import { dispatch, toDispatchArgs } from "../core";
-import { dispatchMetadata, formatDispatch } from "../format";
+import {
+  dispatchMetadata,
+  formatDispatch,
+  formatRosterHeader,
+} from "../format";
 import { ensureAndLoadContext } from "./shared";
 
 export const BUS_TASK_DESCRIPTION =
@@ -31,6 +35,12 @@ export function makeBusTask(defaultDirectory?: string): ToolDefinition {
         .describe(
           "Existing session ID to steer instead of starting a new session",
         ),
+      roster: tool.schema
+        .string()
+        .optional()
+        .describe(
+          "Registry roster name to target instead of the ambient/default roster (see bus_registry to list)",
+        ),
     },
     async execute(args, ctx) {
       // Fail-fast ordering pin: arg-shape validation runs BEFORE context
@@ -38,15 +48,22 @@ export function makeBusTask(defaultDirectory?: string): ToolDefinition {
       const dispatchArgs = toDispatchArgs(args);
       if (!dispatchArgs.ok) throw new Error(dispatchArgs.error);
       const directory = ctx.directory ?? defaultDirectory;
-      let context: Awaited<ReturnType<typeof ensureAndLoadContext>>;
+      let resolved: Awaited<ReturnType<typeof ensureAndLoadContext>>;
       try {
-        context = await ensureAndLoadContext(directory);
+        resolved = await ensureAndLoadContext(directory, args.roster);
       } catch (e) {
         throw new Error((e as Error).message);
       }
-      const r = await dispatch(dispatchArgs, { context });
+      const r = await dispatch(dispatchArgs, { context: resolved.context });
       if (!r.ok) throw new Error(r.error);
-      return { output: formatDispatch(r), metadata: dispatchMetadata(r) };
+      const header = formatRosterHeader({
+        name: resolved.rosterName,
+        path: resolved.rosterPath,
+      });
+      return {
+        output: `${header}\n${formatDispatch(r)}`,
+        metadata: dispatchMetadata(r),
+      };
     },
   });
 }

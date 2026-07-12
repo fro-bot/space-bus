@@ -1,11 +1,18 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   getRoster,
   isManagedRoster,
   loadContext,
+  loadContextForRoster,
   resolveRosterPath,
 } from "./config";
 import {
@@ -13,6 +20,7 @@ import {
   removeDiscovery,
   writeDiscovery,
 } from "./discovery";
+import { registerRoster } from "./registry";
 import { ensureServer, stopServer } from "./server";
 
 const STUB_COMMAND = ["bun", "test/fixtures/stub-server.ts"];
@@ -257,6 +265,70 @@ describe("config", () => {
         expect(context.credentials).toEqual(handle.credentials);
       } finally {
         await stopServer(rosterPath);
+      }
+    });
+  });
+
+  describe("loadContextForRoster (Unit 4 registry loader)", () => {
+    // This describe block registers rosters — isolate XDG_CONFIG_HOME per
+    // test (same pattern as registry.test.ts) so scenarios never
+    // contaminate each other's registry.json across tests in this file.
+    let perTestConfigHome: string;
+    let originalXdgConfigHome: string | undefined;
+
+    beforeEach(() => {
+      originalXdgConfigHome = process.env["XDG_CONFIG_HOME"];
+      perTestConfigHome = mkdtempSync(
+        join(tmpdir(), "space-bus-config-registry-test-"),
+      );
+      process.env["XDG_CONFIG_HOME"] = perTestConfigHome;
+    });
+
+    afterEach(() => {
+      rmSync(perTestConfigHome, { recursive: true, force: true });
+      if (originalXdgConfigHome === undefined) {
+        delete process.env["XDG_CONFIG_HOME"];
+      } else {
+        process.env["XDG_CONFIG_HOME"] = originalXdgConfigHome;
+      }
+    });
+
+    test("happy path: registered name resolves that roster's context via the same pipeline as loadContext", () => {
+      const rosterPath = realpathSync(writeRoster(dir));
+      expect(registerRoster("workspace", rosterPath)).toEqual({ ok: true });
+
+      const { context, rosterPath: resolvedPath } =
+        loadContextForRoster("workspace");
+      expect(resolvedPath).toBe(rosterPath);
+      expect(context.roster.server.baseUrl).toBe("http://127.0.0.1:4096");
+      expect(context.roster.projects).toHaveLength(1);
+    });
+
+    test("error: unknown roster name throws listing known names (AE5)", () => {
+      const rosterPath = realpathSync(writeRoster(dir));
+      expect(registerRoster("workspace", rosterPath)).toEqual({ ok: true });
+
+      expect(() => loadContextForRoster("blog")).toThrow(/workspace/);
+    });
+
+    test("edge: zero rosters registered + roster param throws naming no rosters registered", () => {
+      expect(() => loadContextForRoster("anything")).toThrow(
+        /no rosters are registered/,
+      );
+    });
+
+    test("localhost guard applies identically to registry-resolved rosters", () => {
+      const badDir = mkdtempSync(join(tmpdir(), "space-bus-config-bad-"));
+      try {
+        const badPath = realpathSync(
+          writeRoster(badDir, {
+            server: { baseUrl: "http://example.com:4096" },
+          }),
+        );
+        expect(registerRoster("remote", badPath)).toEqual({ ok: true });
+        expect(() => loadContextForRoster("remote")).toThrow(/localhost/);
+      } finally {
+        rmSync(badDir, { recursive: true, force: true });
       }
     });
   });
