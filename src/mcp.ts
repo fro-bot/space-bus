@@ -392,12 +392,12 @@ server.registerTool(
         args as BusRegistryArgs,
         registrySession,
       );
-      return listMetadata
-        ? {
-            content: [{ type: "text", text }],
-            structuredContent: { rosters: listMetadata },
-          }
-        : { content: [{ type: "text", text }] };
+      // outputSchema requires structuredContent on every success; rosters
+      // is populated for `list` only.
+      return {
+        content: [{ type: "text", text }],
+        structuredContent: listMetadata ? { rosters: listMetadata } : {},
+      };
     } catch (e) {
       return {
         content: [{ type: "text", text: (e as Error).message }],
@@ -412,7 +412,13 @@ async function main(): Promise<void> {
   await server.connect(transport);
 }
 
-main().catch((err) => {
-  console.error("space-bus mcp: fatal startup error:", err);
-  process.exit(1);
-});
+// Test seam: lets regression tests connect over an in-memory transport
+// without starting the stdio transport below.
+export { server };
+
+if (import.meta.main) {
+  main().catch((err) => {
+    console.error("space-bus mcp: fatal startup error:", err);
+    process.exit(1);
+  });
+}
