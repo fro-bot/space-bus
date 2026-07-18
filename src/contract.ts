@@ -129,7 +129,11 @@ export const messagePartSchema = z.looseObject({
 export type MessagePartSchema = z.infer<typeof messagePartSchema>;
 
 export const messageEnvelopeSchema = z.looseObject({
-  info: z.looseObject({ role: z.string() }),
+  info: z.looseObject({
+    id: z.string().optional(),
+    role: z.string(),
+    time: z.looseObject({ created: z.number().optional() }).optional(),
+  }),
   parts: z.array(messagePartSchema),
 });
 export type MessageEnvelopeSchema = z.infer<typeof messageEnvelopeSchema>;
@@ -144,8 +148,16 @@ export const pendingQuestionEntrySchema = z.looseObject({
     .array(
       z.looseObject({
         question: z.string().optional(),
+        header: z.string().optional(),
+        multiple: z.boolean().optional(),
+        custom: z.boolean().optional(),
         options: z
-          .array(z.looseObject({ label: z.string().optional() }))
+          .array(
+            z.looseObject({
+              label: z.string().optional(),
+              description: z.string().optional(),
+            }),
+          )
           .optional(),
       }),
     )
