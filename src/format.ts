@@ -47,6 +47,8 @@ export function formatDispatch(r: DispatchResult): string {
       return `Replied to pending question in session ${r.sessionId} (${r.project}).`;
     case "follow-up":
       return `Follow-up prompt sent to session ${r.sessionId} (${r.project}).`;
+    case "blocked":
+      return `Blocked: session ${r.sessionId} (${r.project}) has a pending question (${r.requestId}) — no reply or prompt sent.`;
   }
 }
 

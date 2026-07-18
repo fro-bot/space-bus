@@ -135,6 +135,18 @@ describe("formatDispatch", () => {
     });
     expect(out).toBe("Follow-up prompt sent to session ses_789 (infra).");
   });
+
+  test("mode blocked", () => {
+    const out = formatDispatch({
+      sessionId: "ses_999",
+      project: "infra",
+      mode: "blocked",
+      requestId: "que_abc",
+    });
+    expect(out).toBe(
+      "Blocked: session ses_999 (infra) has a pending question (que_abc) — no reply or prompt sent.",
+    );
+  });
 });
 
 describe("formatStatus", () => {

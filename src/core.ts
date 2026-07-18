@@ -393,6 +393,7 @@ async function dispatchNew(
 export type DispatchResult = { sessionId: string; project: string } & (
   | { mode: "new"; directory: string }
   | { mode: "question-reply" | "follow-up" }
+  | { mode: "blocked"; requestId: string }
 );
 
 // project stays allowed alongside sessionId (the mismatch guard in the
@@ -402,6 +403,16 @@ export type DispatchResult = { sessionId: string; project: string } & (
 export type DispatchArgs = {
   prompt: string;
   title?: string;
+  /**
+   * Backward-compatible pending-question policy for the steering path.
+   * Defaults to v0.13.1's implicit "question-reply" behavior (a follow-up
+   * to a session with a pending question is sent as that question's
+   * reply). Passing "blocked" instead refuses the mutation entirely and
+   * returns a typed blocked result with no reply and no follow-up prompt —
+   * required by ide_dispatch_prompt (R2), which must never silently
+   * reinterpret prompt text as a question answer.
+   */
+  onPendingQuestion?: "question-reply" | "blocked";
 } & (
   | { project: string; sessionId?: undefined }
   | { sessionId: string; project?: string }
@@ -417,7 +428,17 @@ export function toDispatchArgs(input: {
   title?: string;
   project?: string;
   sessionId?: string;
+  onPendingQuestion?: "question-reply" | "blocked";
 }): Result<DispatchArgs> {
+  if (
+    input.onPendingQuestion !== undefined &&
+    input.onPendingQuestion !== "question-reply" &&
+    input.onPendingQuestion !== "blocked"
+  ) {
+    return err(
+      `space-bus: onPendingQuestion must be "question-reply" or "blocked", got ${JSON.stringify(input.onPendingQuestion)}`,
+    );
+  }
   if (input.sessionId !== undefined && input.sessionId === "") {
     return err("space-bus: sessionId must be a non-empty string");
   }
@@ -430,6 +451,7 @@ export function toDispatchArgs(input: {
       prompt: input.prompt,
       title: input.title,
       project: input.project,
+      onPendingQuestion: input.onPendingQuestion,
     };
   }
   return {
@@ -438,6 +460,7 @@ export function toDispatchArgs(input: {
     title: input.title,
     sessionId: input.sessionId,
     project: input.project,
+    onPendingQuestion: input.onPendingQuestion,
   };
 }
 
@@ -497,6 +520,7 @@ export async function dispatch(
     args.prompt,
     directory,
     project,
+    args.onPendingQuestion ?? "question-reply",
   );
 }
 
@@ -714,6 +738,51 @@ export async function status(
 
 // --- steering (question-reply / follow-up) ------------------------------------
 
+/**
+ * Resolves the pending-question state for a steering call. "blocked" is
+ * the safe, fail-closed opt-out: it must not fall through to a mutation
+ * (reply or follow-up prompt) when pending-question state could not be
+ * verified — an upstream 5xx or a malformed body is treated the same as
+ * "we don't know", so it refuses rather than guesses. Default
+ * "question-reply" callers preserve v0.13.1's fail-open behavior for
+ * backward compatibility (an unreadable /question response falls through
+ * to a normal follow-up prompt, as it always has).
+ */
+async function resolvePendingQuestionForSteer(
+  baseUrl: string,
+  credentials: Credentials,
+  directory: string,
+  sessionId: string,
+  onPendingQuestion: "question-reply" | "blocked",
+): Promise<
+  Result<{ pending: z.infer<typeof questionListSchema>[number] | undefined }>
+> {
+  const questionsRes = await api(baseUrl, credentials, directory, "/question");
+  if (!questionsRes.res.ok) {
+    if (onPendingQuestion === "blocked") {
+      return err(
+        `space-bus: could not verify pending-question state for session ${sessionId} (/question ${questionsRes.res.status}) — refusing to dispatch under the blocked policy`,
+      );
+    }
+    return { ok: true, pending: undefined };
+  }
+  let pendingList: z.infer<typeof questionListSchema>;
+  try {
+    pendingList = questionListSchema.parse(JSON.parse(questionsRes.bodyText));
+  } catch (e) {
+    if (onPendingQuestion === "blocked") {
+      return err(
+        `space-bus: could not parse pending-question state for session ${sessionId}: ${(e as Error).message} — refusing to dispatch under the blocked policy`,
+      );
+    }
+    return { ok: true, pending: undefined };
+  }
+  return {
+    ok: true,
+    pending: pendingList.find((q) => q.sessionID === sessionId),
+  };
+}
+
 async function steerSession(
   baseUrl: string,
   credentials: Credentials,
@@ -721,34 +790,45 @@ async function steerSession(
   message: string,
   directory: string,
   project: string,
+  onPendingQuestion: "question-reply" | "blocked",
 ): Promise<Result<DispatchResult>> {
-  const questionsRes = await api(baseUrl, credentials, directory, "/question");
-  if (questionsRes.res.ok) {
-    let questions: z.infer<typeof questionListSchema>;
-    try {
-      questions = questionListSchema.parse(JSON.parse(questionsRes.bodyText));
-    } catch {
-      questions = [];
-    }
-    const pending = questions.find((q) => q.sessionID === sessionId);
-    if (pending) {
-      const replyRes = await api(
-        baseUrl,
-        credentials,
-        directory,
-        `/question/${encodeURIComponent(pending.id)}/reply`,
-        {
-          method: "POST",
-          body: JSON.stringify({ answers: [[message]] }),
-        },
+  const pendingRes = await resolvePendingQuestionForSteer(
+    baseUrl,
+    credentials,
+    directory,
+    sessionId,
+    onPendingQuestion,
+  );
+  if (!pendingRes.ok) return pendingRes;
+  const { pending } = pendingRes;
+
+  if (pending && onPendingQuestion === "blocked") {
+    return {
+      ok: true,
+      sessionId,
+      project,
+      mode: "blocked",
+      requestId: pending.id,
+    };
+  }
+
+  if (pending) {
+    const replyRes = await api(
+      baseUrl,
+      credentials,
+      directory,
+      `/question/${encodeURIComponent(pending.id)}/reply`,
+      {
+        method: "POST",
+        body: JSON.stringify({ answers: [[message]] }),
+      },
+    );
+    if (!replyRes.res.ok) {
+      return err(
+        `space-bus: failed to reply to question ${pending.id} for session ${sessionId} (${replyRes.res.status}): ${replyRes.bodyText}`,
       );
-      if (!replyRes.res.ok) {
-        return err(
-          `space-bus: failed to reply to question ${pending.id} for session ${sessionId} (${replyRes.res.status}): ${replyRes.bodyText}`,
-        );
-      }
-      return { ok: true, sessionId, project, mode: "question-reply" };
     }
+    return { ok: true, sessionId, project, mode: "question-reply" };
   }
 
   const promptRes = await api(
@@ -1226,4 +1306,371 @@ function parsePendingQuestions(questionRes: {
   } catch {
     return new Map();
   }
+}
+
+// --- messages (bounded full-message read) --------------------------------
+
+const DEFAULT_MESSAGE_LIMIT = 20;
+/** Hard maximum for a bounded message read — enforced before any fetch,
+ * independent of any server-side limit behavior. */
+const MAX_MESSAGE_LIMIT = 200;
+
+export type MessageOpts = CoreOpts & { limit?: number };
+
+export type SessionMessage = {
+  id?: string;
+  role: string;
+  createdAt?: number;
+  parts: { type: string; text?: string }[];
+};
+
+export type MessagesResult = {
+  sessionId: string;
+  project: string;
+  messages: SessionMessage[];
+};
+
+/**
+ * Bounded full-message read for a session. Resolves session ownership
+ * against the roster (never a caller-supplied directory), then fetches
+ * the message list through the same authenticated api() helper every
+ * other core function uses. Returns messages in the order the server
+ * returns them (chronological — verified live, newest-N ascending; see
+ * docs/solutions/documentation-gaps/opencode-server-sse-contract-facts-2026-07-04.md).
+ * No directory/credential fields are included in the result.
+ */
+function isValidMessageLimit(limit: number): boolean {
+  return (
+    Number.isFinite(limit) &&
+    Number.isInteger(limit) &&
+    limit > 0 &&
+    limit <= MAX_MESSAGE_LIMIT
+  );
+}
+
+export async function messages(
+  sessionId: string,
+  opts: MessageOpts,
+): Promise<Result<MessagesResult>> {
+  const ctx = validateContext(opts.context);
+  if (!ctx.ok) return ctx;
+  const { baseUrl, projects, credentials } = ctx;
+
+  const limit = opts.limit ?? DEFAULT_MESSAGE_LIMIT;
+  if (!isValidMessageLimit(limit)) {
+    return err(
+      `space-bus: limit must be a finite positive integer no greater than ${MAX_MESSAGE_LIMIT}, got ${limit}`,
+    );
+  }
+
+  const loc = await findSessionDirectory(
+    baseUrl,
+    credentials,
+    projects,
+    sessionId,
+  );
+  if (!loc.ok) return loc;
+  const { directory, project } = loc;
+
+  const { res, bodyText } = await api(
+    baseUrl,
+    credentials,
+    directory,
+    `/session/${encodeURIComponent(sessionId)}/message?limit=${limit}`,
+  );
+  if (!res.ok) {
+    return err(
+      `space-bus: failed to fetch messages for ${sessionId} (${res.status})`,
+    );
+  }
+
+  let parsed: z.infer<typeof messageListSchema>;
+  try {
+    parsed = messageListSchema.parse(JSON.parse(bodyText));
+  } catch (e) {
+    return err(
+      `space-bus: unexpected response shape for session ${sessionId} messages: ${(e as Error).message}`,
+    );
+  }
+
+  return {
+    ok: true,
+    sessionId,
+    project,
+    messages: parsed.map((m) => ({
+      id: m.info.id,
+      role: m.info.role,
+      createdAt: m.info.time?.created,
+      parts: m.parts.map((p) => ({ type: p.type, text: p.text })),
+    })),
+  };
+}
+
+// --- questions (full pending-question read) -------------------------------
+
+export type QuestionTarget =
+  | { project: string; sessionId?: undefined }
+  | { sessionId: string; project?: undefined };
+
+/** One subquestion within a pending-question request — a single request
+ * (`requestId`) can carry multiple subquestions, each with its own
+ * selection rules and option set. Preserving the full nested list (not
+ * just the first subquestion) is required to round-trip a multi-question
+ * request through answerQuestion()'s cardinality check. */
+export type PendingSubquestion = {
+  header?: string;
+  question: string;
+  multiple: boolean;
+  custom: boolean;
+  options: { label: string; description?: string }[];
+};
+
+export type PendingQuestionView = {
+  requestId: string;
+  sessionId: string;
+  questions: PendingSubquestion[];
+};
+
+export type QuestionsResult = { questions: PendingQuestionView[] };
+
+function toPendingQuestionView(
+  entry: z.infer<typeof pendingQuestionListSchema>[number],
+): PendingQuestionView {
+  return {
+    requestId: entry.id,
+    sessionId: entry.sessionID,
+    questions: (entry.questions ?? []).map((q) => ({
+      header: q.header,
+      question: q.question ?? "",
+      multiple: q.multiple ?? false,
+      custom: q.custom ?? false,
+      options: (q.options ?? []).map((o) => ({
+        label: o.label ?? "",
+        description: o.description,
+      })),
+    })),
+  };
+}
+
+/**
+ * Resolves a questions() target to a fetchable directory. Exactly one of
+ * project/sessionId must be present; both-present and neither-present are
+ * rejected before any fetch. Returns the optional sessionFilter so the
+ * caller can post-filter a project-directory's /question list down to one
+ * session's entries.
+ */
+async function resolveQuestionsTarget(
+  target: QuestionTarget,
+  baseUrl: string,
+  credentials: Credentials,
+  projects: ProjectSchema[],
+): Promise<Result<{ directory: string; sessionFilter: string | undefined }>> {
+  const hasProject = "project" in target && !!target.project;
+  const hasSessionId = "sessionId" in target && !!target.sessionId;
+
+  if (hasProject && hasSessionId) {
+    return err(
+      "space-bus: questions target must specify exactly one of project or sessionId, not both",
+    );
+  }
+  if (!hasProject && !hasSessionId) {
+    return err(
+      "space-bus: questions target must specify exactly one of project or sessionId",
+    );
+  }
+
+  if (hasProject) {
+    const projRes = resolveProjectOrErr(
+      projects,
+      (target as { project: string }).project,
+    );
+    if (!projRes.ok) return projRes;
+    return {
+      ok: true,
+      directory: projRes.project.expandedPath,
+      sessionFilter: undefined,
+    };
+  }
+
+  const targetSessionId = (target as { sessionId: string }).sessionId;
+  const loc = await findSessionDirectory(
+    baseUrl,
+    credentials,
+    projects,
+    targetSessionId,
+  );
+  if (!loc.ok) return loc;
+  return { ok: true, directory: loc.directory, sessionFilter: targetSessionId };
+}
+
+/**
+ * Complete project- or session-scoped pending-question read. Resolves the
+ * target to a manifest project (or a roster-owned session's project)
+ * before fetching /question, then returns the full current contract
+ * (requestID, sessionID, header/question text, selection rules, and
+ * option labels/descriptions) with no directory/credential fields.
+ */
+export async function questions(
+  target: QuestionTarget,
+  opts: CoreOpts,
+): Promise<Result<QuestionsResult>> {
+  const ctx = validateContext(opts.context);
+  if (!ctx.ok) return ctx;
+  const { baseUrl, projects, credentials } = ctx;
+
+  const targetRes = await resolveQuestionsTarget(
+    target,
+    baseUrl,
+    credentials,
+    projects,
+  );
+  if (!targetRes.ok) return targetRes;
+  const { directory, sessionFilter } = targetRes;
+
+  const { res, bodyText } = await api(
+    baseUrl,
+    credentials,
+    directory,
+    "/question",
+  );
+  if (!res.ok) {
+    return err(`space-bus: failed to fetch questions (${res.status})`);
+  }
+
+  let entries: z.infer<typeof pendingQuestionListSchema>;
+  try {
+    entries = pendingQuestionListSchema.parse(JSON.parse(bodyText));
+  } catch (e) {
+    return err(
+      `space-bus: unexpected response shape for questions: ${(e as Error).message}`,
+    );
+  }
+
+  const filtered = sessionFilter
+    ? entries.filter((e) => e.sessionID === sessionFilter)
+    : entries;
+
+  return { ok: true, questions: filtered.map(toPendingQuestionView) };
+}
+
+// --- answerQuestion (explicit question answer) -----------------------------
+
+export type AnswerQuestionArgs = {
+  sessionId: string;
+  requestId: string;
+  answers: string[][];
+};
+
+export type AnswerQuestionResult = {
+  sessionId: string;
+  requestId: string;
+};
+
+/**
+ * Explicit question answer. Resolves the session to its owning project,
+ * fetches the session's pending questions, and verifies the supplied
+ * requestID actually belongs to that session before sending the reply —
+ * a requestID for a different session is refused before any mutation.
+ * Sends the complete string[][] answers payload; the server's /question
+ * route expects the requestID (que_...), never an SSE envelope id.
+ */
+/**
+ * Runtime shape check for the answers payload: must be a non-empty array
+ * of arrays of strings. TypeScript's `string[][]` parameter type is
+ * erased at runtime — a caller across a JSON/MCP boundary can hand us
+ * anything, and this function is a mutation, so malformed input must be
+ * rejected before any network call rather than surfacing as a confusing
+ * upstream 400.
+ */
+function isValidAnswersShape(value: unknown): value is string[][] {
+  if (!Array.isArray(value) || value.length === 0) return false;
+  return value.every(
+    (row) =>
+      Array.isArray(row) && row.every((cell) => typeof cell === "string"),
+  );
+}
+
+export async function answerQuestion(
+  args: AnswerQuestionArgs,
+  opts: CoreOpts,
+): Promise<Result<AnswerQuestionResult>> {
+  const ctx = validateContext(opts.context);
+  if (!ctx.ok) return ctx;
+  const { baseUrl, projects, credentials } = ctx;
+
+  if (!isValidAnswersShape(args.answers)) {
+    return err(
+      "space-bus: answers must be a non-empty array of string arrays (string[][])",
+    );
+  }
+
+  const loc = await findSessionDirectory(
+    baseUrl,
+    credentials,
+    projects,
+    args.sessionId,
+  );
+  if (!loc.ok) return loc;
+  const { directory } = loc;
+
+  const questionsRes = await api(baseUrl, credentials, directory, "/question");
+  if (!questionsRes.res.ok) {
+    return err(
+      `space-bus: failed to fetch questions for session ${args.sessionId} (${questionsRes.res.status})`,
+    );
+  }
+  let pendingList: z.infer<typeof pendingQuestionListSchema>;
+  try {
+    pendingList = pendingQuestionListSchema.parse(
+      JSON.parse(questionsRes.bodyText),
+    );
+  } catch (e) {
+    return err(
+      `space-bus: unexpected response shape for questions: ${(e as Error).message}`,
+    );
+  }
+
+  const pending = pendingList.find(
+    (q) => q.id === args.requestId && q.sessionID === args.sessionId,
+  );
+  if (!pending) {
+    return err(
+      `space-bus: request ${args.requestId} does not belong to a pending question on session ${args.sessionId} — refusing to answer`,
+    );
+  }
+
+  // `questions` must be present and non-empty to compute cardinality at
+  // all — an entry with missing/empty subquestion metadata is not a
+  // 1-row request by default; that would silently accept an arbitrary
+  // answers shape against upstream data we can't actually verify.
+  if (!pending.questions || pending.questions.length === 0) {
+    return err(
+      `space-bus: request ${args.requestId} for session ${args.sessionId} has no subquestion metadata — refusing to answer without a verified cardinality`,
+    );
+  }
+
+  const expectedRows = pending.questions.length;
+  if (args.answers.length !== expectedRows) {
+    return err(
+      `space-bus: answers has ${args.answers.length} row(s) but request ${args.requestId} has ${expectedRows} subquestion(s) — refusing to answer with mismatched cardinality`,
+    );
+  }
+
+  const replyRes = await api(
+    baseUrl,
+    credentials,
+    directory,
+    `/question/${encodeURIComponent(args.requestId)}/reply`,
+    {
+      method: "POST",
+      body: JSON.stringify({ answers: args.answers }),
+    },
+  );
+  if (!replyRes.res.ok) {
+    return err(
+      `space-bus: failed to answer question ${args.requestId} for session ${args.sessionId} (${replyRes.res.status})`,
+    );
+  }
+
+  return { ok: true, sessionId: args.sessionId, requestId: args.requestId };
 }

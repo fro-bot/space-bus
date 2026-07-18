@@ -4,10 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadContext } from "./config";
 import {
+  answerQuestion,
   type CoreOpts,
   type DispatchArgs,
   deriveSessionState,
   dispatch,
+  messages,
+  questions,
   result,
   roster,
   snapshot,
@@ -84,7 +87,7 @@ function mockFetch(routes: Record<string, RouteHandler>): typeof fetch {
     const { status: s = 200, body } = handler(init);
     if (s === 204) return new Response(null, { status: 204 });
     return new Response(JSON.stringify(body ?? []), { status: s });
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
 }
 
 function rejectingFetch(message: string): typeof fetch {
@@ -966,7 +969,7 @@ describe("snapshot()", () => {
         return new Response(JSON.stringify([]), { status: 200 });
       }
       return new Response(JSON.stringify([]), { status: 404 });
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
 
     const res = await snapshot(threeProjectContext());
     expect(res.ok).toBe(true);
@@ -1032,7 +1035,10 @@ describe("snapshot()", () => {
   test("edge: concurrency bound honored (max in-flight projects <= 2 when concurrency:2)", async () => {
     const inFlightDirs = new Set<string>();
     let maxInFlightProjects = 0;
-    globalThis.fetch = (async (input, init) => {
+    globalThis.fetch = (async (
+      input: string | URL | Request,
+      init?: RequestInit,
+    ) => {
       const directory = (init?.headers as Record<string, string> | undefined)?.[
         "x-opencode-directory"
       ];
@@ -1044,7 +1050,7 @@ describe("snapshot()", () => {
       if (directory) inFlightDirs.delete(directory);
       const url = typeof input === "string" ? input : input.toString();
       return emptyRouteResponse(url);
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
 
     const opts = threeProjectContext();
     const res = await snapshot({ ...opts, concurrency: 2 });
@@ -1117,7 +1123,7 @@ describe("wait()", () => {
         return waitFetchSessionResponse(opts, path);
       }
       return new Response(JSON.stringify([]), { status: 404 });
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
   }
 
   async function callWait(
@@ -1302,7 +1308,7 @@ describe("wait()", () => {
       const path = url.replace("http://127.0.0.1:4096", "");
       if (path === "/session/status") pollCount += 1;
       return makeWaitFetch({ sessionDirs: { ses_1: dirA }, statuses })(input);
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
 
     setTimeout(() => {
       statuses["ses_1"] = { type: "idle" };
@@ -1341,7 +1347,7 @@ describe("wait()", () => {
         return waitFetchSessionResponse(sessionOpts, path);
       }
       return new Response(JSON.stringify([]), { status: 404 });
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
 
     const res = await callWait(["ses_1"], {
       timeoutMs: 150,
@@ -1429,5 +1435,733 @@ describe("wait()", () => {
     expect(waitRes.sessions.find((s) => s.sessionId === "ses_2")?.state).toBe(
       status2.state,
     );
+  });
+});
+
+describe("messages()", () => {
+  async function callMessages(sessionId: string, limit?: number) {
+    return messages(sessionId, { context: loadContext(), limit });
+  }
+
+  test("happy path: resolves session ownership and returns chronological messages with stable identity fields", async () => {
+    globalThis.fetch = mockFetch({
+      "GET /session/ses_msg": () => ({
+        body: { id: "ses_msg", directory: dirA },
+      }),
+      "GET /session/ses_msg/message?limit=20": () => ({
+        body: [
+          {
+            info: { id: "msg_1", role: "user", time: { created: 1000 } },
+            parts: [{ type: "text", text: "hi" }],
+            unknownEnvelopeField: "must-not-survive",
+          },
+          {
+            info: { id: "msg_2", role: "assistant", time: { created: 2000 } },
+            parts: [{ type: "text", text: "hello" }],
+          },
+        ],
+      }),
+    });
+    const res = await callMessages("ses_msg");
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.sessionId).toBe("ses_msg");
+    expect(res.project).toBe("alpha");
+    expect(res.messages).toHaveLength(2);
+    expect(res.messages[0]).toEqual({
+      id: "msg_1",
+      role: "user",
+      createdAt: 1000,
+      parts: [{ type: "text", text: "hi" }],
+    });
+    expect(res.messages[1]).toEqual({
+      id: "msg_2",
+      role: "assistant",
+      createdAt: 2000,
+      parts: [{ type: "text", text: "hello" }],
+    });
+    expect(JSON.stringify(res)).not.toContain("unknownEnvelopeField");
+  });
+
+  test("bounded: caller limit is forwarded to the message-list request", async () => {
+    globalThis.fetch = mockFetch({
+      "GET /session/ses_msg": () => ({
+        body: { id: "ses_msg", directory: dirA },
+      }),
+      "GET /session/ses_msg/message?limit=5": () => ({ body: [] }),
+    });
+    const res = await callMessages("ses_msg", 5);
+    expect(res.ok).toBe(true);
+  });
+
+  test("boundary: limit 0 is rejected before any fetch", async () => {
+    let fetchCalled = false;
+    globalThis.fetch = (async () => {
+      fetchCalled = true;
+      return new Response("[]", { status: 200 });
+    }) as unknown as typeof fetch;
+    const res = await callMessages("ses_msg", 0);
+    expect(res.ok).toBe(false);
+    expect(fetchCalled).toBe(false);
+  });
+
+  test("boundary: negative limit is rejected before any fetch", async () => {
+    let fetchCalled = false;
+    globalThis.fetch = (async () => {
+      fetchCalled = true;
+      return new Response("[]", { status: 200 });
+    }) as unknown as typeof fetch;
+    const res = await callMessages("ses_msg", -1);
+    expect(res.ok).toBe(false);
+    expect(fetchCalled).toBe(false);
+  });
+
+  test("boundary: fractional limit is rejected before any fetch", async () => {
+    let fetchCalled = false;
+    globalThis.fetch = (async () => {
+      fetchCalled = true;
+      return new Response("[]", { status: 200 });
+    }) as unknown as typeof fetch;
+    const res = await callMessages("ses_msg", 2.5);
+    expect(res.ok).toBe(false);
+    expect(fetchCalled).toBe(false);
+  });
+
+  test("boundary: NaN limit is rejected before any fetch", async () => {
+    let fetchCalled = false;
+    globalThis.fetch = (async () => {
+      fetchCalled = true;
+      return new Response("[]", { status: 200 });
+    }) as unknown as typeof fetch;
+    const res = await callMessages("ses_msg", Number.NaN);
+    expect(res.ok).toBe(false);
+    expect(fetchCalled).toBe(false);
+  });
+
+  test("boundary: Infinity limit is rejected before any fetch", async () => {
+    let fetchCalled = false;
+    globalThis.fetch = (async () => {
+      fetchCalled = true;
+      return new Response("[]", { status: 200 });
+    }) as unknown as typeof fetch;
+    const res = await callMessages("ses_msg", Number.POSITIVE_INFINITY);
+    expect(res.ok).toBe(false);
+    expect(fetchCalled).toBe(false);
+  });
+
+  test("boundary: over-maximum limit is rejected before any fetch", async () => {
+    let fetchCalled = false;
+    globalThis.fetch = (async () => {
+      fetchCalled = true;
+      return new Response("[]", { status: 200 });
+    }) as unknown as typeof fetch;
+    const res = await callMessages("ses_msg", 10_000);
+    expect(res.ok).toBe(false);
+    expect(fetchCalled).toBe(false);
+  });
+
+  test("error path: unknown session", async () => {
+    globalThis.fetch = mockFetch({});
+    const res = await callMessages("ses_nope");
+    expect(res.ok).toBe(false);
+  });
+
+  test("error path: upstream message fetch failure maps to a stable Result error", async () => {
+    globalThis.fetch = mockFetch({
+      "GET /session/ses_msg": () => ({
+        body: { id: "ses_msg", directory: dirA },
+      }),
+      "GET /session/ses_msg/message?limit=20": () => ({
+        status: 500,
+        body: { secret: "leaked-token" },
+      }),
+    });
+    const res = await callMessages("ses_msg");
+    expect(res.ok).toBe(false);
+  });
+});
+
+describe("questions()", () => {
+  async function callQuestionsForProject(project: string) {
+    return questions({ project }, { context: loadContext() });
+  }
+  async function callQuestionsForSession(sessionId: string) {
+    return questions({ sessionId }, { context: loadContext() });
+  }
+
+  test("happy path: project-scoped read preserves a complete multi-subquestion request (>=2 subquestions, multi-select + custom)", async () => {
+    globalThis.fetch = mockFetch({
+      "GET /question": () => ({
+        body: [
+          {
+            id: "que_1",
+            sessionID: "ses_q1",
+            questions: [
+              {
+                question: "Which environments?",
+                header: "Environments",
+                multiple: true,
+                custom: false,
+                options: [
+                  { label: "staging", description: "staging env" },
+                  { label: "prod", description: "production env" },
+                ],
+              },
+              {
+                question: "Anything else?",
+                header: "Notes",
+                multiple: false,
+                custom: true,
+                options: [{ label: "No", description: "nothing else" }],
+              },
+            ],
+          },
+        ],
+      }),
+    });
+    const res = await callQuestionsForProject("alpha");
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.questions).toHaveLength(1);
+    const entry = res.questions[0];
+    expect(entry?.requestId).toBe("que_1");
+    expect(entry?.sessionId).toBe("ses_q1");
+    expect(entry?.questions).toHaveLength(2);
+    expect(entry?.questions[0]).toEqual({
+      header: "Environments",
+      question: "Which environments?",
+      multiple: true,
+      custom: false,
+      options: [
+        { label: "staging", description: "staging env" },
+        { label: "prod", description: "production env" },
+      ],
+    });
+    expect(entry?.questions[1]).toEqual({
+      header: "Notes",
+      question: "Anything else?",
+      multiple: false,
+      custom: true,
+      options: [{ label: "No", description: "nothing else" }],
+    });
+  });
+
+  test("happy path: session-scoped read filters to that session only", async () => {
+    globalThis.fetch = mockFetch({
+      "GET /session/ses_q1": () => ({
+        body: { id: "ses_q1", directory: dirA },
+      }),
+      "GET /question": () => ({
+        body: [
+          { id: "que_1", sessionID: "ses_q1", questions: [] },
+          { id: "que_2", sessionID: "ses_other", questions: [] },
+        ],
+      }),
+    });
+    const res = await callQuestionsForSession("ses_q1");
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.questions).toHaveLength(1);
+    expect(res.questions[0]?.requestId).toBe("que_1");
+  });
+
+  test("error path: unknown project", async () => {
+    globalThis.fetch = mockFetch({});
+    const res = await callQuestionsForProject("nonexistent");
+    expect(res.ok).toBe(false);
+  });
+
+  test("error path: unknown session", async () => {
+    globalThis.fetch = mockFetch({});
+    const res = await callQuestionsForSession("ses_nope");
+    expect(res.ok).toBe(false);
+  });
+
+  test("error path: both project and sessionId supplied is rejected before any fetch", async () => {
+    let fetchCalled = false;
+    globalThis.fetch = (async () => {
+      fetchCalled = true;
+      return new Response("[]", { status: 200 });
+    }) as unknown as typeof fetch;
+    const res = await questions(
+      { project: "alpha", sessionId: "ses_q1" } as unknown as Parameters<
+        typeof questions
+      >[0],
+      { context: loadContext() },
+    );
+    expect(res.ok).toBe(false);
+    expect(fetchCalled).toBe(false);
+  });
+
+  test("error path: neither project nor sessionId supplied is rejected before any fetch", async () => {
+    let fetchCalled = false;
+    globalThis.fetch = (async () => {
+      fetchCalled = true;
+      return new Response("[]", { status: 200 });
+    }) as unknown as typeof fetch;
+    const res = await questions(
+      {} as unknown as Parameters<typeof questions>[0],
+      { context: loadContext() },
+    );
+    expect(res.ok).toBe(false);
+    expect(fetchCalled).toBe(false);
+  });
+
+  test("no directory/path fields leak in the result", async () => {
+    globalThis.fetch = mockFetch({
+      "GET /question": () => ({
+        body: [{ id: "que_1", sessionID: "ses_q1", questions: [] }],
+      }),
+    });
+    const res = await callQuestionsForProject("alpha");
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(JSON.stringify(res)).not.toContain(dirA);
+  });
+});
+
+describe("answerQuestion()", () => {
+  async function callAnswer(
+    sessionId: string,
+    requestId: string,
+    answers: string[][],
+  ) {
+    return answerQuestion(
+      { sessionId, requestId, answers },
+      { context: loadContext() },
+    );
+  }
+
+  function singleSubquestionFixture(id: string, sessionID: string) {
+    return {
+      id,
+      sessionID,
+      questions: [{ question: "Proceed?", options: [{ label: "Yes" }] }],
+    };
+  }
+
+  test("happy path: sends the que_ request ID and full string[][] payload matching questions.length", async () => {
+    let capturedBody: unknown;
+    globalThis.fetch = mockFetch({
+      "GET /session/ses_q1": () => ({
+        body: { id: "ses_q1", directory: dirA },
+      }),
+      "GET /question": () => ({
+        body: [singleSubquestionFixture("que_1", "ses_q1")],
+      }),
+      "POST /question/que_1/reply": (init) => {
+        capturedBody = init?.body ? JSON.parse(init.body as string) : undefined;
+        return { status: 200, body: true };
+      },
+    });
+    const res = await callAnswer("ses_q1", "que_1", [["Yes"]]);
+    expect(res.ok).toBe(true);
+    expect(capturedBody).toEqual({ answers: [["Yes"]] });
+  });
+
+  test("happy path: multi-question cardinality (2 subquestions, 2 answer rows) round-trips", async () => {
+    let capturedBody: unknown;
+    globalThis.fetch = mockFetch({
+      "GET /session/ses_q1": () => ({
+        body: { id: "ses_q1", directory: dirA },
+      }),
+      "GET /question": () => ({
+        body: [
+          {
+            id: "que_1",
+            sessionID: "ses_q1",
+            questions: [
+              { question: "Which envs?", options: [{ label: "staging" }] },
+              { question: "Notes?", options: [{ label: "No" }] },
+            ],
+          },
+        ],
+      }),
+      "POST /question/que_1/reply": (init) => {
+        capturedBody = init?.body ? JSON.parse(init.body as string) : undefined;
+        return { status: 200, body: true };
+      },
+    });
+    const res = await callAnswer("ses_q1", "que_1", [
+      ["staging", "prod"],
+      ["custom note"],
+    ]);
+    expect(res.ok).toBe(true);
+    expect(capturedBody).toEqual({
+      answers: [["staging", "prod"], ["custom note"]],
+    });
+  });
+
+  test("validation: answers.length mismatched with entry.questions.length is refused before any mutation", async () => {
+    let replyCalled = false;
+    globalThis.fetch = mockFetch({
+      "GET /session/ses_q1": () => ({
+        body: { id: "ses_q1", directory: dirA },
+      }),
+      "GET /question": () => ({
+        body: [
+          {
+            id: "que_1",
+            sessionID: "ses_q1",
+            questions: [
+              { question: "Which envs?", options: [{ label: "staging" }] },
+              { question: "Notes?", options: [{ label: "No" }] },
+            ],
+          },
+        ],
+      }),
+      "POST /question/que_1/reply": () => {
+        replyCalled = true;
+        return { status: 200, body: true };
+      },
+    });
+    const res = await callAnswer("ses_q1", "que_1", [["staging"]]);
+    expect(res.ok).toBe(false);
+    expect(replyCalled).toBe(false);
+  });
+
+  test("validation: empty answers array is refused before any mutation", async () => {
+    let replyCalled = false;
+    globalThis.fetch = mockFetch({
+      "GET /session/ses_q1": () => ({
+        body: { id: "ses_q1", directory: dirA },
+      }),
+      "GET /question": () => ({
+        body: [singleSubquestionFixture("que_1", "ses_q1")],
+      }),
+      "POST /question/que_1/reply": () => {
+        replyCalled = true;
+        return { status: 200, body: true };
+      },
+    });
+    const res = await callAnswer("ses_q1", "que_1", []);
+    expect(res.ok).toBe(false);
+    expect(replyCalled).toBe(false);
+  });
+
+  test("validation: malformed answers (non-array row) is refused before any mutation", async () => {
+    let replyCalled = false;
+    globalThis.fetch = mockFetch({
+      "GET /session/ses_q1": () => ({
+        body: { id: "ses_q1", directory: dirA },
+      }),
+      "GET /question": () => ({
+        body: [singleSubquestionFixture("que_1", "ses_q1")],
+      }),
+      "POST /question/que_1/reply": () => {
+        replyCalled = true;
+        return { status: 200, body: true };
+      },
+    });
+    const res = await callAnswer(
+      "ses_q1",
+      "que_1",
+      "not-an-array" as unknown as string[][],
+    );
+    expect(res.ok).toBe(false);
+    expect(replyCalled).toBe(false);
+  });
+
+  test("cross-session guard: requestId belonging to a different session is refused before mutation", async () => {
+    let replyCalled = false;
+    globalThis.fetch = mockFetch({
+      "GET /session/ses_q1": () => ({
+        body: { id: "ses_q1", directory: dirA },
+      }),
+      "GET /question": () => ({
+        body: [singleSubquestionFixture("que_1", "ses_other")],
+      }),
+      "POST /question/que_1/reply": () => {
+        replyCalled = true;
+        return { status: 200, body: true };
+      },
+    });
+    const res = await callAnswer("ses_q1", "que_1", [["Yes"]]);
+    expect(res.ok).toBe(false);
+    expect(replyCalled).toBe(false);
+  });
+
+  test("validation: matched pending entry with missing questions metadata is refused before mutation (not silently treated as one row)", async () => {
+    let replyCalled = false;
+    globalThis.fetch = mockFetch({
+      "GET /session/ses_q1": () => ({
+        body: { id: "ses_q1", directory: dirA },
+      }),
+      "GET /question": () => ({
+        // id/sessionID present but no `questions` field at all — the
+        // upstream entry is missing its subquestion metadata entirely.
+        body: [{ id: "que_1", sessionID: "ses_q1" }],
+      }),
+      "POST /question/que_1/reply": () => {
+        replyCalled = true;
+        return { status: 200, body: true };
+      },
+    });
+    const res = await callAnswer("ses_q1", "que_1", [["Yes"]]);
+    expect(res.ok).toBe(false);
+    expect(replyCalled).toBe(false);
+  });
+
+  test("validation: matched pending entry with an empty questions array is refused before mutation", async () => {
+    let replyCalled = false;
+    globalThis.fetch = mockFetch({
+      "GET /session/ses_q1": () => ({
+        body: { id: "ses_q1", directory: dirA },
+      }),
+      "GET /question": () => ({
+        body: [{ id: "que_1", sessionID: "ses_q1", questions: [] }],
+      }),
+      "POST /question/que_1/reply": () => {
+        replyCalled = true;
+        return { status: 200, body: true };
+      },
+    });
+    const res = await callAnswer("ses_q1", "que_1", [["Yes"]]);
+    expect(res.ok).toBe(false);
+    expect(replyCalled).toBe(false);
+  });
+
+  test("error path: stale/unknown question id", async () => {
+    globalThis.fetch = mockFetch({
+      "GET /session/ses_q1": () => ({
+        body: { id: "ses_q1", directory: dirA },
+      }),
+      "GET /question": () => ({ body: [] }),
+    });
+    const res = await callAnswer("ses_q1", "que_stale", [["Yes"]]);
+    expect(res.ok).toBe(false);
+  });
+
+  test("error path: unknown session", async () => {
+    globalThis.fetch = mockFetch({});
+    const res = await callAnswer("ses_nope", "que_1", [["Yes"]]);
+    expect(res.ok).toBe(false);
+  });
+
+  test("error path: upstream reply failure maps to a stable Result error without raw body", async () => {
+    globalThis.fetch = mockFetch({
+      "GET /session/ses_q1": () => ({
+        body: { id: "ses_q1", directory: dirA },
+      }),
+      "GET /question": () => ({
+        body: [singleSubquestionFixture("que_1", "ses_q1")],
+      }),
+      "POST /question/que_1/reply": () => ({
+        status: 500,
+        body: { secret: "leaked-token" },
+      }),
+    });
+    const res = await callAnswer("ses_q1", "que_1", [["Yes"]]);
+    expect(res.ok).toBe(false);
+  });
+
+  test("error path: GET /question returning malformed JSON is refused before any mutation", async () => {
+    let replyCalled = false;
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.includes("/session/ses_q1") && !url.includes("/question")) {
+        return new Response(JSON.stringify({ id: "ses_q1", directory: dirA }), {
+          status: 200,
+        });
+      }
+      if (url.includes("/question") && !url.includes("/reply")) {
+        return new Response("not-json{{{", { status: 200 });
+      }
+      if (url.includes("/reply")) {
+        replyCalled = true;
+        return new Response("true", { status: 200 });
+      }
+      return new Response("[]", { status: 404 });
+    }) as unknown as typeof fetch;
+    const res = await callAnswer("ses_q1", "que_1", [["Yes"]]);
+    expect(res.ok).toBe(false);
+    expect(replyCalled).toBe(false);
+  });
+});
+
+describe("toDispatchArgs onPendingQuestion", () => {
+  test("valid 'blocked' value is accepted and preserved", () => {
+    const res = toDispatchArgs({
+      prompt: "hi",
+      sessionId: "ses_1",
+      onPendingQuestion: "blocked",
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.onPendingQuestion).toBe("blocked");
+  });
+
+  test("valid 'question-reply' value is accepted and preserved", () => {
+    const res = toDispatchArgs({
+      prompt: "hi",
+      sessionId: "ses_1",
+      onPendingQuestion: "question-reply",
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.onPendingQuestion).toBe("question-reply");
+  });
+
+  test("omitted value is accepted (undefined, preserving default dispatch behavior)", () => {
+    const res = toDispatchArgs({ prompt: "hi", sessionId: "ses_1" });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.onPendingQuestion).toBeUndefined();
+  });
+
+  test("invalid value is rejected with a Result error", () => {
+    const res = toDispatchArgs({
+      prompt: "hi",
+      sessionId: "ses_1",
+      onPendingQuestion: "reject" as unknown as "blocked",
+    });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.error).toContain("onPendingQuestion");
+  });
+});
+
+describe("dispatch() with onPendingQuestion: 'blocked' policy", () => {
+  test("compatibility: default dispatch behavior for a blocked session remains question-reply", async () => {
+    globalThis.fetch = mockFetch({
+      "GET /session/ses_steer": () => ({
+        body: { id: "ses_steer", directory: dirA },
+      }),
+      "GET /question": () => ({
+        body: [{ id: "q_1", sessionID: "ses_steer" }],
+      }),
+      "POST /question/q_1/reply": () => ({ status: 200, body: {} }),
+    });
+    const res = await dispatch(
+      { sessionId: "ses_steer", prompt: "yes" },
+      { context: loadContext() },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.mode).toBe("question-reply");
+  });
+
+  test("compatibility: default dispatch preserves old fail-open behavior when GET /question 500s (falls through to follow-up)", async () => {
+    globalThis.fetch = mockFetch({
+      "GET /session/ses_steer": () => ({
+        body: { id: "ses_steer", directory: dirA },
+      }),
+      "GET /question": () => ({ status: 500, body: { error: "boom" } }),
+      "POST /session/ses_steer/prompt_async": () => ({ status: 204 }),
+    });
+    const res = await dispatch(
+      { sessionId: "ses_steer", prompt: "more" },
+      { context: loadContext() },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.mode).toBe("follow-up");
+  });
+
+  test("safety: onPendingQuestion 'blocked' returns a typed blocked result and sends neither reply nor follow-up prompt", async () => {
+    let replyCalled = false;
+    let promptCalled = false;
+    globalThis.fetch = mockFetch({
+      "GET /session/ses_steer": () => ({
+        body: { id: "ses_steer", directory: dirA },
+      }),
+      "GET /question": () => ({
+        body: [{ id: "q_1", sessionID: "ses_steer" }],
+      }),
+      "POST /question/q_1/reply": () => {
+        replyCalled = true;
+        return { status: 200, body: {} };
+      },
+      "POST /session/ses_steer/prompt_async": () => {
+        promptCalled = true;
+        return { status: 204 };
+      },
+    });
+    const res = await dispatch(
+      { sessionId: "ses_steer", prompt: "yes", onPendingQuestion: "blocked" },
+      { context: loadContext() },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.mode).toBe("blocked");
+    expect(replyCalled).toBe(false);
+    expect(promptCalled).toBe(false);
+  });
+
+  test("fail-closed: onPendingQuestion 'blocked' with GET /question returning 500 returns a stable error and sends neither reply nor follow-up prompt", async () => {
+    let replyCalled = false;
+    let promptCalled = false;
+    globalThis.fetch = mockFetch({
+      "GET /session/ses_steer": () => ({
+        body: { id: "ses_steer", directory: dirA },
+      }),
+      "GET /question": () => ({ status: 500, body: { error: "boom" } }),
+      "POST /question/q_1/reply": () => {
+        replyCalled = true;
+        return { status: 200, body: {} };
+      },
+      "POST /session/ses_steer/prompt_async": () => {
+        promptCalled = true;
+        return { status: 204 };
+      },
+    });
+    const res = await dispatch(
+      { sessionId: "ses_steer", prompt: "yes", onPendingQuestion: "blocked" },
+      { context: loadContext() },
+    );
+    expect(res.ok).toBe(false);
+    expect(replyCalled).toBe(false);
+    expect(promptCalled).toBe(false);
+  });
+
+  test("fail-closed: onPendingQuestion 'blocked' with GET /question returning malformed JSON returns a stable error and sends neither reply nor follow-up prompt", async () => {
+    let replyCalled = false;
+    let promptCalled = false;
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const path = url.replace("http://127.0.0.1:4096", "");
+      if (path === "/session/ses_steer") {
+        return new Response(
+          JSON.stringify({ id: "ses_steer", directory: dirA }),
+          { status: 200 },
+        );
+      }
+      if (path === "/question") {
+        return new Response("not-json{{{", { status: 200 });
+      }
+      if (path === "/question/q_1/reply") {
+        replyCalled = true;
+        return new Response("{}", { status: 200 });
+      }
+      if (path === "/session/ses_steer/prompt_async") {
+        promptCalled = true;
+        return new Response(null, { status: 204 });
+      }
+      return new Response("[]", { status: 404 });
+    }) as unknown as typeof fetch;
+    const res = await dispatch(
+      { sessionId: "ses_steer", prompt: "yes", onPendingQuestion: "blocked" },
+      { context: loadContext() },
+    );
+    expect(res.ok).toBe(false);
+    expect(replyCalled).toBe(false);
+    expect(promptCalled).toBe(false);
+  });
+
+  test("no pending question: onPendingQuestion 'blocked' still dispatches a normal follow-up", async () => {
+    globalThis.fetch = mockFetch({
+      "GET /session/ses_steer": () => ({
+        body: { id: "ses_steer", directory: dirA },
+      }),
+      "GET /question": () => ({ body: [] }),
+      "POST /session/ses_steer/prompt_async": () => ({ status: 204 }),
+    });
+    const res = await dispatch(
+      { sessionId: "ses_steer", prompt: "more", onPendingQuestion: "blocked" },
+      { context: loadContext() },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.mode).toBe("follow-up");
   });
 });
