@@ -187,6 +187,108 @@ describe("space-bus CLI", () => {
     assertNoPasswordLeak(afterStopRes.stdout, afterStopRes.stderr);
   }, 30_000);
 
+  // --- resolveRoster env leak: --config must not persist into
+  // process.env.SPACE_BUS_CONFIG. Regression coverage for the bug where
+  // resolveRoster() wrote process.env["SPACE_BUS_CONFIG"] = config as a
+  // side effect, so a later call in the same process (e.g. an in-process
+  // managed-wiring test after the roster's temp file has been deleted)
+  // would resolve the dead leaked path via env precedence instead of its
+  // own explicit resolution. ------------------------------------------
+
+  describe("--config does not leak into SPACE_BUS_CONFIG", () => {
+    const ORIGINAL_ENV = process.env["SPACE_BUS_CONFIG"];
+
+    afterEach(() => {
+      if (ORIGINAL_ENV === undefined) {
+        delete process.env["SPACE_BUS_CONFIG"];
+      } else {
+        process.env["SPACE_BUS_CONFIG"] = ORIGINAL_ENV;
+      }
+    });
+
+    test("runService with --config: SPACE_BUS_CONFIG stays unset when it started unset", async () => {
+      delete process.env["SPACE_BUS_CONFIG"];
+      const code = await runService(
+        {
+          command: "service",
+          subcommand: "status",
+          json: true,
+          foreground: false,
+          config: rosterPath,
+          help: false,
+          unknownFlags: [],
+          configMissingValue: false,
+        },
+        {
+          serviceStatus: async () => ({
+            ok: true,
+            label: "bot.fro.space-bus.abc",
+            installed: false,
+            loaded: false,
+            running: false,
+            plistPath: "/x",
+          }),
+        },
+      );
+      expect(code).toBe(0);
+      expect(process.env["SPACE_BUS_CONFIG"]).toBeUndefined();
+    });
+
+    test("runService with --config: a pre-existing SPACE_BUS_CONFIG is restored exactly (unchanged)", async () => {
+      const preexisting =
+        "/tmp/some-other-roster-that-must-not-be-touched.json";
+      process.env["SPACE_BUS_CONFIG"] = preexisting;
+      const code = await runService(
+        {
+          command: "service",
+          subcommand: "status",
+          json: true,
+          foreground: false,
+          config: rosterPath,
+          help: false,
+          unknownFlags: [],
+          configMissingValue: false,
+        },
+        {
+          serviceStatus: async () => ({
+            ok: true,
+            label: "bot.fro.space-bus.abc",
+            installed: false,
+            loaded: false,
+            running: false,
+            plistPath: "/x",
+          }),
+        },
+      );
+      expect(code).toBe(0);
+      expect(process.env["SPACE_BUS_CONFIG"]).toBe(preexisting);
+    });
+
+    test("runServe with --config (non-foreground): SPACE_BUS_CONFIG stays unset when it started unset", async () => {
+      delete process.env["SPACE_BUS_CONFIG"];
+      const fakeHandle: ServerHandle = {
+        baseUrl: "http://127.0.0.1:9",
+        credentials: { username: "opencode", password: "pw" },
+        pid: 111,
+        port: 9,
+      };
+      const code = await runServe(
+        {
+          command: "serve",
+          json: true,
+          foreground: false,
+          config: rosterPath,
+          help: false,
+          unknownFlags: [],
+          configMissingValue: false,
+        },
+        { ensureServer: async () => fakeHandle },
+      );
+      expect(code).toBe(0);
+      expect(process.env["SPACE_BUS_CONFIG"]).toBeUndefined();
+    });
+  });
+
   // --- runService: injected fake service functions, no real launchd -----
 
   describe("runService", () => {

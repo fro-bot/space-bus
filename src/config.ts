@@ -69,34 +69,59 @@ export function expandHome(path: string): string {
 }
 
 /**
+ * Validates and expands an explicit roster-path override (from
+ * SPACE_BUS_CONFIG or an equivalent explicit source like the CLI's
+ * `--config` flag), applying the same absolute-path/URL/~-expansion rules
+ * either way. `sourceLabel` names the mechanism in error messages.
+ */
+function resolveExplicitOverride(
+  override: string,
+  sourceLabel: string,
+): string {
+  if (override.includes("://")) {
+    throw new Error(
+      `space-bus: ${sourceLabel} must be an absolute path or start with ~ (got a URL: ${override})`,
+    );
+  }
+  const expanded = expandHome(override);
+  if (!expanded.startsWith("/")) {
+    throw new Error(
+      `space-bus: ${sourceLabel} must be an absolute path or start with ~ (got: ${override})`,
+    );
+  }
+  return existsSync(expanded) ? realpathSync(expanded) : expanded;
+}
+
+/**
  * Resolves the path to spacebus.json for a given workspace directory.
  *
  * Resolution order:
- *   1. SPACE_BUS_CONFIG env var (must be absolute or start with ~; URLs and
+ *   1. `explicitOverride`, when passed (e.g. the CLI's `--config` flag) —
+ *      validated with the same absolute-path/URL/~-expansion rules as
+ *      SPACE_BUS_CONFIG below, but resolved directly without touching
+ *      process.env. This lets callers thread an explicit override through
+ *      a single call without a persistent global mutation.
+ *   2. SPACE_BUS_CONFIG env var (must be absolute or start with ~; URLs and
  *      bare-relative paths are rejected with an actionable error).
- *   2. `<directory>/spacebus.json`.
- *   3. Throws, naming both mechanisms.
+ *   3. `<directory>/spacebus.json`.
+ *   4. Throws, naming both mechanisms.
  *
  * Exact-path discovery only — no upward directory walk. When the resolved
  * file exists, the path is canonicalized with realpathSync; when it's
  * missing, the un-canonicalized (but expanded/joined) path is used in the
  * error message.
  */
-export function resolveRosterPath(directory?: string): string {
+export function resolveRosterPath(
+  directory?: string,
+  explicitOverride?: string,
+): string {
+  if (explicitOverride) {
+    return resolveExplicitOverride(explicitOverride, "--config");
+  }
+
   const override = process.env["SPACE_BUS_CONFIG"];
   if (override) {
-    if (override.includes("://")) {
-      throw new Error(
-        `space-bus: SPACE_BUS_CONFIG must be an absolute path or start with ~ (got a URL: ${override})`,
-      );
-    }
-    const expanded = expandHome(override);
-    if (!expanded.startsWith("/")) {
-      throw new Error(
-        `space-bus: SPACE_BUS_CONFIG must be an absolute path or start with ~ (got: ${override})`,
-      );
-    }
-    return existsSync(expanded) ? realpathSync(expanded) : expanded;
+    return resolveExplicitOverride(override, "SPACE_BUS_CONFIG");
   }
 
   if (directory) {

@@ -109,10 +109,7 @@ function consumeArg(argv: string[], i: number, result: ParsedArgs): number {
 }
 
 function resolveRoster(config: string | undefined): string {
-  if (config) {
-    process.env["SPACE_BUS_CONFIG"] = config;
-  }
-  return resolveRosterPath();
+  return resolveRosterPath(undefined, config);
 }
 
 function printJson(json: boolean, data: unknown, plain: string): void {

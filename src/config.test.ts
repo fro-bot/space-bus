@@ -122,6 +122,53 @@ describe("config", () => {
     expect(() => resolveRosterPath()).toThrow(/absolute path or start with ~/);
   });
 
+  test("explicitOverride wins over SPACE_BUS_CONFIG, and SPACE_BUS_CONFIG is left completely untouched", () => {
+    const envDir = mkdtempSync(join(tmpdir(), "space-bus-config-env-"));
+    const overrideDir = mkdtempSync(
+      join(tmpdir(), "space-bus-config-explicit-"),
+    );
+    try {
+      const rosterA = writeRoster(envDir, {
+        projects: [{ name: "roster-a", path: "~/a", description: "a" }],
+      });
+      const rosterB = writeRoster(overrideDir, {
+        projects: [{ name: "roster-b", path: "~/b", description: "b" }],
+      });
+      process.env["SPACE_BUS_CONFIG"] = rosterA;
+
+      const resolved = resolveRosterPath(undefined, rosterB);
+
+      expect(resolved).toBe(realpathSync(rosterB));
+      // The explicit override must never write to process.env — the whole
+      // point of the second parameter is threading --config through a
+      // single call without a persistent global mutation.
+      expect(process.env["SPACE_BUS_CONFIG"]).toBe(rosterA);
+    } finally {
+      rmSync(envDir, { recursive: true, force: true });
+      rmSync(overrideDir, { recursive: true, force: true });
+    }
+  });
+
+  test("explicitOverride expands leading ~ the same as SPACE_BUS_CONFIG", () => {
+    expect(() =>
+      resolveRosterPath(
+        undefined,
+        "~/does-not-exist-space-bus-test/spacebus.json",
+      ),
+    ).not.toThrow();
+    const resolved = resolveRosterPath(
+      undefined,
+      "~/does-not-exist-space-bus-test/spacebus.json",
+    );
+    expect(resolved.startsWith(homedir())).toBe(true);
+  });
+
+  test("explicitOverride as a bare-relative path is rejected, naming --config", () => {
+    expect(() =>
+      resolveRosterPath(undefined, "./relative/spacebus.json"),
+    ).toThrow(/--config must be an absolute path or start with ~/);
+  });
+
   test("non-localhost baseUrl is refused", () => {
     writeRoster(dir, { server: { baseUrl: "http://example.com:4096" } });
     expect(() => getRoster(dir)).toThrow(/localhost/);
