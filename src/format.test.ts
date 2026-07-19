@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { WaitResult } from "./core";
 import {
+  dispatchMetadata,
   formatDispatch,
   formatResult,
   formatRoster,
@@ -146,6 +147,59 @@ describe("formatDispatch", () => {
     expect(out).toBe(
       "Blocked: session ses_999 (infra) has a pending question (que_abc) — no reply or prompt sent.",
     );
+  });
+});
+
+describe("dispatchMetadata messageId", () => {
+  test("mode new with messageId: includes messageId key", () => {
+    const meta = dispatchMetadata({
+      sessionId: "ses_123",
+      project: "dashboard",
+      mode: "new",
+      directory: "/home/x/dashboard",
+      messageId: "msg_0123456789abABCDEFGHIJKLmn",
+    });
+    expect("messageId" in meta).toBe(true);
+    expect(meta.messageId).toBe("msg_0123456789abABCDEFGHIJKLmn");
+  });
+
+  test("mode new without messageId: omits the key entirely", () => {
+    const meta = dispatchMetadata({
+      sessionId: "ses_123",
+      project: "dashboard",
+      mode: "new",
+      directory: "/home/x/dashboard",
+    });
+    expect("messageId" in meta).toBe(false);
+  });
+
+  test("mode follow-up with messageId: includes messageId key", () => {
+    const meta = dispatchMetadata({
+      sessionId: "ses_789",
+      project: "infra",
+      mode: "follow-up",
+      messageId: "msg_0123456789abABCDEFGHIJKLmn",
+    });
+    expect("messageId" in meta).toBe(true);
+  });
+
+  test("mode question-reply: never includes messageId", () => {
+    const meta = dispatchMetadata({
+      sessionId: "ses_456",
+      project: "agent",
+      mode: "question-reply",
+    });
+    expect("messageId" in meta).toBe(false);
+  });
+
+  test("mode blocked: never includes messageId", () => {
+    const meta = dispatchMetadata({
+      sessionId: "ses_999",
+      project: "infra",
+      mode: "blocked",
+      requestId: "que_abc",
+    });
+    expect("messageId" in meta).toBe(false);
   });
 });
 

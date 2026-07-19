@@ -35,6 +35,12 @@ export function makeBusTask(defaultDirectory?: string): ToolDefinition {
         .describe(
           "Existing session ID to steer instead of starting a new session",
         ),
+      messageId: tool.schema
+        .string()
+        .optional()
+        .describe(
+          "Optional caller-supplied id to correlate this prompt with the message OpenCode creates for it (msg_ + 12 hex + 14 alphanumeric chars). Omit to dispatch without correlation.",
+        ),
       roster: tool.schema
         .string()
         .optional()
