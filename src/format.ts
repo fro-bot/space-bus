@@ -60,10 +60,20 @@ export type DispatchMetadata = {
   sessionId: string;
   project: string;
   mode: DispatchResult["mode"];
+  messageId?: string;
 };
 
 export function dispatchMetadata(r: DispatchResult): DispatchMetadata {
-  return { sessionId: r.sessionId, project: r.project, mode: r.mode };
+  const messageId =
+    (r.mode === "new" || r.mode === "follow-up") && r.messageId !== undefined
+      ? r.messageId
+      : undefined;
+  return {
+    sessionId: r.sessionId,
+    project: r.project,
+    mode: r.mode,
+    ...(messageId !== undefined ? { messageId } : {}),
+  };
 }
 
 export function formatStatus(r: SessionStatusResult): string {

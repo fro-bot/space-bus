@@ -6,6 +6,7 @@ import { loadContext } from "./config";
 import {
   answerQuestion,
   type CoreOpts,
+  createDispatchMessageId,
   type DispatchArgs,
   deriveSessionState,
   dispatch,
@@ -2163,5 +2164,620 @@ describe("dispatch() with onPendingQuestion: 'blocked' policy", () => {
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     expect(res.mode).toBe("follow-up");
+  });
+});
+
+// --- dispatch message correlation -------------------------------------------
+
+const DISPATCH_MESSAGE_ID_SHAPE = /^msg_[0-9a-f]{12}[0-9A-Za-z]{14}$/;
+
+describe("createDispatchMessageId()", () => {
+  const ORIGINAL_DATE_NOW = Date.now;
+
+  afterEach(() => {
+    Date.now = ORIGINAL_DATE_NOW;
+  });
+
+  test("returns a string matching msg_ + 12 lowercase hex + 14 base62", () => {
+    const id = createDispatchMessageId();
+    expect(typeof id).toBe("string");
+    expect(id).toMatch(DISPATCH_MESSAGE_ID_SHAPE);
+  });
+
+  test("produces distinct ids across calls", () => {
+    const ids = new Set(
+      Array.from({ length: 50 }, () => createDispatchMessageId()),
+    );
+    expect(ids.size).toBe(50);
+  });
+
+  test("same-ms calls encode a monotonically increasing counter in the hex prefix", () => {
+    Date.now = () => 1_700_000_000_000;
+    const a = createDispatchMessageId();
+    const b = createDispatchMessageId();
+    const c = createDispatchMessageId();
+    const hexOf = (id: string) => id.slice(4, 16);
+    const numOf = (id: string) => BigInt(`0x${hexOf(id)}`);
+    expect(numOf(b)).toBeGreaterThan(numOf(a));
+    expect(numOf(c)).toBeGreaterThan(numOf(b));
+  });
+
+  test("a later millisecond always sorts after an earlier millisecond's ids, even after the counter advances", () => {
+    Date.now = () => 1_700_000_000_000;
+    const a1 = createDispatchMessageId();
+    const a2 = createDispatchMessageId();
+    const a3 = createDispatchMessageId();
+    Date.now = () => 1_700_000_000_001;
+    const b1 = createDispatchMessageId();
+    const hexOf = (id: string) => BigInt(`0x${id.slice(4, 16)}`);
+    expect(hexOf(b1)).toBeGreaterThan(hexOf(a1));
+    expect(hexOf(b1)).toBeGreaterThan(hexOf(a2));
+    expect(hexOf(b1)).toBeGreaterThan(hexOf(a3));
+  });
+
+  test("counter resets on a new millisecond (does not keep climbing from the prior ms)", () => {
+    Date.now = () => 2_000_000_000_000;
+    createDispatchMessageId();
+    createDispatchMessageId();
+    const lastOfFirstMs = createDispatchMessageId();
+    Date.now = () => 2_000_000_000_001;
+    const firstOfSecondMs = createDispatchMessageId();
+    const counterOf = (id: string) => BigInt(`0x${id.slice(4, 16)}`) & 0xfffn;
+    // The new ms's counter starts low again — it must not equal or exceed
+    // the prior ms's already-advanced counter by coincidence of unbounded
+    // growth; assert it's within the small range a fresh-ms counter uses.
+    expect(counterOf(firstOfSecondMs)).toBeLessThan(counterOf(lastOfFirstMs));
+  });
+});
+
+const VALID_MESSAGE_ID = "msg_0123456789abABCDEFGHIJKLmn";
+
+describe("toDispatchArgs messageId", () => {
+  test("valid msg_ id is preserved exactly", () => {
+    const res = toDispatchArgs({
+      prompt: "hi",
+      project: "alpha",
+      messageId: VALID_MESSAGE_ID,
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.messageId).toBe(VALID_MESSAGE_ID);
+  });
+
+  test("omitted messageId is preserved as undefined", () => {
+    const res = toDispatchArgs({ prompt: "hi", project: "alpha" });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.messageId).toBeUndefined();
+  });
+
+  test("empty string messageId is rejected with a stable generic error", () => {
+    const res = toDispatchArgs({
+      prompt: "hi",
+      project: "alpha",
+      messageId: "",
+    });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.error).toContain("messageId");
+  });
+
+  test("messageId missing msg_ prefix is rejected", () => {
+    const res = toDispatchArgs({
+      prompt: "hi",
+      project: "alpha",
+      messageId: "0123456789abABCDEFGHIJKLmn",
+    });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.error).toContain("messageId");
+  });
+
+  test("messageId with path traversal is rejected", () => {
+    const res = toDispatchArgs({
+      prompt: "hi",
+      project: "alpha",
+      messageId: "msg_../../etc/passwd",
+    });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.error).toContain("messageId");
+  });
+
+  test("messageId with header/CRLF-like content is rejected", () => {
+    const res = toDispatchArgs({
+      prompt: "hi",
+      project: "alpha",
+      messageId: "msg_abc\r\nX-Injected: 1",
+    });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.error).toContain("messageId");
+  });
+
+  test("messageId with non-alphanumeric token characters (dots/slashes) is rejected", () => {
+    const res = toDispatchArgs({
+      prompt: "hi",
+      project: "alpha",
+      messageId: "msg_abc.def/ghi",
+    });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.error).toContain("messageId");
+  });
+
+  test("uppercase A-F in the 12-char hex prefix is rejected (hex prefix must be exact-lowercase)", () => {
+    const res = toDispatchArgs({
+      prompt: "hi",
+      project: "alpha",
+      messageId: "msg_0123456789ABABCDEFGHIJKLmn",
+    });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.error).toContain("messageId");
+    expect(res.error).not.toContain("0123456789AB");
+  });
+
+  test("messageId with correct alphabet but wrong hex/base62 segment lengths (short) is rejected", () => {
+    const res = toDispatchArgs({
+      prompt: "hi",
+      project: "alpha",
+      messageId: "msg_0123456789abABC", // hex segment ok, base62 segment too short
+    });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.error).toContain("messageId");
+  });
+
+  test("oversized messageId is rejected, and the rejected value is never echoed in the error", () => {
+    const oversized = `msg_${"a".repeat(10_000)}`;
+    const res = toDispatchArgs({
+      prompt: "hi",
+      project: "alpha",
+      messageId: oversized,
+    });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.error).not.toContain(oversized);
+    expect(res.error).not.toContain("a".repeat(100));
+    expect(res.error.length).toBeLessThan(500);
+  });
+
+  test("rejected messageId containing injection-like/control content is never echoed in the error", () => {
+    const malicious = "msg_\r\nX-Injected: evil\x00<script>alert(1)</script>";
+    const res = toDispatchArgs({
+      prompt: "hi",
+      project: "alpha",
+      messageId: malicious,
+    });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.error).not.toContain("X-Injected");
+    expect(res.error).not.toContain("<script>");
+    expect(res.error).not.toContain("\r\n");
+  });
+
+  test("invalid messageId error message is identical regardless of the rejected input (stable generic error)", () => {
+    const r1 = toDispatchArgs({
+      prompt: "hi",
+      project: "alpha",
+      messageId: "bad",
+    });
+    const r2 = toDispatchArgs({
+      prompt: "hi",
+      project: "alpha",
+      messageId: `msg_${"z".repeat(500)}`,
+    });
+    expect(r1.ok).toBe(false);
+    expect(r2.ok).toBe(false);
+    if (r1.ok || r2.ok) return;
+    expect(r1.error).toBe(r2.error);
+  });
+
+  test("messageId preserved on steer shape too", () => {
+    const res = toDispatchArgs({
+      prompt: "hi",
+      sessionId: "ses_1",
+      messageId: VALID_MESSAGE_ID,
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.messageId).toBe(VALID_MESSAGE_ID);
+  });
+
+  test("true optional omission: ok:true result omits the messageId key entirely when not supplied", () => {
+    const res = toDispatchArgs({ prompt: "hi", project: "alpha" });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect("messageId" in res).toBe(false);
+  });
+
+  test("true optional inclusion: ok:true result includes the messageId key when supplied", () => {
+    const res = toDispatchArgs({
+      prompt: "hi",
+      project: "alpha",
+      messageId: VALID_MESSAGE_ID,
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect("messageId" in res).toBe(true);
+  });
+});
+
+describe("dispatch() messageId threading", () => {
+  test("new-session: messageID is sent in prompt_async body and returned in result when provided", async () => {
+    let capturedBody: unknown;
+    globalThis.fetch = mockFetch({
+      "POST /session": () => ({ body: { id: "ses_new_1" } }),
+      "POST /session/ses_new_1/prompt_async": (init) => {
+        capturedBody = init?.body ? JSON.parse(init.body as string) : undefined;
+        return { status: 204 };
+      },
+    });
+    const res = await callDispatch({
+      project: "alpha",
+      prompt: "hello",
+      messageId: VALID_MESSAGE_ID,
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.mode).toBe("new");
+    if (res.mode !== "new") return;
+    expect(res.messageId).toBe(VALID_MESSAGE_ID);
+    expect("messageId" in res).toBe(true);
+    expect(capturedBody).toMatchObject({
+      messageID: VALID_MESSAGE_ID,
+      parts: [{ type: "text", text: "hello" }],
+    });
+  });
+
+  test("new-session: messageID field omitted from body and result when not provided", async () => {
+    let capturedBody: Record<string, unknown> | undefined;
+    globalThis.fetch = mockFetch({
+      "POST /session": () => ({ body: { id: "ses_new_1" } }),
+      "POST /session/ses_new_1/prompt_async": (init) => {
+        capturedBody = init?.body
+          ? (JSON.parse(init.body as string) as Record<string, unknown>)
+          : undefined;
+        return { status: 204 };
+      },
+    });
+    const res = await callDispatch({ project: "alpha", prompt: "hello" });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.mode).toBe("new");
+    if (res.mode !== "new") return;
+    expect(res.messageId).toBeUndefined();
+    expect("messageId" in res).toBe(false);
+    expect(capturedBody).toBeDefined();
+    expect(capturedBody && "messageID" in capturedBody).toBe(false);
+  });
+
+  test("follow-up: messageID is sent in prompt_async body and returned in result when provided", async () => {
+    let capturedBody: unknown;
+    globalThis.fetch = mockFetch({
+      "GET /session/ses_steer": () => ({
+        body: { id: "ses_steer", directory: dirA },
+      }),
+      "GET /question": () => ({ body: [] }),
+      "POST /session/ses_steer/prompt_async": (init) => {
+        capturedBody = init?.body ? JSON.parse(init.body as string) : undefined;
+        return { status: 204 };
+      },
+    });
+    const res = await callDispatch({
+      sessionId: "ses_steer",
+      prompt: "more",
+      messageId: VALID_MESSAGE_ID,
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.mode).toBe("follow-up");
+    if (res.mode !== "follow-up") return;
+    expect(res.messageId).toBe(VALID_MESSAGE_ID);
+    expect("messageId" in res).toBe(true);
+    expect(capturedBody).toMatchObject({
+      messageID: VALID_MESSAGE_ID,
+      parts: [{ type: "text", text: "more" }],
+    });
+  });
+
+  test("follow-up: messageID field omitted from body and result when not provided", async () => {
+    let capturedBody: Record<string, unknown> | undefined;
+    globalThis.fetch = mockFetch({
+      "GET /session/ses_steer": () => ({
+        body: { id: "ses_steer", directory: dirA },
+      }),
+      "GET /question": () => ({ body: [] }),
+      "POST /session/ses_steer/prompt_async": (init) => {
+        capturedBody = init?.body
+          ? (JSON.parse(init.body as string) as Record<string, unknown>)
+          : undefined;
+        return { status: 204 };
+      },
+    });
+    const res = await callDispatch({ sessionId: "ses_steer", prompt: "more" });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.mode).toBe("follow-up");
+    if (res.mode !== "follow-up") return;
+    expect(res.messageId).toBeUndefined();
+    expect("messageId" in res).toBe(false);
+    expect(capturedBody).toBeDefined();
+    expect(capturedBody && "messageID" in capturedBody).toBe(false);
+  });
+
+  test("blocked: messageId is never present on the result even if supplied", async () => {
+    globalThis.fetch = mockFetch({
+      "GET /session/ses_steer": () => ({
+        body: { id: "ses_steer", directory: dirA },
+      }),
+      "GET /question": () => ({
+        body: [{ id: "q_1", sessionID: "ses_steer" }],
+      }),
+    });
+    const res = await callDispatch({
+      sessionId: "ses_steer",
+      prompt: "yes",
+      onPendingQuestion: "blocked",
+      messageId: VALID_MESSAGE_ID,
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.mode).toBe("blocked");
+    expect("messageId" in res).toBe(false);
+  });
+
+  test("question-reply: messageId is not sent to the question-answer endpoint and not present on the result", async () => {
+    let capturedBody: unknown;
+    globalThis.fetch = mockFetch({
+      "GET /session/ses_steer": () => ({
+        body: { id: "ses_steer", directory: dirA },
+      }),
+      "GET /question": () => ({
+        body: [{ id: "q_1", sessionID: "ses_steer" }],
+      }),
+      "POST /question/q_1/reply": (init) => {
+        capturedBody = init?.body ? JSON.parse(init.body as string) : undefined;
+        return { status: 200, body: {} };
+      },
+    });
+    const res = await callDispatch({
+      sessionId: "ses_steer",
+      prompt: "yes",
+      messageId: VALID_MESSAGE_ID,
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.mode).toBe("question-reply");
+    expect("messageId" in res).toBe(false);
+    expect(capturedBody).toMatchObject({ answers: [["yes"]] });
+    expect(
+      capturedBody && (capturedBody as Record<string, unknown>)["messageID"],
+    ).toBeUndefined();
+  });
+});
+
+describe("dispatch() messageId defense in depth (bypassing toDispatchArgs)", () => {
+  test("invalid messageId is rejected before any context/network I/O for new-session shape", async () => {
+    let fetchCalled = false;
+    globalThis.fetch = (async () => {
+      fetchCalled = true;
+      return new Response(null, { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const res = await callDispatch({
+      project: "alpha",
+      prompt: "hi",
+      messageId: "not-a-valid-id",
+    });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.error).toContain("messageId");
+    expect(fetchCalled).toBe(false);
+  });
+
+  test("invalid messageId is rejected before any context/network I/O for steer shape", async () => {
+    let fetchCalled = false;
+    globalThis.fetch = (async () => {
+      fetchCalled = true;
+      return new Response(null, { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const res = await callDispatch({
+      sessionId: "ses_steer",
+      prompt: "hi",
+      messageId: "also-invalid",
+    });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.error).toContain("messageId");
+    expect(fetchCalled).toBe(false);
+  });
+
+  test("uppercase A-F in the 12-char hex prefix supplied directly to dispatch() is rejected before any network I/O, with a stable non-echoing error", async () => {
+    let fetchCalled = false;
+    globalThis.fetch = (async () => {
+      fetchCalled = true;
+      return new Response(null, { status: 200 });
+    }) as unknown as typeof fetch;
+    const uppercaseHexPrefix = "msg_0123456789ABABCDEFGHIJKLmn";
+
+    const res = await callDispatch({
+      project: "alpha",
+      prompt: "hi",
+      messageId: uppercaseHexPrefix,
+    });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(fetchCalled).toBe(false);
+    expect(res.error).toContain("messageId");
+    expect(res.error).not.toContain("0123456789AB");
+  });
+
+  test("oversized messageId supplied directly to dispatch() is rejected with zero fetch calls and no echo", async () => {
+    let fetchCalled = false;
+    globalThis.fetch = (async () => {
+      fetchCalled = true;
+      return new Response(null, { status: 200 });
+    }) as unknown as typeof fetch;
+    const oversized = `msg_${"x".repeat(5000)}`;
+
+    const res = await callDispatch({
+      project: "alpha",
+      prompt: "hi",
+      messageId: oversized,
+    });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(fetchCalled).toBe(false);
+    expect(res.error).not.toContain(oversized);
+  });
+});
+
+describe("dispatch() typed partial-failure metadata (dispatchFailure)", () => {
+  test("new-session: session-create POST fails -> phase indeterminate (the create request may have landed server-side even though the response was lost/errored), no sessionId known", async () => {
+    globalThis.fetch = mockFetch({
+      "POST /session": () => ({ status: 500, body: { error: "boom" } }),
+    });
+    const res = await callDispatch({
+      project: "alpha",
+      prompt: "hi",
+      messageId: VALID_MESSAGE_ID,
+    });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.dispatchFailure).toBeDefined();
+    expect(res.dispatchFailure?.phase).toBe("indeterminate");
+    expect(res.dispatchFailure?.project).toBe("alpha");
+    expect(res.dispatchFailure?.sessionId).toBeUndefined();
+  });
+
+  test("new-session: session created but prompt_async fails -> phase indeterminate with sessionId, project, messageId", async () => {
+    globalThis.fetch = mockFetch({
+      "POST /session": () => ({ body: { id: "ses_created_1" } }),
+      "POST /session/ses_created_1/prompt_async": () => ({
+        status: 500,
+        body: { error: "boom" },
+      }),
+    });
+    const res = await callDispatch({
+      project: "alpha",
+      prompt: "hi",
+      messageId: VALID_MESSAGE_ID,
+    });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.dispatchFailure).toBeDefined();
+    expect(res.dispatchFailure?.phase).toBe("indeterminate");
+    expect(res.dispatchFailure?.project).toBe("alpha");
+    expect(res.dispatchFailure?.sessionId).toBe("ses_created_1");
+    expect(res.dispatchFailure?.messageId).toBe(VALID_MESSAGE_ID);
+  });
+
+  test("new-session: session created, prompt_async fails, no messageId supplied -> dispatchFailure omits messageId key", async () => {
+    globalThis.fetch = mockFetch({
+      "POST /session": () => ({ body: { id: "ses_created_2" } }),
+      "POST /session/ses_created_2/prompt_async": () => ({
+        status: 500,
+        body: { error: "boom" },
+      }),
+    });
+    const res = await callDispatch({ project: "alpha", prompt: "hi" });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.dispatchFailure?.sessionId).toBe("ses_created_2");
+    expect(res.dispatchFailure && "messageId" in res.dispatchFailure).toBe(
+      false,
+    );
+  });
+
+  test("new-session: malformed /session response after create -> phase indeterminate (mutation may have happened)", async () => {
+    globalThis.fetch = mockFetch({
+      "POST /session": () => ({ body: { notASession: true } }),
+    });
+    const res = await callDispatch({ project: "alpha", prompt: "hi" });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.dispatchFailure?.phase).toBe("indeterminate");
+    expect(res.dispatchFailure?.project).toBe("alpha");
+  });
+
+  test("existing-session: follow-up prompt_async fails -> phase indeterminate with sessionId, project, messageId", async () => {
+    globalThis.fetch = mockFetch({
+      "GET /session/ses_steer": () => ({
+        body: { id: "ses_steer", directory: dirA },
+      }),
+      "GET /question": () => ({ body: [] }),
+      "POST /session/ses_steer/prompt_async": () => ({
+        status: 500,
+        body: { error: "boom" },
+      }),
+    });
+    const res = await callDispatch({
+      sessionId: "ses_steer",
+      prompt: "more",
+      messageId: VALID_MESSAGE_ID,
+    });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.dispatchFailure?.phase).toBe("indeterminate");
+    expect(res.dispatchFailure?.sessionId).toBe("ses_steer");
+    expect(res.dispatchFailure?.project).toBe("alpha");
+    expect(res.dispatchFailure?.messageId).toBe(VALID_MESSAGE_ID);
+  });
+
+  test("existing-session: question-reply POST fails -> dispatchFailure includes session/project but omits messageId", async () => {
+    globalThis.fetch = mockFetch({
+      "GET /session/ses_steer": () => ({
+        body: { id: "ses_steer", directory: dirA },
+      }),
+      "GET /question": () => ({
+        body: [{ id: "q_1", sessionID: "ses_steer" }],
+      }),
+      "POST /question/q_1/reply": () => ({
+        status: 500,
+        body: { error: "boom" },
+      }),
+    });
+    const res = await callDispatch({
+      sessionId: "ses_steer",
+      prompt: "yes",
+      messageId: VALID_MESSAGE_ID,
+    });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.dispatchFailure?.phase).toBe("indeterminate");
+    expect(res.dispatchFailure?.sessionId).toBe("ses_steer");
+    expect(res.dispatchFailure?.project).toBe("alpha");
+    expect(res.dispatchFailure && "messageId" in res.dispatchFailure).toBe(
+      false,
+    );
+  });
+
+  test("target resolution failure (unknown project) before any mutation -> no dispatchFailure claim of a sent prompt (legacy error, or not_sent if present)", async () => {
+    globalThis.fetch = mockFetch({});
+    const res = await callDispatch({ project: "nonexistent", prompt: "hi" });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    // Definitely pre-mutation: must never claim indeterminate (which implies
+    // a mutation may have happened).
+    expect(res.dispatchFailure?.phase).not.toBe("indeterminate");
+  });
+
+  test("no raw response body/error text leaks through dispatchFailure fields", async () => {
+    globalThis.fetch = mockFetch({
+      "POST /session": () => ({ body: { id: "ses_created_3" } }),
+      "POST /session/ses_created_3/prompt_async": () => ({
+        status: 500,
+        body: { error: "SENTINEL_SECRET_BODY" },
+      }),
+    });
+    const res = await callDispatch({ project: "alpha", prompt: "hi" });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(JSON.stringify(res.dispatchFailure)).not.toContain(
+      "SENTINEL_SECRET_BODY",
+    );
   });
 });

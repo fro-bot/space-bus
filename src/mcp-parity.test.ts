@@ -40,13 +40,14 @@ describe("plugin factory <-> description constant parity", () => {
     }
   });
 
-  test("bus_task args: prompt required; project, title, sessionId, roster optional", async () => {
+  test("bus_task args: prompt required; project, title, sessionId, messageId, roster optional", async () => {
     const hooks = await SpaceBusPlugin(
       // biome-ignore lint: minimal stub, only `directory` is consumed
       { directory: "/tmp" } as any,
     );
     const args = hooks.tool?.bus_task?.args as Record<string, unknown>;
     expect(Object.keys(args).sort()).toEqual([
+      "messageId",
       "project",
       "prompt",
       "roster",
@@ -58,6 +59,7 @@ describe("plugin factory <-> description constant parity", () => {
     expect(isOptionalZod(args["project"])).toBe(true);
     expect(isOptionalZod(args["title"])).toBe(true);
     expect(isOptionalZod(args["sessionId"])).toBe(true);
+    expect(isOptionalZod(args["messageId"])).toBe(true);
     expect(isOptionalZod(args["roster"])).toBe(true);
   });
 

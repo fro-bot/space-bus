@@ -34,11 +34,53 @@ function findProject(
 export type { SessionState, SessionStateInfo } from "./contract";
 
 type Ok<T> = { ok: true } & T;
-type Err = { ok: false; error: string };
+
+/**
+ * Typed partial-failure handle for dispatch() call sites only — omitted
+ * entirely on every other core function's errors. "indeterminate" means the
+ * failed request may already have mutated OpenCode state (a create/prompt/
+ * reply POST that failed, was lost, or returned an unparseable body after
+ * the mutating call was made); "not_sent" means the failure is definitely
+ * pre-mutation (target resolution, pending-question verification). Fields
+ * are included only when known — never present-but-undefined.
+ */
+export type DispatchFailure = {
+  phase: "not_sent" | "indeterminate";
+  project: string;
+  sessionId?: string;
+  messageId?: string;
+};
+
+type Err = { ok: false; error: string; dispatchFailure?: DispatchFailure };
 export type Result<T> = Ok<T> | Err;
 
 function err(error: string): Err {
   return { ok: false, error };
+}
+
+/** Builds a dispatch Err with typed partial-failure metadata. Conditionally
+ * includes sessionId/messageId only when provided — never a present-but-
+ * undefined key. */
+function dispatchErr(
+  error: string,
+  failure: {
+    phase: "not_sent" | "indeterminate";
+    project: string;
+    sessionId?: string;
+    messageId?: string;
+  },
+): Err {
+  const dispatchFailure: DispatchFailure = {
+    phase: failure.phase,
+    project: failure.project,
+    ...(failure.sessionId !== undefined
+      ? { sessionId: failure.sessionId }
+      : {}),
+    ...(failure.messageId !== undefined
+      ? { messageId: failure.messageId }
+      : {}),
+  };
+  return { ok: false, error, dispatchFailure };
 }
 
 type Credentials = { username?: string; password?: string };
@@ -347,7 +389,15 @@ async function dispatchNew(
   project: string,
   prompt: string,
   title?: string,
-): Promise<Result<{ sessionId: string; project: string; directory: string }>> {
+  messageId?: string,
+): Promise<
+  Result<{
+    sessionId: string;
+    project: string;
+    directory: string;
+    messageId?: string;
+  }>
+> {
   const resolved = resolveProjectOrErr(projects, project);
   if (!resolved.ok) return resolved;
   const directory = resolved.project.expandedPath;
@@ -358,16 +408,22 @@ async function dispatchNew(
     body: JSON.stringify({ title: sessionTitle }),
   });
   if (!createRes.res.ok) {
-    return err(
+    // The create POST may have landed server-side even though this response
+    // is an error (lost response, proxy hiccup) — treat as indeterminate,
+    // not not_sent, since a session could already exist with no id known
+    // back to the caller.
+    return dispatchErr(
       `space-bus: failed to create session in "${project}" (${createRes.res.status}): ${createRes.bodyText}`,
+      { phase: "indeterminate", project, messageId },
     );
   }
   let session: z.infer<typeof sessionSchema>;
   try {
     session = sessionSchema.parse(JSON.parse(createRes.bodyText));
   } catch (e) {
-    return err(
+    return dispatchErr(
       `space-bus: unexpected /session response shape: ${(e as Error).message}`,
+      { phase: "indeterminate", project, messageId },
     );
   }
 
@@ -378,23 +434,107 @@ async function dispatchNew(
     `/session/${encodeURIComponent(session.id)}/prompt_async`,
     {
       method: "POST",
-      body: JSON.stringify({ parts: [{ type: "text", text: prompt }] }),
+      body: JSON.stringify({
+        parts: [{ type: "text", text: prompt }],
+        ...(messageId !== undefined ? { messageID: messageId } : {}),
+      }),
     },
   );
   if (promptRes.res.status !== 204) {
-    return err(
+    return dispatchErr(
       `space-bus: dispatch to "${project}" failed sending prompt (${promptRes.res.status}): ${promptRes.bodyText}`,
+      { phase: "indeterminate", project, sessionId: session.id, messageId },
     );
   }
 
-  return { ok: true, sessionId: session.id, project, directory };
+  return {
+    ok: true,
+    sessionId: session.id,
+    project,
+    directory,
+    ...(messageId !== undefined ? { messageId } : {}),
+  };
 }
 
 export type DispatchResult = { sessionId: string; project: string } & (
-  | { mode: "new"; directory: string }
-  | { mode: "question-reply" | "follow-up" }
+  | { mode: "new"; directory: string; messageId?: string }
+  | { mode: "follow-up"; messageId?: string }
+  | { mode: "question-reply" }
   | { mode: "blocked"; requestId: string }
 );
+
+// --- OpenCode-compatible ascending message id generation --------------------
+// Replicates OpenCode's own id shape so ids generated here sort the same
+// way OpenCode's do: a 48-bit ascending timestamp+counter encoded as 12
+// lowercase hex chars, followed by 14 random base62 chars for uniqueness
+// within the same encoded prefix. Browser-safe: only `crypto.getRandomValues`
+// and `Date.now`, no Node builtins.
+const BASE62_ALPHABET =
+  "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+
+let lastTimestamp = 0;
+let counter = 0;
+
+function nextAscendingId(): bigint {
+  const timestamp = Date.now();
+  if (timestamp !== lastTimestamp) {
+    lastTimestamp = timestamp;
+    counter = 0;
+  }
+  counter++;
+  return BigInt(timestamp) * 0x1000n + BigInt(counter);
+}
+
+function encode48BitHex(value: bigint): string {
+  const bytes = new Uint8Array(6);
+  let v = value & 0xffffffffffffn; // low 48 bits
+  for (let i = 5; i >= 0; i--) {
+    bytes[i] = Number(v & 0xffn);
+    v >>= 8n;
+  }
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function randomBase62(length: number): string {
+  const bytes = new Uint8Array(length);
+  crypto.getRandomValues(bytes);
+  let out = "";
+  for (const b of bytes) {
+    out += BASE62_ALPHABET[b % BASE62_ALPHABET.length];
+  }
+  return out;
+}
+
+/**
+ * Generates an OpenCode v1 user-message id (`msg_` + a 12-char lowercase-hex
+ * ascending timestamp/counter prefix + 14 random base62 chars) using only
+ * Web Crypto / global browser-safe APIs — no Node builtins — so it's usable
+ * from the browser-safe `/core` subpath.
+ */
+export function createDispatchMessageId(): string {
+  const hex = encode48BitHex(nextAscendingId());
+  return `msg_${hex}${randomBase62(14)}`;
+}
+
+// OpenCode-compatible message id shape: literal "msg_" prefix + exactly 12
+// lowercase-hex chars + exactly 14 base62 chars (26-char payload, bounded
+// by construction). Deliberately exact-length and exact-alphabet so a
+// caller-supplied id can never smuggle a path, an HTTP header/CRLF
+// injection, oversized input, or non-token characters into prompt_async.
+const MESSAGE_ID_PATTERN = /^msg_[0-9a-f]{12}[0-9A-Za-z]{14}$/;
+
+// Stable, generic error — never echoes the rejected value (which could be
+// arbitrarily large, contain control characters, or carry injection
+// payloads that would otherwise leak into logs/error strings).
+const INVALID_MESSAGE_ID_ERROR =
+  "space-bus: messageId must be msg_ followed by exactly 12 hex characters and 14 alphanumeric characters";
+
+function validateMessageId(messageId: string): Result<{ messageId: string }> {
+  if (!MESSAGE_ID_PATTERN.test(messageId)) {
+    return err(INVALID_MESSAGE_ID_ERROR);
+  }
+  return { ok: true, messageId };
+}
 
 // project stays allowed alongside sessionId (the mismatch guard in the
 // steering path consumes it) but a bare {prompt} with neither is now a
@@ -413,6 +553,13 @@ export type DispatchArgs = {
    * reinterpret prompt text as a question answer.
    */
   onPendingQuestion?: "question-reply" | "blocked";
+  /**
+   * Caller-supplied OpenCode v1 user message id to correlate the dispatched
+   * prompt with the message OpenCode creates for it. Validated by
+   * toDispatchArgs against the msg_ + alphanumeric shape; never generated
+   * here — generation is the caller's job via createDispatchMessageId().
+   */
+  messageId?: string;
 } & (
   | { project: string; sessionId?: undefined }
   | { sessionId: string; project?: string }
@@ -429,6 +576,7 @@ export function toDispatchArgs(input: {
   project?: string;
   sessionId?: string;
   onPendingQuestion?: "question-reply" | "blocked";
+  messageId?: string;
 }): Result<DispatchArgs> {
   if (
     input.onPendingQuestion !== undefined &&
@@ -442,6 +590,12 @@ export function toDispatchArgs(input: {
   if (input.sessionId !== undefined && input.sessionId === "") {
     return err("space-bus: sessionId must be a non-empty string");
   }
+  let messageId: string | undefined;
+  if (input.messageId !== undefined) {
+    const validated = validateMessageId(input.messageId);
+    if (!validated.ok) return validated;
+    messageId = validated.messageId;
+  }
   if (!input.sessionId) {
     if (!input.project) {
       return err("space-bus: project is required when starting a new session");
@@ -452,6 +606,7 @@ export function toDispatchArgs(input: {
       title: input.title,
       project: input.project,
       onPendingQuestion: input.onPendingQuestion,
+      ...(messageId !== undefined ? { messageId } : {}),
     };
   }
   return {
@@ -461,6 +616,33 @@ export function toDispatchArgs(input: {
     sessionId: input.sessionId,
     project: input.project,
     onPendingQuestion: input.onPendingQuestion,
+    ...(messageId !== undefined ? { messageId } : {}),
+  };
+}
+
+async function dispatchNewBranch(
+  baseUrl: string,
+  credentials: Credentials,
+  projects: ProjectSchema[],
+  args: DispatchArgs & { project: string },
+): Promise<Result<DispatchResult>> {
+  const r = await dispatchNew(
+    baseUrl,
+    credentials,
+    projects,
+    args.project,
+    args.prompt,
+    args.title,
+    args.messageId,
+  );
+  if (!r.ok) return r;
+  return {
+    ok: true,
+    sessionId: r.sessionId,
+    project: r.project,
+    mode: "new",
+    directory: r.directory,
+    ...(r.messageId !== undefined ? { messageId: r.messageId } : {}),
   };
 }
 
@@ -472,6 +654,14 @@ export async function dispatch(
   if (!ctx.ok) return ctx;
   const { baseUrl, projects, credentials } = ctx;
 
+  // Defense in depth: re-validate messageId here even though toDispatchArgs
+  // already validates it — a caller can construct DispatchArgs directly,
+  // bypassing toDispatchArgs entirely. Runs before any context/network I/O.
+  if (args.messageId !== undefined) {
+    const validated = validateMessageId(args.messageId);
+    if (!validated.ok) return validated;
+  }
+
   if (args.sessionId !== undefined && args.sessionId === "") {
     return err("space-bus: sessionId must be a non-empty string");
   }
@@ -480,22 +670,10 @@ export async function dispatch(
     if (!args.project) {
       return err("space-bus: project is required when starting a new session");
     }
-    const r = await dispatchNew(
-      baseUrl,
-      credentials,
-      projects,
-      args.project,
-      args.prompt,
-      args.title,
-    );
-    if (!r.ok) return r;
-    return {
-      ok: true,
-      sessionId: r.sessionId,
-      project: r.project,
-      mode: "new",
-      directory: r.directory,
-    };
+    return dispatchNewBranch(baseUrl, credentials, projects, {
+      ...args,
+      project: args.project,
+    });
   }
 
   const loc = await findSessionDirectory(
@@ -521,6 +699,7 @@ export async function dispatch(
     directory,
     project,
     args.onPendingQuestion ?? "question-reply",
+    args.messageId,
   );
 }
 
@@ -753,6 +932,7 @@ async function resolvePendingQuestionForSteer(
   credentials: Credentials,
   directory: string,
   sessionId: string,
+  project: string,
   onPendingQuestion: "question-reply" | "blocked",
 ): Promise<
   Result<{ pending: z.infer<typeof questionListSchema>[number] | undefined }>
@@ -760,8 +940,10 @@ async function resolvePendingQuestionForSteer(
   const questionsRes = await api(baseUrl, credentials, directory, "/question");
   if (!questionsRes.res.ok) {
     if (onPendingQuestion === "blocked") {
-      return err(
+      // Pre-mutation: verification failed before any reply/prompt was sent.
+      return dispatchErr(
         `space-bus: could not verify pending-question state for session ${sessionId} (/question ${questionsRes.res.status}) — refusing to dispatch under the blocked policy`,
+        { phase: "not_sent", project, sessionId },
       );
     }
     return { ok: true, pending: undefined };
@@ -771,8 +953,9 @@ async function resolvePendingQuestionForSteer(
     pendingList = questionListSchema.parse(JSON.parse(questionsRes.bodyText));
   } catch (e) {
     if (onPendingQuestion === "blocked") {
-      return err(
+      return dispatchErr(
         `space-bus: could not parse pending-question state for session ${sessionId}: ${(e as Error).message} — refusing to dispatch under the blocked policy`,
+        { phase: "not_sent", project, sessionId },
       );
     }
     return { ok: true, pending: undefined };
@@ -791,12 +974,14 @@ async function steerSession(
   directory: string,
   project: string,
   onPendingQuestion: "question-reply" | "blocked",
+  messageId?: string,
 ): Promise<Result<DispatchResult>> {
   const pendingRes = await resolvePendingQuestionForSteer(
     baseUrl,
     credentials,
     directory,
     sessionId,
+    project,
     onPendingQuestion,
   );
   if (!pendingRes.ok) return pendingRes;
@@ -824,8 +1009,11 @@ async function steerSession(
       },
     );
     if (!replyRes.res.ok) {
-      return err(
+      // Question-reply never claims messageId — no ordinary prompt message
+      // is sent on this branch, so there's nothing to correlate.
+      return dispatchErr(
         `space-bus: failed to reply to question ${pending.id} for session ${sessionId} (${replyRes.res.status}): ${replyRes.bodyText}`,
+        { phase: "indeterminate", project, sessionId },
       );
     }
     return { ok: true, sessionId, project, mode: "question-reply" };
@@ -838,15 +1026,25 @@ async function steerSession(
     `/session/${encodeURIComponent(sessionId)}/prompt_async`,
     {
       method: "POST",
-      body: JSON.stringify({ parts: [{ type: "text", text: message }] }),
+      body: JSON.stringify({
+        parts: [{ type: "text", text: message }],
+        ...(messageId !== undefined ? { messageID: messageId } : {}),
+      }),
     },
   );
   if (promptRes.res.status !== 204) {
-    return err(
+    return dispatchErr(
       `space-bus: follow-up prompt to session ${sessionId} failed (${promptRes.res.status}): ${promptRes.bodyText}`,
+      { phase: "indeterminate", project, sessionId, messageId },
     );
   }
-  return { ok: true, sessionId, project, mode: "follow-up" };
+  return {
+    ok: true,
+    sessionId,
+    project,
+    mode: "follow-up",
+    ...(messageId !== undefined ? { messageId } : {}),
+  };
 }
 
 // --- result ------------------------------------------------------------------

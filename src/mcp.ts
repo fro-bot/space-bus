@@ -203,6 +203,12 @@ server.registerTool(
         .describe(
           "Existing session ID to steer instead of starting a new session",
         ),
+      messageId: z
+        .string()
+        .optional()
+        .describe(
+          "Optional caller-supplied id to correlate this prompt with the message OpenCode creates for it (msg_ + 12 hex + 14 alphanumeric chars). Omit to dispatch without correlation.",
+        ),
       roster: ROSTER_PARAM_SCHEMA,
     },
     outputSchema: {
@@ -213,6 +219,12 @@ server.registerTool(
       mode: z
         .enum(["new", "question-reply", "follow-up"])
         .describe("How the prompt was delivered"),
+      messageId: z
+        .string()
+        .optional()
+        .describe(
+          "Echoes the supplied messageId for new/follow-up dispatches; omitted otherwise",
+        ),
     },
   },
   async (args) => {
