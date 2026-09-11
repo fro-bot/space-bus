@@ -257,6 +257,8 @@ jobs:
           # run fork-controlled code with FRO_BOT_PAT present. Default checkout
           # closes that secret-exfiltration vector.
           token: ${{ secrets.FRO_BOT_PAT }}
+          persist-credentials: >-
+            ${{ !contains(fromJSON('["pull_request", "issue_comment", "issues"]'), github.event_name) }}
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
