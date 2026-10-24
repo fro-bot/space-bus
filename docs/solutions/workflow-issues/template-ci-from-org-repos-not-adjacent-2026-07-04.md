@@ -1,4 +1,5 @@
 ---
+
 title: Template CI from the org's own repos, not adjacent personal repos
 date: 2026-07-04
 category: workflow-issues
@@ -7,12 +8,13 @@ problem_type: workflow_issue
 component: development_workflow
 severity: medium
 applies_when:
-  - bootstrapping workflows, renovate config, or repo settings for a new repo in an org
-  - copying CI conventions from a "similar" repo
-symptoms:
-  - workflows referenced the wrong renovate preset, prompt structure, and secrets naming
-  - repo settings diverged from org conventions (description style, review requirements, job names)
-tags: [ci, workflows, templates, org-conventions, renovate, repo-settings]
+- bootstrapping workflows, renovate config, or repo settings for a new repo in an org
+- copying CI conventions from a "similar" repo
+  symptoms:
+- workflows referenced the wrong renovate preset, prompt structure, and secrets naming
+- repo settings diverged from org conventions (description style, review requirements, job names)
+  tags: [ci, workflows, templates, org-conventions, renovate, repo-settings]
+
 ---
 
 # Template CI from the org's own repos, not adjacent personal repos
@@ -24,7 +26,6 @@ Bootstrapping this repo's CI, the workflows were templated from a structurally s
 ## Guidance
 
 When creating `.github/` surface for a repo in an org:
-
 1. Enumerate the conventions from two or three of the **org's own active repos** — workflow inventory, action pins, secrets names, reusable-workflow targets, settings/branch-protection shape, renovate `extends`.
 2. Use a repo outside the org only for what the org genuinely lacks (e.g. this org had no npm-package release workflow — the changesets/OIDC release shape legitimately came from the personal plugin repo).
 3. Treat these as org-identity markers that must come from the org: renovate preset (`extends: ['github>fro-bot/.github']`), review-bot workflow inputs/secrets/pins, `settings.yml` `_extends` + review requirements, CODEOWNERS, description/naming style.

@@ -1,4 +1,5 @@
 ---
+
 title: 'feat: managed bus server — lifecycle in the plugin'
 type: feat
 status: active
@@ -74,7 +75,6 @@ Origin doc R1–R13 (incl. R2 lock bound, R4b pid identity, R5b config drift, R5
 **Files:** Create `src/discovery.ts`, `src/discovery.test.ts`; modify `src/config.ts` (schema), `src/contract.ts` (mirror), `src/config.test.ts`.
 
 **Test scenarios:** schema — existing rosters parse; managed-only parses; both/neither rejected with actionable message. discovery — atomic write is 0600/0700, temp-swap; stale detection (dead pid, recycled pid via identity mismatch); lock acquire/contend/stale-recovery (dead owner, over-budget).
-
 - [ ] **Unit 2: server.ts lifecycle (ensure/spawn/status/stop)**
 
 **Goal:** Full lifecycle against the stub server: first-caller spawn with generated password, losers attach, staleness heals, bounded readiness, identity-verified stop, redacted errors.
@@ -86,7 +86,6 @@ Origin doc R1–R13 (incl. R2 lock bound, R4b pid identity, R5b config drift, R5
 **Files:** Create `src/server.ts`, `src/server.test.ts`, `test/fixtures/stub-server.ts` (test-only: `files` whitelist is dist/README/LICENSE, so nothing under test/ ships in the npm pack).
 
 **Test scenarios:** detach spike FIRST (child outlives Bun parent); AE1 (concurrent ensures → one spawn, both attach — real concurrency with the stub), AE2 (dead-pid discovery heals), AE3 (401 without password, 200 with), AE6 (server outlives spawner; stop kills), readiness timeout → killed child + released lock + redacted error (sentinel), auth failure with our password → immediate fail (no retry), live-but-slow lock owner → waiter times out with the holder named (no steal, no double spawn), config-drift surfaced by status (R5b), loopback guard on tampered discovery file (R6b — at config AND core layers), orphan policy (ensure succeeds, downstream fails, server persists).
-
 - [ ] **Unit 3: Consumer wiring (config managed-attach, plugin ensure, MCP attach-only)**
 
 **Goal:** `loadContext` resolves managed rosters from discovery; plugin tools ensure-then-load per call; MCP attach-only with env opt-in; externally-managed path byte-identical to today.
@@ -98,7 +97,6 @@ Origin doc R1–R13 (incl. R2 lock bound, R4b pid identity, R5b config drift, R5
 **Files:** Modify `src/config.ts` (loadContext managed branch), `src/tools/bus_*.ts`, `src/index.ts`, `src/mcp.ts`; adapt `src/config.test.ts`, `src/index.test.ts` additions (fail-fast pin stays unmodified).
 
 **Test scenarios:** managed roster + live stub → tools work end-to-end with zero manual setup (AE1 wiring level); baseUrl roster → no spawn ever attempted (spy), env credentials, today's behavior (AE4); MCP without opt-in env → attach-only error when bus down; with opt-in → ensures.
-
 - [ ] **Unit 4: CLI bin**
 
 **Goal:** `space-bus serve|status|stop` (+`--json`) wrapping server.ts; packaged as second bin with shebang; version-injection-style build test.
@@ -110,7 +108,6 @@ Origin doc R1–R13 (incl. R2 lock bound, R4b pid identity, R5b config drift, R5
 **Files:** Create `src/cli.ts`, `src/cli.test.ts`; modify `package.json` (bin, exports `/server`), `build.ts` (entrypoints + cli shebang), extend `src/version-injection.test.ts` or fold into cli.test.ts.
 
 **Test scenarios:** status --json shape `{running, port, pid}` truth from discovery (AE5); serve foreground option; stop on nothing → clean message; bin has shebang post-build.
-
 - [ ] **Unit 5: Safety guards + docs + changeset**
 
 **Goal:** Browser-safety test asserts server.ts/discovery.ts unreachable from browser graphs; README managed-server section (roster block, CLI, MCP opt-in, security posture); AGENTS.md invariants; minor changeset.
@@ -132,12 +129,12 @@ Origin doc R1–R13 (incl. R2 lock bound, R4b pid identity, R5b config drift, R5
 
 ## Risks & Dependencies
 
-| Risk | Mitigation |
-|------|------------|
-| Detached-spawn/unref quirks under Bun | Unit 2's opening spike gates the approach; Bun.spawn fallback ready |
+| Risk                                                 | Mitigation                                                                                                                                                          |
+| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Detached-spawn/unref quirks under Bun                | Unit 2's opening spike gates the approach; Bun.spawn fallback ready                                                                                                 |
 | Stub-vs-real-harness fidelity (auth timing, signals) | Live validation step: after release, flip the operator workspace roster to `managed` and run the full delegation loop against real harness before calling it stable |
-| Discovery/lock edge cases on shared filesystems | Out of scope (local state dir only, documented) |
-| Operator workspace migration | Separate step after release: flip workspace roster to `managed`, delete manual-start habit |
+| Discovery/lock edge cases on shared filesystems      | Out of scope (local state dir only, documented)                                                                                                                     |
+| Operator workspace migration                         | Separate step after release: flip workspace roster to `managed`, delete manual-start habit                                                                          |
 
 ## Sources & References
 

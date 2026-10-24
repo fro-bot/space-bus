@@ -1,4 +1,5 @@
 ---
+
 date: 2026-07-04
 topic: managed-server
 ---
@@ -62,7 +63,6 @@ The bus server is a manual prerequisite the operator owns: `harness serve` must 
 ## Requirements
 
 **Lifecycle**
-
 - R1. The managed layer spawns the server lazily on first need (ensure-on-demand); nothing spawns at plugin load.
 - R2. Ensure is race-safe: concurrent first callers resolve to exactly one spawn (single-owner lock; losers wait and attach). The lock itself has bounded staleness recovery — a spawner that dies mid-spawn cannot wedge ensure for subsequent callers (mechanism to planning; the bound is a requirement).
 - R3. The managed server is a persistent shared daemon: it outlives the consumer that spawned it and is never torn down implicitly.
@@ -73,25 +73,21 @@ The bus server is a manual prerequisite the operator owns: `harness serve` must 
 - R5c. Readiness is a bounded wait (probe until the readiness signal, hard timeout budget); on timeout the spawn is killed, the lock released, and the caller gets an actionable error — no indefinite hangs inside a tool call.
 
 **Security**
-
 - R6. Every managed spawn generates a fresh random password, passed to the child via env — never argv, never written to any log; any surfaced log tail is redacted against the live secret. The discovery file `{port, pid, identity, password, spawnConfig}` is 0600 (0700 dir, temp-file-swap writes) under the user's state directory. Consumers authenticate every call with the discovered secret.
 - R6b. Discovered endpoints pass the same loopback guard as roster endpoints before any credential is sent — a tampered discovery file pointing off-machine is refused (the guard travels here too).
 - R7. Discovery-file hygiene: stale files are removed, never trusted; the file is the only handshake — no fallback to unauthenticated attach. Managed servers always run with the password enforced; the layer refuses to write a discovery file for an unsecured spawn.
 - R7b. Stop authorization is OS-level: `stop()` signals the verified pid (same-user permission), not an API call — possession of the password grants bus API access, not lifecycle control beyond what the OS already grants.
 
 **Surfaces**
-
 - R8. A `/server` library subpath (Node-only, joining config's lane) exports the lifecycle: ensure/attach/status/stop and credential access for direct-API consumers.
 - R9. A `space-bus` CLI bin wraps the same functions, thin: `serve` (ensure, foreground option), `status`, `stop` — `--json` for programs, terse text for humans. Credential access stays library-only.
 - R10. The plugin tools route through ensure: a tool call against a down managed bus starts it instead of failing. The MCP facade defaults to attach-only (a desktop assistant must not spawn long-lived children implicitly); spawn via the facade is explicit env opt-in. Failure to spawn returns an actionable error naming the command, cwd, and log location.
 - R11. All existing consumers keep working: a roster pinning `baseUrl` (externally-managed) behaves exactly as today, credentials from env.
 
 **Observability**
-
 - R12. The managed server's stdout/stderr land in a log file discoverable via `status`; spawn failures surface a redacted log tail in the error (this serves R10's actionability — no rotation/retention machinery).
 
 **Testability**
-
 - R13. The managed lifecycle is testable without the harness binary: spawn/lock/staleness/identity tests run against a stub server command; the smoke fixture stays externally-managed (fixed `baseUrl`), unchanged in CI.
 
 ---

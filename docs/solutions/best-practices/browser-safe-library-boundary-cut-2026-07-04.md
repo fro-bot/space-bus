@@ -1,4 +1,5 @@
 ---
+
 title: Browser-safe library boundary cut — injected context, traveling guards, negative-controlled safety tests
 date: 2026-07-04
 category: best-practices
@@ -7,10 +8,11 @@ problem_type: best_practice
 component: core
 severity: high
 applies_when:
-  - making a Node-coupled module importable in browser/webview contexts
-  - moving a security guard from config-load time to a call boundary
-  - writing CI tests that assert bundle-level browser safety
-tags: [browser-safety, context-injection, zod, localhost-guard, bun-build, credentials, negative-control]
+- making a Node-coupled module importable in browser/webview contexts
+- moving a security guard from config-load time to a call boundary
+- writing CI tests that assert bundle-level browser safety
+  tags: [browser-safety, context-injection, zod, localhost-guard, bun-build, credentials, negative-control]
+
 ---
 
 # Browser-safe library boundary cut
@@ -35,7 +37,7 @@ A sentinel-credential test sets a recognizable password, forces every reachable 
 
 ## The Testing Trap
 
-Bun's browser-target build **silently stubs `node:*` builtins into empty modules instead of failing** — a bundle-then-string-check test passes even with a real `node:fs` import in the graph. And import-level checks miss Node *globals* entirely: `Buffer.from()` on the auth path sailed through the first guard and would have thrown `ReferenceError` in a real webview (caught by review, not by the test).
+Bun's browser-target build **silently stubs `node:*` builtins into empty modules instead of failing** — a bundle-then-string-check test passes even with a real `node:fs` import in the graph. And import-level checks miss Node _globals_ entirely: `Buffer.from()` on the auth path sailed through the first guard and would have thrown `ReferenceError` in a real webview (caught by review, not by the test).
 
 The working guard (`src/browser-safety.test.ts`):
 - a `Bun.build` resolver plugin that **hard-fails on any `node:*` resolution** (not output inspection),

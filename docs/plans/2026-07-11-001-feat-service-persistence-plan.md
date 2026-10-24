@@ -1,4 +1,5 @@
 ---
+
 title: "feat: space-bus service — reboot-persistent managed daemon (launchd v1)"
 type: feat
 status: active
@@ -101,7 +102,6 @@ Per origin: no systemd in v1 (seam only), no auto-install, no Windows, no alerti
 - Security: rendered plist never contains password/credential material even when the roster file carries credentials (R12 negative probe).
 
 **Verification:** unit tests green; rendered plist validates with `plutil -lint` (test shells out when darwin).
-
 - [ ] **Unit 2: service verbs orchestration (`src/service.ts`)**
 
 **Goal:** The five verbs as Node-only functions consuming Unit 1, with the platform gate and discriminated-union results matching repo conventions.
@@ -128,7 +128,6 @@ Per origin: no systemd in v1 (seam only), no auto-install, no Windows, no alerti
 - Integration: none at this layer — live launchctl behavior is AE-time (see Verification).
 
 **Verification:** unit tests green; the verb set compiles against the CLI without touching browser-safe modules (browser-safety suite still green).
-
 - [ ] **Unit 3: CLI wiring + docs surface (`src/cli.ts`)**
 
 **Goal:** `space-bus service <verb>` in the CLI with `--config`/`--json` parity, USAGE text, and exit codes.
@@ -149,7 +148,6 @@ Per origin: no systemd in v1 (seam only), no auto-install, no Windows, no alerti
 - Error path: `{ok:false}` from service layer → message on stderr + exit 1.
 
 **Verification:** CLI tests green; `space-bus service` verbs appear in `--help`.
-
 - [ ] **Unit 4: guards, docs, changeset**
 
 **Goal:** Node-only lane enforcement, README/AGENTS docs, minor changeset.
@@ -179,12 +177,12 @@ Per origin: no systemd in v1 (seam only), no auto-install, no Windows, no alerti
 
 ## Risks & Dependencies
 
-| Risk | Mitigation |
-|------|------------|
-| Pinned runtime path breaks after runtime upgrade/move (bun relocated) | Documented upgrade story: re-run `service install` (idempotent); `status` exposes running=false so the failure is visible; install warns when pinning ephemeral cache paths |
-| `launchctl` output/behavior drift across macOS versions | Logic keys off exit codes only; `pid =` parse is permissive and non-fatal; deferred-to-implementation note pins AE6 live check |
-| Live AE testing perturbs the operator board | Run AEs against a throwaway roster + isolated XDG_STATE_HOME first (test-isolation lesson); the workspace roster install is the final dogfood step, gated on the throwaway pass |
-| launchd restarts a failing daemon into a crash loop writing logs | Default 10s throttle + fail-closed supervisor exit; logs live in the bounded state dir |
+| Risk                                                                  | Mitigation                                                                                                                                                                      |
+| --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Pinned runtime path breaks after runtime upgrade/move (bun relocated) | Documented upgrade story: re-run `service install` (idempotent); `status` exposes running=false so the failure is visible; install warns when pinning ephemeral cache paths     |
+| `launchctl` output/behavior drift across macOS versions               | Logic keys off exit codes only; `pid =` parse is permissive and non-fatal; deferred-to-implementation note pins AE6 live check                                                  |
+| Live AE testing perturbs the operator board                           | Run AEs against a throwaway roster + isolated XDG_STATE_HOME first (test-isolation lesson); the workspace roster install is the final dogfood step, gated on the throwaway pass |
+| launchd restarts a failing daemon into a crash loop writing logs      | Default 10s throttle + fail-closed supervisor exit; logs live in the bounded state dir                                                                                          |
 
 ## Sources & References
 

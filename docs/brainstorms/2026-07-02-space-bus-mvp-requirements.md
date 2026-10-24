@@ -1,4 +1,5 @@
 ---
+
 date: 2026-07-02
 topic: space-bus-mvp
 ---
@@ -22,13 +23,11 @@ This brainstorm is inherently technical: the architectural decisions (protocol c
 ## Requirements
 
 **Bus core (`src/core.ts`)**
-
 - R1. Load and schema-parse `workspace.json` at startup; fail fast with a precise error on an invalid manifest. Expand `~` in project paths.
 - R2. Provide typed calls to the OpenCode server API — create session, dispatch prompt async, query status, fetch messages and diff — each scoped to a target project via the `x-opencode-directory` header.
 - R3. When `OPENCODE_SERVER_PASSWORD` is set, send HTTP Basic auth on every request.
 
 **Bus tools (`.opencode/tools/`)**
-
 - R4. `bus_roster` lists manifest projects with live session status per project.
 - R5. `bus_task` creates a session in the target project, dispatches the prompt fire-and-forget, and returns the session ID without waiting for completion.
 - R6. `bus_status` reports a session's status plus a summary of its latest todo and diff.
@@ -36,15 +35,12 @@ This brainstorm is inherently technical: the architectural decisions (protocol c
 - R8. When a manifest project's path does not exist on disk, bus tools fail immediately with an error naming the missing path.
 
 **Control agent**
-
 - R9. `AGENTS.md` constrains the control agent to delegation: its only write path into sibling projects is `bus_task`, and it reports session IDs for every dispatch.
 
 **MCP facade (`src/mcp.ts`)**
-
 - R10. A stdio MCP server exposes the same four tools backed by the same core, registerable in Claude Desktop's config file.
 
 **Security**
-
 - R11. The bus talks only to `127.0.0.1`; credentials come only from the environment; nothing is logged or transmitted off-machine.
 
 ---

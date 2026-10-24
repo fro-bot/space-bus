@@ -1,4 +1,5 @@
 ---
+
 date: 2026-07-04
 topic: library-surface
 ---
@@ -29,26 +30,21 @@ Mothership — the Tauri desktop "renderer for the bus" (see `marcusrbrown/mothe
 ## Requirements
 
 **Export surface**
-
 - R1. The package publishes subpath exports — `@fro.bot/space-bus/core`, `/config`, `/contract` — alongside the unchanged root plugin-factory export; the `bus_*` tool surface does not change.
 - R2. Every new subpath is experimental-labeled: docs and changesets state that shapes may change in minor releases until stabilized.
 
 **Browser-safe core**
-
 - R3. The core subpath is importable in a browser context: no Node-builtin imports (fs, os, path) in its module graph.
 - R4. Core functions take the roster (or the pieces they need) as input instead of resolving it ambiently; filesystem-based resolution lives only in the config subpath. Injected input is validated at the core boundary — malformed rosters and non-localhost `baseUrl` values return `ok:false` (the localhost guard travels with the roster type; the never-throw boundary holds for consumer-crafted input). Credentials likewise enter as input in browser contexts — core does not read `process.env` ambiently. Behavior semantics (discriminated-union results, tiered diff ladder with `diffSource`, pending-question detection, steering, session-to-directory resolution) carry over unchanged.
 - R5. The plugin adapters and MCP facade are updated to consume the public core + config surface where practical, without changing tool behavior; parity between the tool semantics and the library surface is verified by the existing test suite either way.
 
 **Config subpath (Node)**
-
 - R6. The config subpath exports roster resolution as it exists today: `spacebus.json` discovery from a directory, `SPACE_BUS_CONFIG` override with its path rules, `~` expansion, and the localhost guard as a reusable validation.
 
 **Snapshot**
-
 - R7. A `snapshot()` composite returns structured mission-control state in one call: projects (roster), per-project session status (busy counts, capped totals inheriting the existing 100-cap with explicit truncation flags), and pending questions. It fans out with bounded concurrency; partial failures are reported per project (message text only — no raw server response bodies), not thrown.
 
 **Contract module**
-
 - R8. The contract subpath exports the zod schemas and inferred types the bus maintains for the OpenCode server API (session, status map, turn messages/diffs, question entries, vcs status), labeled as tracking upstream — consumers making direct HTTP calls parse through the same schemas the bus uses. The label states the schemas are parsing aids, not a security boundary or compatibility guarantee; adopters pin versions.
 - R9. The README documents the library surface: per-subpath import examples, the experimental posture, and the credential/validation expectations for browser consumers.
 
