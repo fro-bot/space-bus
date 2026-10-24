@@ -1,4 +1,5 @@
 ---
+
 title: OpenCode session diff endpoint always empty since v1.16.0
 date: 2026-07-02
 category: integration-issues
@@ -6,20 +7,21 @@ module: space-bus
 problem_type: integration_issue
 component: tooling
 symptoms:
-  - "GET /session/{id}/diff returns [] even when the delegated session verifiably created or modified files"
-  - "bus_status/bus_result report '(no changes)' while the delegate's reply and the working tree confirm a new file"
-root_cause: wrong_api
-resolution_type: code_fix
-severity: medium
-related_components:
-  - development_workflow
-tags:
-  - opencode
-  - session-diff
-  - session-summary
-  - harness-carry
-  - per-turn-diffs
-  - vcs-status
+- "GET /session/{id}/diff returns [] even when the delegated session verifiably created or modified files"
+- "bus_status/bus_result report '(no changes)' while the delegate's reply and the working tree confirm a new file"
+  root_cause: wrong_api
+  resolution_type: code_fix
+  severity: medium
+  related_components:
+- development_workflow
+  tags:
+- opencode
+- session-diff
+- session-summary
+- harness-carry
+- per-turn-diffs
+- vcs-status
+
 ---
 
 # OpenCode session diff endpoint always empty since v1.16.0
@@ -35,7 +37,7 @@ On OpenCode v1.16.0+ builds without the #33444 fix, bare `GET /session/{id}/diff
 
 ## What Didn't Work
 
-- **"Untracked files are excluded from session diffs" hypothesis** — plausible (a plain `git diff` skips untracked files) but wrong, and it shipped a misleading README note. The endpoint is empty for *tracked* edits too.
+- **"Untracked files are excluded from session diffs" hypothesis** — plausible (a plain `git diff` skips untracked files) but wrong, and it shipped a misleading README note. The endpoint is empty for _tracked_ edits too.
 - **Repo-wide `GET /vcs/status` fallback only** — catches the changes but at the wrong scope: it reflects the whole working tree, so concurrent sessions in the same repo bleed into each other's reported diffs. Acceptable as a last resort, wrong as the primary strategy.
 
 ## Solution

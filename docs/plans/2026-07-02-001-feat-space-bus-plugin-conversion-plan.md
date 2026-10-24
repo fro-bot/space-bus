@@ -1,4 +1,5 @@
 ---
+
 title: 'feat: Convert space-bus into the distributable @fro.bot/space-bus plugin'
 type: feat
 status: completed
@@ -120,7 +121,6 @@ R1–R12 from the origin document, grouped: packaging (R1–R4), roster discover
 - Edge: import of core/config modules performs zero filesystem I/O (no roster read at import time).
 
 **Verification:** typecheck clean; new unit tests pass under `bun test`; `bun run smoke` still PASS against the live server.
-
 - [x] **Unit 2: Plugin entry + per-file tools**
 
 **Goal:** `src/index.ts` default-exports the Plugin factory registering exactly the four tools; tool bodies move to `src/tools/*.ts`; `.opencode/tools/` untouched (removed in Unit 6).
@@ -144,7 +144,6 @@ R1–R12 from the origin document, grouped: packaging (R1–R4), roster discover
 - Integration: loading the built package from `fixtures/dev-workspace/` via file-path plugin reference registers working tools (manual/scripted probe, mirrors the /tmp probe).
 
 **Verification:** typecheck clean; fixture-workspace live probe shows the four tools functioning via plugin registration.
-
 - [x] **Unit 3: Packaging, build, Biome, MCP bin**
 
 **Goal:** Publishable package shape: ESM `dist/`, declarations, bin for the MCP facade, Biome lint/format, Changesets initialized.
@@ -168,7 +167,6 @@ R1–R12 from the origin document, grouped: packaging (R1–R4), roster discover
 **Patterns to follow:** copilot-delegate `package.json`/build/biome/changeset config.
 
 **Verification:** `bun run build` emits `dist/index.js`, `dist/mcp.js`, `.d.ts`; `bunx biome check .` clean; `bun pm pack --dry-run` (or equivalent) lists only intended files; fixture workspace loads the BUILT dist (not src) successfully; MCP stdio probe against `dist/mcp.js` passes (four tools, isError path, no stdout noise).
-
 - [x] **Unit 4: CI workflow set + settings**
 
 **Goal:** The seven workflows plus `settings.yml`, SHA-pinned, with branch protection contexts matching CI job names.
@@ -190,7 +188,6 @@ R1–R12 from the origin document, grouped: packaging (R1–R4), roster discover
 - Secrets/app setup (APPLICATION_ID/KEY for settings workflow; trusted publisher on npmjs.com) are Marcus's manual steps — named in the PR body checklist.
 
 **Verification:** CI green on the conversion PR; actionlint (via ci job or local) clean; release workflow dry-behavior verified on main after merge (version PR appears when a changeset exists).
-
 - [x] **Unit 5: Docs rewrite**
 
 **Goal:** README and AGENTS.md reorient to the plugin: install/config for consumers, dev-loop for contributors; control-board specifics out.
@@ -208,7 +205,6 @@ R1–R12 from the origin document, grouped: packaging (R1–R4), roster discover
 - AGENTS.md: plugin-development guidance (fixture workspace dev loop, build/watch, tool-parity rule, no-cwd rule, stdio discipline), keeping the docs/solutions pointer.
 
 **Verification:** No references to `workspace.json`, `.opencode/tools/`, or repo-checkout Claude Desktop paths remain outside historical docs (`docs/brainstorms`, `docs/solutions`, `HANDOFF.md`).
-
 - [x] **Unit 6: Control-board migration + repo cleanup (reversible cutover)**
 
 **Goal:** New control board at `~/src/github.com/fro-bot/workspace` passes AE4; only then the repo sheds `.opencode/tools/`, root `workspace.json`/`spacebus.json`, and the old control-board AGENTS.md content.
@@ -228,7 +224,6 @@ R1–R12 from the origin document, grouped: packaging (R1–R4), roster discover
 - `scripts/smoke.ts` switches to the fixture roster.
 
 **Verification:** AE4 live pass from the new workspace; `git grep` confirms no `.opencode/tools` remnants; smoke still PASS from the repo using the fixture.
-
 - [x] **Unit 7: First publish + AE6**
 
 **Goal:** The package reaches npm and the control board switches to the npm name. Bootstrap constraint (verified against current npm docs): a trusted publisher CANNOT be configured for a package that doesn't exist yet — the FIRST publish is a manual maintainer publish (`npm publish` with 2FA/granular token, version 0.1.0), then the trusted publisher is configured on npmjs.com (owner fro-bot, repo space-bus, workflow `release.yaml` — exact filename match), and AE5 is satisfied by the SECOND release flowing through CI OIDC.
@@ -259,14 +254,14 @@ R1–R12 from the origin document, grouped: packaging (R1–R4), roster discover
 
 ## Risks & Dependencies
 
-| Risk | Mitigation |
-|------|------------|
-| Eager-load regression sneaks back (import-time I/O) | Unit 1 test asserts import performs no filesystem reads |
-| Published ESM fails to load in harness (1.17.x extension footgun) | Bundled build; AE6 exercises the real npm install path before the cutover is called done |
-| Tool double-registration during transition | Fixture-only dev loop; deletions gated on AE4 |
-| Trusted publishing misconfigured on first release | AE5 is a gate; failure mode is a failed CI publish, not a broken package |
-| settings.yml reusable workflow needs App secrets | Named as manual prerequisite in the conversion PR checklist |
-| Control board offline / npm registry down at startup | File-path plugin reference documented as the permanent offline fallback; version pinning as the bad-release escape |
+| Risk                                                              | Mitigation                                                                                                         |
+| ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| Eager-load regression sneaks back (import-time I/O)               | Unit 1 test asserts import performs no filesystem reads                                                            |
+| Published ESM fails to load in harness (1.17.x extension footgun) | Bundled build; AE6 exercises the real npm install path before the cutover is called done                           |
+| Tool double-registration during transition                        | Fixture-only dev loop; deletions gated on AE4                                                                      |
+| Trusted publishing misconfigured on first release                 | AE5 is a gate; failure mode is a failed CI publish, not a broken package                                           |
+| settings.yml reusable workflow needs App secrets                  | Named as manual prerequisite in the conversion PR checklist                                                        |
+| Control board offline / npm registry down at startup              | File-path plugin reference documented as the permanent offline fallback; version pinning as the bad-release escape |
 
 ## Documentation / Operational Notes
 

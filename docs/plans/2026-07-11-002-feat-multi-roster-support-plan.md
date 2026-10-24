@@ -1,4 +1,5 @@
 ---
+
 title: "feat: Multi-roster support — registry, mutation module, per-call addressing"
 type: feat
 status: active
@@ -112,7 +113,6 @@ Everything above the substrate is single-roster today: `src/mcp.ts` pins one ros
 - Integration: register → set-default → resolve-name round-trip through the real file.
 
 **Verification:** Suite green with zero real `~/.config/space-bus` writes; browser-safety test proves registry unreachable from browser lanes.
-
 - [x] **Unit 2: Roster mutation module**
 
 **Goal:** Create/edit roster files programmatically: `createRoster` (write + register in one op), add/remove/update project, edit server block.
@@ -136,7 +136,6 @@ Everything above the substrate is single-roster today: `src/mcp.ts` pins one ros
 - Edge: remove last project → valid empty-projects roster; concurrent edit lost-update is accepted v1 behavior (document in test as characterization).
 
 **Verification:** AE1/AE4 semantics pass; no partial writes under injected write failures.
-
 - [x] **Unit 3: Discovery `rosterPath` + `/registry` subpath packaging**
 
 **Goal:** Discovery files record their roster path at spawn; the new library surface ships as `/registry`.
@@ -180,7 +179,6 @@ Everything above the substrate is single-roster today: `src/mcp.ts` pins one ros
 - Integration: parity test — all five descriptions + input schemas byte-identical across surfaces (AE7).
 
 **Verification:** Existing 300+ tests green unchanged (no-param path untouched).
-
 - [ ] **Unit 5: `bus_registry` management tool + MCP session state**
 
 **Goal:** The sixth tool: list/use/create/register/unregister/set-default/add-project/remove-project/update-project; MCP active-roster session state.
@@ -227,7 +225,6 @@ Everything above the substrate is single-roster today: `src/mcp.ts` pins one ros
 - Edge: tampered discovery file (invalid JSON) → skipped with flag, not a throw (AE6).
 
 **Verification:** AE6 semantics; loopback re-validation on any attach it performs.
-
 - [ ] **Unit 7: CLI verbs + docs + changesets**
 
 **Goal:** `space-bus roster list|create|register|unregister|default|add-project|remove-project|update-project|reconcile` (+ `--json`); README/AGENTS docs; changesets.
@@ -260,13 +257,13 @@ Everything above the substrate is single-roster today: `src/mcp.ts` pins one ros
 
 ## Risks & Dependencies
 
-| Risk | Mitigation |
-|------|------------|
+| Risk                                             | Mitigation                                                                                       |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------ |
 | New subpath collides with a loader-reserved name | `/registry` chosen deliberately; entry-guard test asserts loader still resolves the plugin entry |
-| Registry tests leak into real `~/.config` | Preload isolation + leak guard extended before any test lands (Unit 1 execution note) |
-| Roster param silently changes no-param behavior | No-param paths pinned by existing suite; param plumbed as pure addition |
-| Mothership adopts mid-phase | Incremental releases; Phase A alone gives it registry+mutation |
-| Registry poisoning via symlink/path tricks | Canonicalization + symlink rejection + charset validation (R15), tested |
+| Registry tests leak into real `~/.config`        | Preload isolation + leak guard extended before any test lands (Unit 1 execution note)            |
+| Roster param silently changes no-param behavior  | No-param paths pinned by existing suite; param plumbed as pure addition                          |
+| Mothership adopts mid-phase                      | Incremental releases; Phase A alone gives it registry+mutation                                   |
+| Registry poisoning via symlink/path tricks       | Canonicalization + symlink rejection + charset validation (R15), tested                          |
 
 ## Sources & References
 

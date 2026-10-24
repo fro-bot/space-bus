@@ -1,4 +1,5 @@
 ---
+
 date: 2026-07-09
 topic: managed-daemon-supervision
 ---
@@ -14,7 +15,6 @@ Give `space-bus` a supervision story for the managed `harness serve` daemon, in 
 ## Problem Frame
 
 Managed mode records a live daemon's `{ pid, baseUrl, password }` in `discovery.json` after a successful readiness probe, and attachers (Mothership, the MCP facade, the CLI) resolve that record to reach the bus. Two gaps let the record outlive the daemon:
-
 - **No stale-record cleanup on read.** When the recorded pid is dead, the read/attach/status paths return "not running" but leave `discovery.json` on disk. The next attacher resolves the same dead record and dials a dead localhost port. This surfaced as overnight `Connection failed: 599` in an app attached to the managed daemon — the daemon had died hours earlier and nothing cleared its record.
 - **`--foreground` doesn't supervise.** It installs signal handlers on the CLI process and waits, but never checks whether the child daemon is still alive. If the child crashes or the host process exits without signalling the CLI, the daemon is gone and the record persists.
 
@@ -99,7 +99,7 @@ The lifecycle owner is `space-bus`. Attachers must not become watchdogs — push
 ## Key Decisions
 
 - Layer A ships before Layer B: fail-closed cleanup is a small, low-risk change that satisfies the core user outcome on its own; active monitoring is a separate, larger surface.
-- Fail-closed-only over in-process restart: document review flagged that an in-process bounded-restart loop pulls `space-bus` toward being a process manager that launchd/systemd already are, and that Layer A already prevents the bad outcome (attachers dialing a dead port). `--foreground` therefore monitors liveness and exits non-zero on death, delegating restart to the external manager. This keeps `space-bus` a lifecycle *owner* (spawn, monitor, clean up) without becoming a restart *supervisor*.
+- Fail-closed-only over in-process restart: document review flagged that an in-process bounded-restart loop pulls `space-bus` toward being a process manager that launchd/systemd already are, and that Layer A already prevents the bad outcome (attachers dialing a dead port). `--foreground` therefore monitors liveness and exits non-zero on death, delegating restart to the external manager. This keeps `space-bus` a lifecycle _owner_ (spawn, monitor, clean up) without becoming a restart _supervisor_.
 - Compare-and-delete for stale cleanup: three reviewers independently flagged that unconditional removal on a dead-pid read can delete a fresh record written by a concurrent respawn. Removal is conditional on the on-disk record still matching the stale one read.
 - Cleanup lives on the Node-side resolver, not the browser attacher: `attach.ts` has no filesystem access, so it surfaces the failure while the next Node-side resolve does the actual removal — the acceptance criterion is met behaviorally.
 - A fresh spawn (via external-manager restart) mints a new password/identity/discovery record; attachers holding cached credentials must re-resolve rather than reuse them.

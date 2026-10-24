@@ -1,4 +1,5 @@
 ---
+
 title: 'feat: publish the space-bus library surface (subpath exports)'
 type: feat
 status: active
@@ -93,7 +94,6 @@ R1–R9 from the origin doc: export surface (R1–R2), browser-safe core with bo
 - Integration: `bun test` whole suite green (core still parses identically).
 
 **Verification:** typecheck clean; suite green; `src/contract.ts` module graph contains only zod.
-
 - [ ] **Unit 2: Cut the core boundary (context injection)**
 
 **Goal:** Core is browser-safe: no `node:fs`, no `process.env`, roster + credentials injected via a validated context; adapters resolve context through config.
@@ -125,7 +125,6 @@ R1–R9 from the origin doc: export surface (R1–R2), browser-safe core with bo
 - Integration: smoke PASS against the live server.
 
 **Verification:** typecheck clean; suite green; grep: zero `node:fs`/`process.env` references in `src/core.ts`; smoke 11/11.
-
 - [ ] **Unit 3: snapshot() composite**
 
 **Goal:** One structured call returning projects + per-project status (busy counts, capped totals, truncation flags) + pending questions, bounded fan-out, sanitized per-project errors.
@@ -145,7 +144,6 @@ R1–R9 from the origin doc: export surface (R1–R2), browser-safe core with bo
 - Edge: concurrency bound honored (mock records max in-flight ≤ default).
 
 **Verification:** typecheck clean; suite green.
-
 - [ ] **Unit 4: Packaging — subpath exports + browser-safety guard**
 
 **Goal:** `/core`, `/config`, `/contract`, `/format` published with JS + declarations; root export and bin unchanged; browser-safety enforced in CI.
@@ -166,7 +164,6 @@ R1–R9 from the origin doc: export surface (R1–R2), browser-safe core with bo
 - Error path (the guard): introducing a `node:fs` import into core/contract/format makes the browser-safety test fail (verify once by temporary mutation during development, not committed).
 
 **Verification:** `bun run build` output complete; `npm pack --dry-run` lists intended files only; mcp-parity + version-injection tests green; browser-safety test green.
-
 - [ ] **Unit 5: Docs + changeset**
 
 **Goal:** README "Library surface" section (per-subpath import examples, experimental posture, browser credential/validation expectations); AGENTS.md structure map updated; minor changeset.
@@ -192,12 +189,12 @@ R1–R9 from the origin doc: export surface (R1–R2), browser-safe core with bo
 
 ## Risks & Dependencies
 
-| Risk | Mitigation |
-|------|------------|
-| Signature churn breaks a consumer path silently | Existing 60-test suite + smoke pin every adapter path; parity tests pin descriptions/args |
-| Browser-safety regresses after v1 | CI bundle-probe test fails on any Node-builtin import in public browser modules |
-| Contract schemas drift from upstream API | Already true today (internal); publishing changes visibility, not risk; experimental label + pin guidance |
-| Exports map/type resolution quirks in consumer bundlers | Per-subpath `types` fields; AE1-style Vite probe can be added on Mothership's side |
+| Risk                                                    | Mitigation                                                                                                |
+| ------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| Signature churn breaks a consumer path silently         | Existing 60-test suite + smoke pin every adapter path; parity tests pin descriptions/args                 |
+| Browser-safety regresses after v1                       | CI bundle-probe test fails on any Node-builtin import in public browser modules                           |
+| Contract schemas drift from upstream API                | Already true today (internal); publishing changes visibility, not risk; experimental label + pin guidance |
+| Exports map/type resolution quirks in consumer bundlers | Per-subpath `types` fields; AE1-style Vite probe can be added on Mothership's side                        |
 
 ## Documentation / Operational Notes
 

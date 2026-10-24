@@ -1,4 +1,5 @@
 ---
+
 module: space-bus
 category: security-issues
 date: 2026-07-11
@@ -6,38 +7,39 @@ problem_type: security_issue
 component: tooling
 severity: high
 symptoms:
-  - CodeQL flagged js/file-system-race (high) on a log-hardening path
-  - a symlinked log target could be swapped between the symlink check and the open
-root_cause: missing_validation
-resolution_type: code_fix
-tags:
-  - launchd
-  - symlink
-  - toctou
-  - file-system-race
-  - o-nofollow
-  - fchmod
-  - codeql
+- CodeQL flagged js/file-system-race (high) on a log-hardening path
+- a symlinked log target could be swapped between the symlink check and the open
+  root_cause: missing_validation
+  resolution_type: code_fix
+  tags:
+- launchd
+- symlink
+- toctou
+- file-system-race
+- o-nofollow
+- fchmod
+- codeql
+
 ---
 
 # A security-hardening fix can introduce a TOCTOU: atomic open over check-then-use
 
 ## Problem
 
-A ce:review finding asked `space-bus service` to harden its log files: they must be `0600`, and the code must refuse a **symlinked** log path (so an install can't be tricked into writing through a symlink to an attacker-chosen target). The fix that satisfied the finding introduced a *new* security bug: it used `lstatSync(path)` to detect a symlink, **then** `openSync(path, "a")` — a classic time-of-check-to-time-of-use (TOCTOU) race. CodeQL caught it as `js/file-system-race` (high).
+A ce:review finding asked `space-bus service` to harden its log files: they must be `0600`, and the code must refuse a **symlinked** log path (so an install can't be tricked into writing through a symlink to an attacker-chosen target). The fix that satisfied the finding introduced a _new_ security bug: it used `lstatSync(path)` to detect a symlink, **then** `openSync(path, "a")` — a classic time-of-check-to-time-of-use (TOCTOU) race. CodeQL caught it as `js/file-system-race` (high).
 
 ## Symptoms
 
-- CodeQL check-run on the PR: **"1 new alert including 1 high severity security vulnerability"**, rule `js/file-system-race` at `src/service.ts`, message *"The file may have changed since it was checked."*
+- CodeQL check-run on the PR: **"1 new alert including 1 high severity security vulnerability"**, rule `js/file-system-race` at `src/service.ts`, message _"The file may have changed since it was checked."_
 - The offending shape: an `lstat` (check) and an `open` (use) against the same path, with a window in between during which an attacker could replace a regular file with a symlink.
 
 ## What Didn't Work
 
-The intuitive "hardening" was itself the vulnerability. Checking-then-using is the trap: any gap between "I verified this path is safe" and "I acted on this path" is exploitable if the path lives in a directory another principal can write. Adding *more* checks doesn't close it — the race is structural.
+The intuitive "hardening" was itself the vulnerability. Checking-then-using is the trap: any gap between "I verified this path is safe" and "I acted on this path" is exploitable if the path lives in a directory another principal can write. Adding _more_ checks doesn't close it — the race is structural.
 
 ## Solution
 
-Eliminate the check entirely. Open **atomically** with `O_NOFOLLOW` so the kernel refuses a symlinked final component *at open time*, and harden the mode on the returned **file descriptor** (`fchmod`), never by re-resolving the path:
+Eliminate the check entirely. Open **atomically** with `O_NOFOLLOW` so the kernel refuses a symlinked final component _at open time_, and harden the mode on the returned **file descriptor** (`fchmod`), never by re-resolving the path:
 
 ```ts
 function preCreateLog(path: string): PreCreateLogResult {
@@ -49,7 +51,10 @@ function preCreateLog(path: string): PreCreateLogResult {
   try {
     fd = openSync(
       path,
-      fsConstants.O_WRONLY | fsConstants.O_APPEND | fsConstants.O_CREAT | fsConstants.O_NOFOLLOW,
+      fsConstants.O_WRONLY |
+        fsConstants.O_APPEND |
+        fsConstants.O_CREAT |
+        fsConstants.O_NOFOLLOW,
       0o600,
     );
   } catch (err) {
@@ -72,7 +77,9 @@ function preCreateLog(path: string): PreCreateLogResult {
 // map it to the "refusing symlink" result rather than a generic IO error.
 function isSymlinkError(err: unknown): boolean {
   return (
-    typeof err === "object" && err !== null && "code" in err &&
+    typeof err === "object" &&
+    err !== null &&
+    "code" in err &&
     (err as { code?: string }).code === "ELOOP"
   );
 }

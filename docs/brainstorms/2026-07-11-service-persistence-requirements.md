@@ -1,4 +1,5 @@
 ---
+
 date: 2026-07-11
 topic: service-persistence
 ---
@@ -13,14 +14,13 @@ Add a `space-bus service install|uninstall|status|stop|start` CLI subcommand tha
 
 ## Problem Frame
 
-The managed daemon is spawned by the first caller and supervised only while a `serve --foreground` process runs. Nothing restarts it after a host reboot or logout: the operator workspace daemon died silently during a multi-day gap, and every consumer attached through it — including Claude Desktop's bus access — was dead until someone noticed and manually ran `serve` again. Detection was accidental (a live dogfood failed to attach). The supervision work from issue #49 fails *closed* on daemon death, and its `--foreground` exit-code contract was designed for a process manager to consume — but space-bus ships no supported way to register one, so every operator machine carries a hand-rolled persistence gap.
+The managed daemon is spawned by the first caller and supervised only while a `serve --foreground` process runs. Nothing restarts it after a host reboot or logout: the operator workspace daemon died silently during a multi-day gap, and every consumer attached through it — including Claude Desktop's bus access — was dead until someone noticed and manually ran `serve` again. Detection was accidental (a live dogfood failed to attach). The supervision work from issue #49 fails _closed_ on daemon death, and its `--foreground` exit-code contract was designed for a process manager to consume — but space-bus ships no supported way to register one, so every operator machine carries a hand-rolled persistence gap.
 
 ---
 
 ## Requirements
 
 **Subcommand surface**
-
 - R1. `space-bus service install [--config <path>] [--json]` generates a per-user launchd agent for the resolved roster, writes it under `~/Library/LaunchAgents/`, loads it via `launchctl`, and verifies the daemon comes up.
 - R2. `space-bus service uninstall [--config <path>] [--json]` unloads the agent, removes the plist, and reports what it removed; it does not delete roster config or state-dir contents beyond the service registration.
 - R3. `space-bus service status [--config <path>] [--json]` reports installed (plist present), loaded (registered with launchd), and running (daemon liveness per existing `serverStatus`), as distinct fields.
@@ -28,7 +28,6 @@ The managed daemon is spawned by the first caller and supervised only while a `s
 - R5. All `service` verbs support `--json` with stable field names, matching the existing CLI's dual plain/JSON output convention.
 
 **Service semantics**
-
 - R6. The service runs `space-bus serve --foreground` for the roster, so launchd's restart policy consumes the existing exit-code contract: exit 1 (daemon died/hung) triggers restart; exit 0 (deliberate stop) does not.
 - R7. One service per roster: the launchd label and plist filename derive from the same roster identity used for state-dir keying, so multiple rosters can be installed side by side without collision.
 - R8. The service starts at login/boot (`RunAtLoad`) and restarts on abnormal exit; restart policy must include backoff or a throttle so a persistently-failing daemon cannot hot-loop.
@@ -36,7 +35,6 @@ The managed daemon is spawned by the first caller and supervised only while a `s
 - R10. Service stdout/stderr route to log files under the roster's existing state directory, not to the console or a system-wide location; log files are created owner-only (0600) and preserve the daemon's existing no-credential-logging guarantee.
 
 **Safety and security**
-
 - R11. Installation is an explicit operator action only. Nothing in plugin load, MCP startup, or `serve` auto-installs a service.
 - R12. The generated plist contains no credentials: it may reference the roster path (e.g., via `SPACE_BUS_CONFIG`) but never the discovery password or auth material.
 - R13. `uninstall` fully reverses `install`: it boots out the launchd job (terminating the running supervisor and its daemon so launchd cannot restart it), then removes the plist. After uninstall — with or without a reboot — nothing space-bus-related starts automatically.
@@ -44,7 +42,6 @@ The managed daemon is spawned by the first caller and supervised only while a `s
 - R15. The plist is written atomically (temp-file + rename) and owner-only (not group/world-writable); `install` rewrites or refuses to load a plist that is not user-owned or is world-writable, so a tampered plist cannot become login-time code execution.
 
 **Platform seam**
-
 - R16. Service generation sits behind a platform-manager seam (launchd is the only v1 implementation); on unsupported platforms `service` verbs fail fast with a clear "not supported on this platform" message rather than half-working.
 
 ---
