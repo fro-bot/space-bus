@@ -1,4 +1,5 @@
 ---
+
 module: space-bus
 category: best-practices
 date: 2026-07-11
@@ -6,27 +7,28 @@ problem_type: best_practice
 component: tooling
 severity: medium
 applies_when:
-  - generating a launchd plist (or systemd unit) for a managed service
-  - the managed command is resolved via PATH-injected toolchain shims (mise/asdf/nvm)
-  - installer verification and the runtime daemon must resolve the same env-derived state paths
-tags:
-  - launchd
-  - environment-variables
-  - path
-  - xdg-state-home
-  - plist
-  - service-install
-  - sparse-env
+- generating a launchd plist (or systemd unit) for a managed service
+- the managed command is resolved via PATH-injected toolchain shims (mise/asdf/nvm)
+- installer verification and the runtime daemon must resolve the same env-derived state paths
+  tags:
+- launchd
+- environment-variables
+- path
+- xdg-state-home
+- plist
+- service-install
+- sparse-env
+
 ---
 
 # Pin ambient environment into a generated launchd/systemd unit
 
 ## Context
 
-A macOS launchd agent starts with a **sparse environment**: `PATH` is only `/usr/bin:/bin:/usr/sbin:/sbin`, and none of the user's shell env (`XDG_*`, toolchain shim dirs, etc.) is inherited. A unit generated from an interactive install context therefore runs in a *different reality* than the installer that created it. Two concrete failures hit `space-bus service install` (0.11.0):
+A macOS launchd agent starts with a **sparse environment**: `PATH` is only `/usr/bin:/bin:/usr/sbin:/sbin`, and none of the user's shell env (`XDG_*`, toolchain shim dirs, etc.) is inherited. A unit generated from an interactive install context therefore runs in a _different reality_ than the installer that created it. Two concrete failures hit `space-bus service install` (0.11.0):
 
 1. **Binary not found.** The managed command is `["harness", "serve"]`, and `harness` is a mise-installed shim resolvable only via the user's `PATH`. Under launchd's sparse `PATH`, the daemon can't find it — the service loads but the process never starts.
-2. **State-root split.** `space-bus` derives its state dir from `XDG_STATE_HOME` (falling back to `~/.local/state`). If the *installer* ran with `XDG_STATE_HOME` set but the launchd process doesn't inherit it, the daemon writes discovery/locks under `~/.local/state` while the installer's verification and log paths used the XDG root. They diverge silently: install verification can falsely time out (it polls the wrong state dir), and later clients resolve a different lifecycle state → competing supervisors.
+2. **State-root split.** `space-bus` derives its state dir from `XDG_STATE_HOME` (falling back to `~/.local/state`). If the _installer_ ran with `XDG_STATE_HOME` set but the launchd process doesn't inherit it, the daemon writes discovery/locks under `~/.local/state` while the installer's verification and log paths used the XDG root. They diverge silently: install verification can falsely time out (it polls the wrong state dir), and later clients resolve a different lifecycle state → competing supervisors.
 
 ## Guidance
 
@@ -41,7 +43,7 @@ When you generate an OS service unit, **pin the environment the runtime actually
 
 The whole point of a persistence unit is that it runs unattended after a reboot, in an environment nobody is watching. If it can't find its binary, or it splits its runtime state across two roots, the failure is invisible until something downstream breaks (a dead board; two supervisors fighting over a port). Pinning the env closes the gap between "works when I run it in my shell" and "works when launchd runs it at login."
 
-This is the **sibling of a test-time lesson**: [`test-isolation-xdg-state-home`](./test-isolation-xdg-state-home-2026-07-05.md) isolates `XDG_STATE_HOME` so tests don't write into the real state dir. Same env var, opposite direction — there you *override* it to redirect writes away; here you *pin* it so a spawned process writes where the installer expects. Both are about the base path being env-derived and therefore fragile across a process boundary.
+This is the **sibling of a test-time lesson**: [`test-isolation-xdg-state-home`](./test-isolation-xdg-state-home-2026-07-05.md) isolates `XDG_STATE_HOME` so tests don't write into the real state dir. Same env var, opposite direction — there you _override_ it to redirect writes away; here you _pin_ it so a spawned process writes where the installer expects. Both are about the base path being env-derived and therefore fragile across a process boundary.
 
 ## When to Apply
 
@@ -58,7 +60,9 @@ const envEntries: string[] = [
   `    <key>SPACE_BUS_CONFIG</key>\n    <string>${xmlEscape(rosterPath)}</string>`,
 ];
 if (opts.path !== undefined) {
-  envEntries.push(`    <key>PATH</key>\n    <string>${xmlEscape(opts.path)}</string>`);
+  envEntries.push(
+    `    <key>PATH</key>\n    <string>${xmlEscape(opts.path)}</string>`,
+  );
 }
 if (opts.xdgStateHome !== undefined) {
   envEntries.push(

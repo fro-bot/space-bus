@@ -1,4 +1,5 @@
 ---
+
 title: Template CI from the org's own repos, not adjacent personal repos
 date: 2026-07-04
 category: workflow-issues
@@ -7,12 +8,13 @@ problem_type: workflow_issue
 component: development_workflow
 severity: medium
 applies_when:
-  - bootstrapping workflows, renovate config, or repo settings for a new repo in an org
-  - copying CI conventions from a "similar" repo
-symptoms:
-  - workflows referenced the wrong renovate preset, prompt structure, and secrets naming
-  - repo settings diverged from org conventions (description style, review requirements, job names)
-tags: [ci, workflows, templates, org-conventions, renovate, repo-settings]
+- bootstrapping workflows, renovate config, or repo settings for a new repo in an org
+- copying CI conventions from a "similar" repo
+  symptoms:
+- workflows referenced the wrong renovate preset, prompt structure, and secrets naming
+- repo settings diverged from org conventions (description style, review requirements, job names)
+  tags: [ci, workflows, templates, org-conventions, renovate, repo-settings]
+
 ---
 
 # Template CI from the org's own repos, not adjacent personal repos

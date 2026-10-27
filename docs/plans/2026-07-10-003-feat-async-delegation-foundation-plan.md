@@ -1,4 +1,5 @@
 ---
+
 title: "feat: Async-delegation foundation — normalized state enum + bus_wait"
 type: feat
 status: active
@@ -85,13 +86,13 @@ A control agent that delegates via `bus_task` today calls `bus_status` in parall
 ### Deferred to Implementation
 
 - Exact poll interval and default/max `timeoutMs` — tune against the live harness and any MCP-facade call ceiling; the requirement is "bounded, below the facade ceiling," not a specific number.
-- Concrete member spelling (`failed` vs `error`, `not_found` vs `unknown`) — settle at implementation; the state *set* is fixed.
+- Concrete member spelling (`failed` vs `error`, `not_found` vs `unknown`) — settle at implementation; the state _set_ is fixed.
 - Exact concurrent-wait cap (R9) and whether it's per-call fan-out only or a global guard — settle when wiring; that a bound exists is required.
 - Whether `bus_status` adopts the new state object shape additively (keeps current fields, adds `state`) or restructures — verify against `formatStatus` and existing tests to avoid a breaking output change.
 
 ## High-Level Technical Design
 
-> *This illustrates the intended approach and is directional guidance for review, not implementation specification. Treat it as context, not code to reproduce.*
+> _This illustrates the intended approach and is directional guidance for review, not implementation specification. Treat it as context, not code to reproduce._
 
 ```
 bus_wait(sessionIds[], timeoutMs)
@@ -259,14 +260,14 @@ deriveSessionState(statusEntry, pendingQuestion, resolved) -> "running"|"blocked
 
 ## Risks & Dependencies
 
-| Risk | Mitigation |
-|------|------------|
-| Long-poll adds latency vs event-driven SSE | Bounded poll interval tuned against live harness; SSE deferred as an optimization if latency proves inadequate. Level-triggering means an already-done session returns on the first poll. |
-| A long `bus_wait` exceeds an MCP-facade call timeout (Claude Desktop) | Default `timeoutMs` capped below the facade ceiling (verified at implementation); timeout returns a snapshot, not an error, so a re-wait is cheap. |
-| `deriveSessionState` precedence wrong (e.g. blocked vs complete) | Precedence pinned test-first in Unit 1 before any emitter wires to it. |
-| Enum change breaks `bus_status` output for existing callers | `state` added additively; existing fields unchanged; verified against `formatStatus` + existing tests. |
-| Unbounded concurrent waits pin resources | Per-call fan-out concurrency bound + a wait cap (R9); each poll keeps `api`'s 30s per-request abort. |
-| New long-lived-ish poll path bypasses loopback guard | R10 re-validates the resolved endpoint against the loopback guard before each request; fail closed. |
+| Risk                                                                  | Mitigation                                                                                                                                                                                |
+| --------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Long-poll adds latency vs event-driven SSE                            | Bounded poll interval tuned against live harness; SSE deferred as an optimization if latency proves inadequate. Level-triggering means an already-done session returns on the first poll. |
+| A long `bus_wait` exceeds an MCP-facade call timeout (Claude Desktop) | Default `timeoutMs` capped below the facade ceiling (verified at implementation); timeout returns a snapshot, not an error, so a re-wait is cheap.                                        |
+| `deriveSessionState` precedence wrong (e.g. blocked vs complete)      | Precedence pinned test-first in Unit 1 before any emitter wires to it.                                                                                                                    |
+| Enum change breaks `bus_status` output for existing callers           | `state` added additively; existing fields unchanged; verified against `formatStatus` + existing tests.                                                                                    |
+| Unbounded concurrent waits pin resources                              | Per-call fan-out concurrency bound + a wait cap (R9); each poll keeps `api`'s 30s per-request abort.                                                                                      |
+| New long-lived-ish poll path bypasses loopback guard                  | R10 re-validates the resolved endpoint against the loopback guard before each request; fail closed.                                                                                       |
 
 ## Documentation / Operational Notes
 

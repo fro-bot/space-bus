@@ -1,4 +1,5 @@
 ---
+
 title: OpenCode resolves exports["./server"] before main, so ./server is a reserved plugin entrypoint
 date: 2026-07-11
 category: integration-issues
@@ -6,19 +7,20 @@ module: space-bus
 problem_type: integration_issue
 component: packaging
 symptoms:
-  - '`failed to load plugin path=@fro.bot/space-bus@0.9.0 error="Plugin export is not a function"` in the OpenCode log'
-  - "the plugin loads fine from a source-file ref but fails when pinned by npm name"
-  - "dist/index.js is a clean single default function, yet the loader still rejects the package"
-root_cause: wrong_api
-resolution_type: code_fix
-severity: high
-tags:
-  - opencode
-  - plugin
-  - package-exports
-  - subpath-exports
-  - loader-resolution
-  - regression-guard
+- '`failed to load plugin path=@fro.bot/space-bus@0.9.0 error="Plugin export is not a function"` in the OpenCode log'
+- "the plugin loads fine from a source-file ref but fails when pinned by npm name"
+- "dist/index.js is a clean single default function, yet the loader still rejects the package"
+  root_cause: wrong_api
+  resolution_type: code_fix
+  severity: high
+  tags:
+- opencode
+- plugin
+- package-exports
+- subpath-exports
+- loader-resolution
+- regression-guard
+
 ---
 
 # OpenCode resolves exports["./server"] before main, so ./server is a reserved plugin entrypoint
@@ -35,7 +37,7 @@ tags:
 
 ## Root Cause
 
-OpenCode's plugin loader resolves a plugin package's entry as **`exports["./server"]` before falling back to `main`**. Since 0.6.0 the package mapped `./server` → `dist/server.js` (the managed-server lifecycle API), so the loader imported *that* module, iterated `Object.values(mod)`, hit the first value — a numeric constant `SUPERVISE_FAILURE_THRESHOLD` — and threw `Plugin export is not a function`. The plugin entry `dist/index.js` was never the module being loaded.
+OpenCode's plugin loader resolves a plugin package's entry as **`exports["./server"]` before falling back to `main`**. Since 0.6.0 the package mapped `./server` → `dist/server.js` (the managed-server lifecycle API), so the loader imported _that_ module, iterated `Object.values(mod)`, hit the first value — a numeric constant `SUPERVISE_FAILURE_THRESHOLD` — and threw `Plugin export is not a function`. The plugin entry `dist/index.js` was never the module being loaded.
 
 `./server` is effectively a **reserved subpath**: OpenCode treats it as the plugin's server entrypoint, so anything published there must be the single default plugin function.
 
@@ -45,7 +47,7 @@ OpenCode's plugin loader resolves a plugin package's entry as **`exports["./serv
 - **"index.js exports too much / interop wraps the namespace."** `dist/index.js`'s namespace is exactly `[["default","function"]]`; not the problem, because index.js was never loaded.
 - **"Stale or corrupt cache."** Cached-install SHA-256 == npm tarball SHA-256 for package.json, index.js, and server.js.
 
-The contradiction (clean index.js, yet a load failure) is what pointed at *resolution order*: the loader must be importing a different file than `main`.
+The contradiction (clean index.js, yet a load failure) is what pointed at _resolution order_: the loader must be importing a different file than `main`.
 
 ## Diagnostic Chain
 
@@ -96,7 +98,9 @@ expect(typeof mod.default).toBe("function");
 // negative control: dist/server.js must FAIL that same V1 shape check,
 // proving the guard discriminates (re-pointing ./server back turns it red)
 const passesV1Shape =
-  entries.length === 1 && entries[0]?.[0] === "default" && typeof mod.default === "function";
+  entries.length === 1 &&
+  entries[0]?.[0] === "default" &&
+  typeof mod.default === "function";
 expect(passesV1Shape).toBe(false);
 expect(entries.some(([, v]) => typeof v !== "function")).toBe(true);
 ```
@@ -109,7 +113,7 @@ bun -e 'const pkg = await Bun.file("package.json").json(); const resolved = pkg.
 
 ## Why This Works
 
-The failure was a **namespace-collision on a reserved contract**: the operation was internally consistent but published a library surface on the one subpath OpenCode reserves for the plugin factory. Mapping `./server` to the plugin entry makes "load this plugin" import the plugin, and the lifecycle API keeps its own honest subpath. The migration is breaking for direct `/server` importers (they must move to `/managed-server`, and the old import fails *silently* with missing properties, not an error) — so it shipped as a **minor** bump per the package's subpath-stability contract, with a loud migration note.
+The failure was a **namespace-collision on a reserved contract**: the operation was internally consistent but published a library surface on the one subpath OpenCode reserves for the plugin factory. Mapping `./server` to the plugin entry makes "load this plugin" import the plugin, and the lifecycle API keeps its own honest subpath. The migration is breaking for direct `/server` importers (they must move to `/managed-server`, and the old import fails _silently_ with missing properties, not an error) — so it shipped as a **minor** bump per the package's subpath-stability contract, with a loud migration note.
 
 ## Prevention
 

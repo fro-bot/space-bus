@@ -1,4 +1,5 @@
 ---
+
 title: "fix: Fail-closed cleanup of stale managed-daemon discovery records"
 type: fix
 status: active
@@ -58,7 +59,7 @@ The only paths that call `removeDiscovery` today are `stopServer`'s explicit sto
 
 ## Key Technical Decisions
 
-- **Compare-and-delete lives in `attachLive`, not the `attachServer`/`serverStatus` wrappers.** The requirements doc assumed wrapper placement to avoid a config→server import cycle, but grounding shows `config.ts:187` calls `attachLive` *directly* — wrapper-only cleanup would silently skip the plugin's own resolver. And there is no cycle: `removeDiscovery` is defined in `discovery.ts` alongside `attachLive`, so the call is same-module. `attachLive` + `serverStatus` is the correct pair, and it covers all three resolver entry points (`config.ts` loadContext, `attachServer`, CLI status).
+- **Compare-and-delete lives in `attachLive`, not the `attachServer`/`serverStatus` wrappers.** The requirements doc assumed wrapper placement to avoid a config→server import cycle, but grounding shows `config.ts:187` calls `attachLive` _directly_ — wrapper-only cleanup would silently skip the plugin's own resolver. And there is no cycle: `removeDiscovery` is defined in `discovery.ts` alongside `attachLive`, so the call is same-module. `attachLive` + `serverStatus` is the correct pair, and it covers all three resolver entry points (`config.ts` loadContext, `attachServer`, CLI status).
 - **Compare-and-delete is best-effort, not atomic.** POSIX has no unlink-if-content-matches. The primitive re-reads the record immediately before unlinking and removes only if it still matches the pid/identity that were read; a fresh record written in the microsecond between re-read and unlink is not covered. This narrows the race to a tiny same-user window, consistent with the existing best-effort `verifyIdentity` posture — not a hard guarantee.
 - **Match on pid + identity, not the whole record.** The stale record is uniquely keyed by `{ pid, identity }` (identity = start-time + comm captured at spawn). A fresh respawn always has a different identity (new process) — so pid+identity mismatch is a sufficient, minimal discriminator that a concurrent record is not the one we meant to delete.
 
@@ -145,11 +146,11 @@ The only paths that call `removeDiscovery` today are `stopServer`'s explicit sto
 
 ## Risks & Dependencies
 
-| Risk | Mitigation |
-|------|------------|
-| Cleanup deletes a fresh record from a concurrent respawn | Compare-and-delete: re-read and match `{ pid, identity }` before unlink; dedicated test. Residual same-user microsecond window accepted (documented best-effort, matches `verifyIdentity` posture). |
-| Cleanup added in a wrapper misses the direct `config.ts` `attachLive` caller | Place cleanup in `attachLive` itself (verified via grounding that `config.ts:187` calls it directly); integration test through `loadContext`. |
-| An unlink error crashes a resolver mid-attach | Best-effort swallow (mirrors `removeDiscovery`/`removeProvisional`); explicit error-path test. |
+| Risk                                                                         | Mitigation                                                                                                                                                                                          |
+| ---------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Cleanup deletes a fresh record from a concurrent respawn                     | Compare-and-delete: re-read and match `{ pid, identity }` before unlink; dedicated test. Residual same-user microsecond window accepted (documented best-effort, matches `verifyIdentity` posture). |
+| Cleanup added in a wrapper misses the direct `config.ts` `attachLive` caller | Place cleanup in `attachLive` itself (verified via grounding that `config.ts:187` calls it directly); integration test through `loadContext`.                                                       |
+| An unlink error crashes a resolver mid-attach                                | Best-effort swallow (mirrors `removeDiscovery`/`removeProvisional`); explicit error-path test.                                                                                                      |
 
 ## Sources & References
 

@@ -1,4 +1,5 @@
 ---
+
 title: "feat: space-bus service — reboot-persistent managed daemon (launchd v1)"
 type: feat
 status: active
@@ -179,12 +180,12 @@ Per origin: no systemd in v1 (seam only), no auto-install, no Windows, no alerti
 
 ## Risks & Dependencies
 
-| Risk | Mitigation |
-|------|------------|
-| Pinned runtime path breaks after runtime upgrade/move (bun relocated) | Documented upgrade story: re-run `service install` (idempotent); `status` exposes running=false so the failure is visible; install warns when pinning ephemeral cache paths |
-| `launchctl` output/behavior drift across macOS versions | Logic keys off exit codes only; `pid =` parse is permissive and non-fatal; deferred-to-implementation note pins AE6 live check |
-| Live AE testing perturbs the operator board | Run AEs against a throwaway roster + isolated XDG_STATE_HOME first (test-isolation lesson); the workspace roster install is the final dogfood step, gated on the throwaway pass |
-| launchd restarts a failing daemon into a crash loop writing logs | Default 10s throttle + fail-closed supervisor exit; logs live in the bounded state dir |
+| Risk                                                                  | Mitigation                                                                                                                                                                      |
+| --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Pinned runtime path breaks after runtime upgrade/move (bun relocated) | Documented upgrade story: re-run `service install` (idempotent); `status` exposes running=false so the failure is visible; install warns when pinning ephemeral cache paths     |
+| `launchctl` output/behavior drift across macOS versions               | Logic keys off exit codes only; `pid =` parse is permissive and non-fatal; deferred-to-implementation note pins AE6 live check                                                  |
+| Live AE testing perturbs the operator board                           | Run AEs against a throwaway roster + isolated XDG_STATE_HOME first (test-isolation lesson); the workspace roster install is the final dogfood step, gated on the throwaway pass |
+| launchd restarts a failing daemon into a crash loop writing logs      | Default 10s throttle + fail-closed supervisor exit; logs live in the bounded state dir                                                                                          |
 
 ## Sources & References
 

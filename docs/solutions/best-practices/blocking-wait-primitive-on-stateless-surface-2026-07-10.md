@@ -1,4 +1,5 @@
 ---
+
 title: Blocking-wait primitive on a stateless, multiplexed tool surface
 date: 2026-07-10
 category: best-practices
@@ -7,28 +8,29 @@ problem_type: best_practice
 component: tooling
 severity: medium
 applies_when:
-  - building a "block until X changes" primitive on a stateless tool/plugin surface with no persistent process to hold state
-  - a single tool call must return a final answer rather than stream events to a caller that can't hold a subscription
-  - each poll must re-apply a security check and tolerate partial failure without failing the whole call
-  - multiple emitters must report the same derived state and must not drift
-tags:
-  - stateless
-  - long-poll
-  - wait-primitive
-  - level-triggered
-  - sse
-  - bus-wait
-  - never-throw
-  - forward-compat-enum
+- building a "block until X changes" primitive on a stateless tool/plugin surface with no persistent process to hold state
+- a single tool call must return a final answer rather than stream events to a caller that can't hold a subscription
+- each poll must re-apply a security check and tolerate partial failure without failing the whole call
+- multiple emitters must report the same derived state and must not drift
+  tags:
+- stateless
+- long-poll
+- wait-primitive
+- level-triggered
+- sse
+- bus-wait
+- never-throw
+- forward-compat-enum
+
 ---
 
 # Blocking-wait primitive on a stateless, multiplexed tool surface
 
 ## Context
 
-space-bus dispatches work to per-project agents over a shared harness server and, until 0.9.0, a control agent had no way to *wait* for a delegated session — it polled `bus_status` in a loop, inferring completion from `busy`/`blocked` flags. The ask was a `bus_wait` tool: block until any watched session needs attention (completes, blocks on a question, fails, or vanishes) or a timeout elapses.
+space-bus dispatches work to per-project agents over a shared harness server and, until 0.9.0, a control agent had no way to _wait_ for a delegated session — it polled `bus_status` in a loop, inferring completion from `busy`/`blocked` flags. The ask was a `bus_wait` tool: block until any watched session needs attention (completes, blocks on a question, fails, or vanishes) or a timeout elapses.
 
-The hard constraint: space-bus tools are **stateless HTTP clients**. There is no persistent plugin process holding promises or subscriptions between calls — a tool call runs, returns, and its state is gone. The natural "async" shape from other systems (a long-lived event subscription plus an in-memory task registry, e.g. `opencode-copilot-delegate`'s `completionPromise` + `client.session.prompt` notify trick) does not transfer: there is nowhere for that state to live, and the MCP facade has no session to notify into. This doc captures the patterns that made a robust blocking wait possible *without* persistent state.
+The hard constraint: space-bus tools are **stateless HTTP clients**. There is no persistent plugin process holding promises or subscriptions between calls — a tool call runs, returns, and its state is gone. The natural "async" shape from other systems (a long-lived event subscription plus an in-memory task registry, e.g. `opencode-copilot-delegate`'s `completionPromise` + `client.session.prompt` notify trick) does not transfer: there is nowhere for that state to live, and the MCP facade has no session to notify into. This doc captures the patterns that made a robust blocking wait possible _without_ persistent state.
 
 ## Guidance
 
@@ -54,21 +56,26 @@ while (true) {
 
 ### 2. Level-triggered wake, not edge-triggered
 
-Each poll reads the *current* normalized state, so an already-finished session wakes on the **first** poll — there is no "subscribe after the event already fired" miss:
+Each poll reads the _current_ normalized state, so an already-finished session wakes on the **first** poll — there is no "subscribe after the event already fired" miss:
 
 ```ts
-const NEEDS_ATTENTION_STATES: SessionState[] = ["complete", "blocked", "failed", "not_found"];
+const NEEDS_ATTENTION_STATES: SessionState[] = [
+  "complete",
+  "blocked",
+  "failed",
+  "not_found",
+];
 // ...wake if ANY watched session is currently in one of these states
 ```
 
-Edge-triggered designs (wait for a *transition*) have a classic bug: if the session completed before the wait started, the transition never arrives and the caller hangs to timeout. Level-triggering eliminates that whole failure class.
+Edge-triggered designs (wait for a _transition_) have a classic bug: if the session completed before the wait started, the transition never arrives and the caller hangs to timeout. Level-triggering eliminates that whole failure class.
 
 ### 3. Own your deadline, independent of the per-request timeout
 
 The shared HTTP helper `api()` hard-codes `AbortSignal.timeout(30_000)` per request. The wait loop must own a **separate** total deadline — a single poll is bounded by 30s, but the loop keeps issuing fresh polls until `timeoutMs` total:
 
 ```ts
-const deadline = Date.now() + timeoutMs;   // owned by the loop, not by api()
+const deadline = Date.now() + timeoutMs; // owned by the loop, not by api()
 ```
 
 Be honest that it's a **soft** deadline: if a poll request is mid-flight when the deadline passes, the call can overshoot by up to the per-request bound (~30s). Say so in the tool description rather than implying a hard cap. Clamp absurd values (`Math.min(timeoutMs, MAX_WAIT_TIMEOUT_MS)`) so a caller can't pin an MCP call open indefinitely.
@@ -90,13 +97,17 @@ try {
 - An unresolvable session id is seeded as a permanent `not_found` (`state: loc ? "running" : "not_found"`) which is itself a needs-attention state, so a bad id **wakes** the caller rather than hanging or erroring it.
 - The function returns a discriminated-union `Result`; timeout is `{ ok: true, timedOut: true }`, **not** an error.
 
-### 5. Keep the state enum closed *and* forward-compatible
+### 5. Keep the state enum closed _and_ forward-compatible
 
 The normalized enum ships all five states even though `failed` has no wire signal yet:
 
 ```ts
 export const sessionStateSchema = z.enum([
-  "running", "blocked", "complete", "failed", "not_found",
+  "running",
+  "blocked",
+  "complete",
+  "failed",
+  "not_found",
 ]);
 ```
 

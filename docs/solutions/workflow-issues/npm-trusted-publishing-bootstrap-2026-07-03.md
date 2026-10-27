@@ -1,4 +1,5 @@
 ---
+
 title: npm trusted publishing requires a bootstrap publish for new packages
 date: 2026-07-03
 category: workflow-issues
@@ -7,10 +8,11 @@ problem_type: workflow_issue
 component: development_workflow
 severity: medium
 applies_when:
-  - publishing a brand-new npm package through GitHub Actions OIDC trusted publishing
-  - migrating a package from token-based publishing to trusted publishing
-  - setting up changesets-driven releases with provenance
-tags: [npm, trusted-publishing, oidc, provenance, changesets, release-workflow, bootstrap]
+- publishing a brand-new npm package through GitHub Actions OIDC trusted publishing
+- migrating a package from token-based publishing to trusted publishing
+- setting up changesets-driven releases with provenance
+  tags: [npm, trusted-publishing, oidc, provenance, changesets, release-workflow, bootstrap]
+
 ---
 
 # npm trusted publishing requires a bootstrap publish for new packages
@@ -23,7 +25,7 @@ Trusted publishers are package-scoped settings on npmjs.com — and the package 
 
 Bootstrap sequence for a new package (operator steps in order):
 
-1. Land the initial changeset in the repo *before* bootstrapping, so the first CI release PR carries a real version bump.
+1. Land the initial changeset in the repo _before_ bootstrapping, so the first CI release PR carries a real version bump.
 2. Manually `npm publish` a placeholder version (we used `0.0.0`) as a maintainer — 2FA or granular token; this is the only token-based publish the package ever needs.
 3. On the package's npmjs.com settings, configure the trusted publisher: owner, repo, and the workflow **filename exactly** (`release.yaml` — filename only, no path, `.yml`/`.yaml` sensitive, case-sensitive).
 4. Merge the changesets version PR; the second release flows through CI OIDC and satisfies the real acceptance check.
@@ -35,19 +37,19 @@ on:
   workflow_dispatch:
   workflow_run:
     workflows: [CI]
-    branches: [main]        # fork PRs never reach the publish job
+    branches: [main] # fork PRs never reach the publish job
     types: [completed]
 jobs:
   release:
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     permissions:
       contents: write
-      id-token: write       # the OIDC credential
+      id-token: write # the OIDC credential
       pull-requests: write
     steps:
       # ...app token, git user, checkout, setup-node with registry-url...
       - name: Upgrade npm for OIDC trusted publishing
-        run: npm install -g npm@11.18.0   # OIDC publish needs npm >= 11.5.1; runner default may be older
+        run: npm install -g npm@11.18.0 # OIDC publish needs npm >= 11.5.1; runner default may be older
       # changesets/action with version/publish commands
 ```
 
@@ -57,7 +59,7 @@ jobs:
 
 ## Why This Matters
 
-The chicken-and-egg is invisible until the first release fails: nothing in the workflow, npm docs snippets, or changesets setup warns that the trusted publisher config screen doesn't exist for an unpublished package. Planning the bootstrap as an explicit manual step (and deferring the "publishes via OIDC" acceptance check to the *second* release) avoids a stalled release day.
+The chicken-and-egg is invisible until the first release fails: nothing in the workflow, npm docs snippets, or changesets setup warns that the trusted publisher config screen doesn't exist for an unpublished package. Planning the bootstrap as an explicit manual step (and deferring the "publishes via OIDC" acceptance check to the _second_ release) avoids a stalled release day.
 
 ## When to Apply
 

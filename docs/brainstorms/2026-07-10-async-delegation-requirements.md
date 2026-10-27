@@ -1,4 +1,5 @@
 ---
+
 date: 2026-07-10
 topic: async-delegation
 ---
@@ -67,7 +68,7 @@ This matters more now that space-bus is a library (`/core`, `/contract`, `snapsh
 
 **Blocking wait (0.9.0)**
 - R4. A new `bus_wait` tool accepts one or more session IDs and a bounded timeout, and blocks until a wake condition is met or the timeout elapses. It is the fifth bus tool, distinct from `bus_status` (instant snapshot) by verb.
-- R5. The wake condition is "needs attention" — a watched session in `complete`, `blocked`, or a failed/`not_found` state. A session merely still `running` does not wake the wait. Wake is **level-triggered, not edge-triggered**: `bus_wait` returns immediately if any watched session is *already* in a needs-attention state at entry, not only on a transition observed during the call.
+- R5. The wake condition is "needs attention" — a watched session in `complete`, `blocked`, or a failed/`not_found` state. A session merely still `running` does not wake the wait. Wake is **level-triggered, not edge-triggered**: `bus_wait` returns immediately if any watched session is _already_ in a needs-attention state at entry, not only on a transition observed during the call.
 - R6. On wake, `bus_wait` returns a snapshot of the current normalized state of every watched session, with the needs-attention session(s) identified: at minimum one `waker` plus the set of all sessions already in a needs-attention state, so a caller can drain every ready session in one call. One call always makes progress.
 - R7. On timeout, `bus_wait` returns the current snapshot of all watched sessions without having woken — an actionable state read, not an error. A caller that re-waits on an unchanged all-`running` snapshot is responsible for its own retry budget; `bus_wait` does not itself detect a genuinely-stuck delegate (it has no question and no completion to wake on), so the doc makes that the caller's policy rather than a hidden guarantee.
 - R11. `bus_wait` does not use the shared `api()` 30s abort choke point: either its default wait bound is capped below 30s, or the wait path uses a dedicated long-lived request/stream that is not hard-aborted at 30s. The bound is explicit and chosen so the wait cannot die mid-wait on a slow-but-healthy session.
@@ -120,7 +121,7 @@ This matters more now that space-bus is a library (`/core`, `/contract`, `snapsh
 
 ## Key Decisions
 
-- Blocking-wait first, push-notify deferred: blocking wait fits space-bus's stateless HTTP-client nature (block = tool-call latency over the harness event stream) and reaches both surfaces; push-notify needs machinery space-bus lacks and cannot reach two-surface parity. Both modes remain the end state, sequenced. 0.9.0 is honestly the *foundation* of async delegation (a smarter wait that replaces the busy-poll loop), not the fire-and-forget capability — `bus_wait` still holds the caller's turn; only the deferred notify lets the agent dispatch and move on.
+- Blocking-wait first, push-notify deferred: blocking wait fits space-bus's stateless HTTP-client nature (block = tool-call latency over the harness event stream) and reaches both surfaces; push-notify needs machinery space-bus lacks and cannot reach two-surface parity. Both modes remain the end state, sequenced. 0.9.0 is honestly the _foundation_ of async delegation (a smarter wait that replaces the busy-poll loop), not the fire-and-forget capability — `bus_wait` still holds the caller's turn; only the deferred notify lets the agent dispatch and move on.
 - Wake on complete-OR-blocked: a blocked delegate is exactly as actionable as a finished one; waking on both is what actually fixes the silent-stall pain, matching the caller's real branch logic.
 - First-to-attention + full snapshot (not wait-for-all): a Promise.race shape means one slow delegate can't stall the batch and every call makes progress; the snapshot lets the caller drain everything already ready.
 - `bus_wait` as a new fifth tool (not a `bus_status` overload): wait and snapshot-now are distinct verbs; overloading `bus_status` with a long-blocking mode and variadic sessions muddies a clean instant-read tool. This grows the surface past the 4-tool line, justified by a genuinely new capability (contrast: `bus_reply` was folded into `bus_task` because it was the same verb).
@@ -141,7 +142,7 @@ This matters more now that space-bus is a library (`/core`, `/contract`, `snapsh
 ### Deferred to Planning
 
 - [Affects R11][Technical] Wait mechanism: consume the harness `/event` SSE stream for the call's duration vs. a bounded long-poll loop over `/session/status` + `/question`. Verify against the live server which is reliable and cheap, honoring the R11 no-30s-abort and R12 cross-directory constraints.
-- [Affects R1][Technical] Exact member spelling of the enum (e.g. `failed` vs `error`, `not_found` vs `unknown`) and how a failed/aborted session is distinguished from a blocked one on the wire — the *set* of states is fixed by R1/R5; only the spelling is open.
+- [Affects R1][Technical] Exact member spelling of the enum (e.g. `failed` vs `error`, `not_found` vs `unknown`) and how a failed/aborted session is distinguished from a blocked one on the wire — the _set_ of states is fixed by R1/R5; only the spelling is open.
 - [Affects R6][Technical] Concrete return shape of the multi-session snapshot (per-session normalized state + the `waker`/ready set) and how it reconciles byte-for-byte with the existing `bus_status` output so the enum reads identically in both.
 - [Affects R11, R14][Needs research] Whether the stdio MCP facade (Claude Desktop) imposes its own tool-call timeout shorter than the intended wait bound — bound the default wait accordingly — and the concrete concurrent-wait cap for R14.
 - [Affects R12][Needs research] Whether the harness `/event` stream supports server-side idle/read timeouts, so a long-held wait connection can't be pinned open indefinitely.

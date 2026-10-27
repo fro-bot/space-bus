@@ -1,4 +1,5 @@
 ---
+
 title: 'feat: publish the space-bus library surface (subpath exports)'
 type: feat
 status: active
@@ -192,12 +193,12 @@ R1–R9 from the origin doc: export surface (R1–R2), browser-safe core with bo
 
 ## Risks & Dependencies
 
-| Risk | Mitigation |
-|------|------------|
-| Signature churn breaks a consumer path silently | Existing 60-test suite + smoke pin every adapter path; parity tests pin descriptions/args |
-| Browser-safety regresses after v1 | CI bundle-probe test fails on any Node-builtin import in public browser modules |
-| Contract schemas drift from upstream API | Already true today (internal); publishing changes visibility, not risk; experimental label + pin guidance |
-| Exports map/type resolution quirks in consumer bundlers | Per-subpath `types` fields; AE1-style Vite probe can be added on Mothership's side |
+| Risk                                                    | Mitigation                                                                                                |
+| ------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| Signature churn breaks a consumer path silently         | Existing 60-test suite + smoke pin every adapter path; parity tests pin descriptions/args                 |
+| Browser-safety regresses after v1                       | CI bundle-probe test fails on any Node-builtin import in public browser modules                           |
+| Contract schemas drift from upstream API                | Already true today (internal); publishing changes visibility, not risk; experimental label + pin guidance |
+| Exports map/type resolution quirks in consumer bundlers | Per-subpath `types` fields; AE1-style Vite probe can be added on Mothership's side                        |
 
 ## Documentation / Operational Notes
 
