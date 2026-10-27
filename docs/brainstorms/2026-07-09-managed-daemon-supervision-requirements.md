@@ -1,4 +1,5 @@
 ---
+
 date: 2026-07-09
 topic: managed-daemon-supervision
 ---
@@ -99,7 +100,7 @@ The lifecycle owner is `space-bus`. Attachers must not become watchdogs — push
 ## Key Decisions
 
 - Layer A ships before Layer B: fail-closed cleanup is a small, low-risk change that satisfies the core user outcome on its own; active monitoring is a separate, larger surface.
-- Fail-closed-only over in-process restart: document review flagged that an in-process bounded-restart loop pulls `space-bus` toward being a process manager that launchd/systemd already are, and that Layer A already prevents the bad outcome (attachers dialing a dead port). `--foreground` therefore monitors liveness and exits non-zero on death, delegating restart to the external manager. This keeps `space-bus` a lifecycle *owner* (spawn, monitor, clean up) without becoming a restart *supervisor*.
+- Fail-closed-only over in-process restart: document review flagged that an in-process bounded-restart loop pulls `space-bus` toward being a process manager that launchd/systemd already are, and that Layer A already prevents the bad outcome (attachers dialing a dead port). `--foreground` therefore monitors liveness and exits non-zero on death, delegating restart to the external manager. This keeps `space-bus` a lifecycle _owner_ (spawn, monitor, clean up) without becoming a restart _supervisor_.
 - Compare-and-delete for stale cleanup: three reviewers independently flagged that unconditional removal on a dead-pid read can delete a fresh record written by a concurrent respawn. Removal is conditional on the on-disk record still matching the stale one read.
 - Cleanup lives on the Node-side resolver, not the browser attacher: `attach.ts` has no filesystem access, so it surfaces the failure while the next Node-side resolve does the actual removal — the acceptance criterion is met behaviorally.
 - A fresh spawn (via external-manager restart) mints a new password/identity/discovery record; attachers holding cached credentials must re-resolve rather than reuse them.

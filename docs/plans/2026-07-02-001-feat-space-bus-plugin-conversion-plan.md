@@ -1,4 +1,5 @@
 ---
+
 title: 'feat: Convert space-bus into the distributable @fro.bot/space-bus plugin'
 type: feat
 status: completed
@@ -259,14 +260,14 @@ R1–R12 from the origin document, grouped: packaging (R1–R4), roster discover
 
 ## Risks & Dependencies
 
-| Risk | Mitigation |
-|------|------------|
-| Eager-load regression sneaks back (import-time I/O) | Unit 1 test asserts import performs no filesystem reads |
-| Published ESM fails to load in harness (1.17.x extension footgun) | Bundled build; AE6 exercises the real npm install path before the cutover is called done |
-| Tool double-registration during transition | Fixture-only dev loop; deletions gated on AE4 |
-| Trusted publishing misconfigured on first release | AE5 is a gate; failure mode is a failed CI publish, not a broken package |
-| settings.yml reusable workflow needs App secrets | Named as manual prerequisite in the conversion PR checklist |
-| Control board offline / npm registry down at startup | File-path plugin reference documented as the permanent offline fallback; version pinning as the bad-release escape |
+| Risk                                                              | Mitigation                                                                                                         |
+| ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| Eager-load regression sneaks back (import-time I/O)               | Unit 1 test asserts import performs no filesystem reads                                                            |
+| Published ESM fails to load in harness (1.17.x extension footgun) | Bundled build; AE6 exercises the real npm install path before the cutover is called done                           |
+| Tool double-registration during transition                        | Fixture-only dev loop; deletions gated on AE4                                                                      |
+| Trusted publishing misconfigured on first release                 | AE5 is a gate; failure mode is a failed CI publish, not a broken package                                           |
+| settings.yml reusable workflow needs App secrets                  | Named as manual prerequisite in the conversion PR checklist                                                        |
+| Control board offline / npm registry down at startup              | File-path plugin reference documented as the permanent offline fallback; version pinning as the bad-release escape |
 
 ## Documentation / Operational Notes
 

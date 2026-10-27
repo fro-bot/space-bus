@@ -1,4 +1,5 @@
 ---
+
 title: Seam-injected tests can't prove process-level lifecycle claims — use a real subprocess
 date: 2026-07-10
 category: best-practices
@@ -7,26 +8,27 @@ problem_type: best_practice
 component: testing_framework
 severity: medium
 applies_when:
-  - the change's value proposition is about process behavior (exit latency, signal handling, timer/handle cleanup, event-loop draining)
-  - the test suite injects a clock/sleep/timer seam and never touches a real timer or process
-tags:
-  - testing
-  - subprocess
-  - signal-handling
-  - event-loop
-  - lifecycle
-  - negative-control
+- the change's value proposition is about process behavior (exit latency, signal handling, timer/handle cleanup, event-loop draining)
+- the test suite injects a clock/sleep/timer seam and never touches a real timer or process
+  tags:
+- testing
+- subprocess
+- signal-handling
+- event-loop
+- lifecycle
+- negative-control
+
 ---
 
 # Seam-injected tests can't prove process-level lifecycle claims — use a real subprocess
 
 ## Context
 
-`space-bus serve --foreground` supervises a managed daemon in a poll loop. To restore instant Ctrl+C shutdown, the inter-tick sleep was made "interruptible" — a signal races the sleep so the loop breaks immediately instead of waiting out the 5s interval. Every `superviseServer` unit test injected a `sleep: noop` seam, so the suite (196 tests) and a 7-persona review both passed, and the PR *claimed* the latency class was fixed. It wasn't: the fix worked at the promise level but not the process level. Fro Bot caught it with a real subprocess reproduction — the daemon died in ~23ms but the CLI process lingered ~4.97s (exactly one poll interval).
+`space-bus serve --foreground` supervises a managed daemon in a poll loop. To restore instant Ctrl+C shutdown, the inter-tick sleep was made "interruptible" — a signal races the sleep so the loop breaks immediately instead of waiting out the 5s interval. Every `superviseServer` unit test injected a `sleep: noop` seam, so the suite (196 tests) and a 7-persona review both passed, and the PR _claimed_ the latency class was fixed. It wasn't: the fix worked at the promise level but not the process level. Fro Bot caught it with a real subprocess reproduction — the daemon died in ~23ms but the CLI process lingered ~4.97s (exactly one poll interval).
 
 ## Guidance
 
-When a fix's value proposition is about **process behavior** — exit latency, signal handling, timer/FD/handle cleanup, event-loop draining — a seam/mock-injected unit test cannot verify it. Injecting the clock or sleep proves the *logical* path (the await resolved) while hiding the *real* resource (the OS timer that keeps the event loop alive). Add a real-subprocess test that measures the observable itself: wall-clock exit time, alive/dead pid, leaked handle count. **Negative-control it** — confirm it fails against the pre-fix code, or it isn't a regression guard.
+When a fix's value proposition is about **process behavior** — exit latency, signal handling, timer/FD/handle cleanup, event-loop draining — a seam/mock-injected unit test cannot verify it. Injecting the clock or sleep proves the _logical_ path (the await resolved) while hiding the _real_ resource (the OS timer that keeps the event loop alive). Add a real-subprocess test that measures the observable itself: wall-clock exit time, alive/dead pid, leaked handle count. **Negative-control it** — confirm it fails against the pre-fix code, or it isn't a regression guard.
 
 ## Why This Matters
 
@@ -55,7 +57,9 @@ The fix — own the timer and reclaim it so the loop can drain:
 
 ```ts
 let timer: ReturnType<typeof setTimeout> | undefined;
-const timed = new Promise<void>((resolve) => { timer = setTimeout(resolve, intervalMs); });
+const timed = new Promise<void>((resolve) => {
+  timer = setTimeout(resolve, intervalMs);
+});
 try {
   await Promise.race([timed, interrupt]);
 } finally {
@@ -66,7 +70,9 @@ try {
 The guard that actually catches it — a real subprocess measuring wall-clock exit (`src/cli.test.ts`):
 
 ```ts
-const proc = Bun.spawn(["bun", "run", CLI_PATH, "serve", "--foreground"], { /* stub roster, isolated XDG_STATE_HOME */ });
+const proc = Bun.spawn(["bun", "run", CLI_PATH, "serve", "--foreground"], {
+  /* stub roster, isolated XDG_STATE_HOME */
+});
 // ...wait for the "server running at" readiness line...
 const t0 = performance.now();
 proc.kill("SIGINT");

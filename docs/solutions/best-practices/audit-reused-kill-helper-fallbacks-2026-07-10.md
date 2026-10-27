@@ -1,4 +1,5 @@
 ---
+
 module: space-bus
 category: best-practices
 date: 2026-07-10
@@ -7,29 +8,30 @@ problem_type: best_practice
 component: development_workflow
 severity: medium
 applies_when:
-  - reusing a shared signaling/kill helper in a new caller
-  - the new caller has weaker preconditions than the helper's original caller
-  - hardening a kill/reap/cleanup path, especially on error/death paths
-  - a review's obvious guard may not be the real blast-radius risk
-tags:
-  - code-review
-  - kill-path
-  - process-signaling
-  - helper-reuse
-  - blast-radius
-  - oracle-adjudication
-  - right-sizing
+- reusing a shared signaling/kill helper in a new caller
+- the new caller has weaker preconditions than the helper's original caller
+- hardening a kill/reap/cleanup path, especially on error/death paths
+- a review's obvious guard may not be the real blast-radius risk
+  tags:
+- code-review
+- kill-path
+- process-signaling
+- helper-reuse
+- blast-radius
+- oracle-adjudication
+- right-sizing
+
 ---
 
 # Audit a reused kill-helper's fallback against the new caller's weaker preconditions
 
 ## Context
 
-Adding a group-reap to the supervision `died` path (space-bus #62), the obvious hazard seemed to be pid recycling: don't signal a wrapper pid that has been recycled to an unrelated *live* process. The guard was designed around that (`isAlive(pid)` → no-op). But a 4-persona review plus an independent Oracle adjudication found the real blast-radius bug was elsewhere and subtler: the reaper reused the shared `signalGroup` helper, whose documented behavior **falls back** from the group form `process.kill(-pid, sig)` to a **bare-pid** `process.kill(pid, sig)` on ESRCH. Oracle rated that fallback "at least as important as" the guard the review had been focused on.
+Adding a group-reap to the supervision `died` path (space-bus #62), the obvious hazard seemed to be pid recycling: don't signal a wrapper pid that has been recycled to an unrelated _live_ process. The guard was designed around that (`isAlive(pid)` → no-op). But a 4-persona review plus an independent Oracle adjudication found the real blast-radius bug was elsewhere and subtler: the reaper reused the shared `signalGroup` helper, whose documented behavior **falls back** from the group form `process.kill(-pid, sig)` to a **bare-pid** `process.kill(pid, sig)` on ESRCH. Oracle rated that fallback "at least as important as" the guard the review had been focused on.
 
 ## Guidance
 
-When you reuse a shared signaling/kill helper in a new caller, audit its **fallback / degradation behavior**, not just its happy path — and audit it against the *new caller's* preconditions, which are often weaker than the original caller's. A fallback that is safe because the original caller established an invariant first (e.g. "this pid is verified ours") becomes a blast-radius bug in a new caller that lacks that invariant. Three questions for security-sensitive signaling code:
+When you reuse a shared signaling/kill helper in a new caller, audit its **fallback / degradation behavior**, not just its happy path — and audit it against the _new caller's_ preconditions, which are often weaker than the original caller's. A fallback that is safe because the original caller established an invariant first (e.g. "this pid is verified ours") becomes a blast-radius bug in a new caller that lacks that invariant. Three questions for security-sensitive signaling code:
 
 1. What precondition does the original caller establish before calling the helper?
 2. Does the new caller establish that same precondition?
@@ -41,7 +43,7 @@ Then **right-size the fix to the finding's actual severity**: fix the genuine bl
 
 ## Why This Matters
 
-`signalGroup` is safe in `stopServer` because `stopServer` calls `verifyIdentity(discovery.pid, discovery.identity)` first — the recorded pid is confirmed *ours* before any signal, so the ESRCH bare-pid fallback can only ever hit our own process. The reaper runs on the `died` path, where the pid is by definition dead or recycled and there is no live-identity precondition. If the group dies between the reaper's liveness check and its signal, `signalGroup`'s fallback would `process.kill(pid, sig)` a bare pid that may have been recycled to a stranger — i.e. SIGKILL the wrong process. Same helper, opposite safety, entirely because of the caller's precondition. The "don't signal a live recycled leader" guard was correct but not the load-bearing risk; the shared helper's fallback was.
+`signalGroup` is safe in `stopServer` because `stopServer` calls `verifyIdentity(discovery.pid, discovery.identity)` first — the recorded pid is confirmed _ours_ before any signal, so the ESRCH bare-pid fallback can only ever hit our own process. The reaper runs on the `died` path, where the pid is by definition dead or recycled and there is no live-identity precondition. If the group dies between the reaper's liveness check and its signal, `signalGroup`'s fallback would `process.kill(pid, sig)` a bare pid that may have been recycled to a stranger — i.e. SIGKILL the wrong process. Same helper, opposite safety, entirely because of the caller's precondition. The "don't signal a live recycled leader" guard was correct but not the load-bearing risk; the shared helper's fallback was.
 
 The right-sizing half matters too: reviewers flagged a Linux zombie-leader edge as possibly "silently broken on Linux." Oracle traced it and downgraded it to a narrow, self-healing race (a zombie normally still matches identity, so the died path isn't even reached). The proportionate response was to fix the real blast-radius bug now (a group-only helper) and track the edge as a follow-up with the fuller fix sketch — not to build tri-state process inspection for an edge that rarely manifests.
 
@@ -78,7 +80,7 @@ const NOT_LOADED_MARKERS = ["could not find", "no such process"];
 // { ok: false, error } — a probe failure the caller must not treat as absence.
 ```
 
-...and teardown refuses to delete unless absence is *confirmed* (`bootoutUntilAbsentOrFail` re-probes after a failed `bootout`; a still-loaded or un-probeable job leaves the plist in place and returns `ok:false`). Same lesson, generalized: **don't let a helper's failure branch turn "couldn't prove absence" into "safe to do the destructive thing."**
+...and teardown refuses to delete unless absence is _confirmed_ (`bootoutUntilAbsentOrFail` re-probes after a failed `bootout`; a still-loaded or un-probeable job leaves the plist in place and returns `ok:false`). Same lesson, generalized: **don't let a helper's failure branch turn "couldn't prove absence" into "safe to do the destructive thing."**
 
 ## Examples
 
@@ -109,10 +111,10 @@ The new group-only helper for the reaper — never falls back to a bare pid:
 function signalGroupOnly(pid: number, sig: NodeJS.Signals): boolean {
   if (pid <= 1) return false;
   try {
-    process.kill(-pid, sig);   // group form ONLY
+    process.kill(-pid, sig); // group form ONLY
     return true;
   } catch {
-    return false;              // ESRCH/EPERM → fail closed, never signal the bare pid
+    return false; // ESRCH/EPERM → fail closed, never signal the bare pid
   }
 }
 ```

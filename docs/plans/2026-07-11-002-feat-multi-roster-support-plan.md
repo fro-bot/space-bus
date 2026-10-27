@@ -1,4 +1,5 @@
 ---
+
 title: "feat: Multi-roster support — registry, mutation module, per-call addressing"
 type: feat
 status: active
@@ -260,13 +261,13 @@ Everything above the substrate is single-roster today: `src/mcp.ts` pins one ros
 
 ## Risks & Dependencies
 
-| Risk | Mitigation |
-|------|------------|
+| Risk                                             | Mitigation                                                                                       |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------ |
 | New subpath collides with a loader-reserved name | `/registry` chosen deliberately; entry-guard test asserts loader still resolves the plugin entry |
-| Registry tests leak into real `~/.config` | Preload isolation + leak guard extended before any test lands (Unit 1 execution note) |
-| Roster param silently changes no-param behavior | No-param paths pinned by existing suite; param plumbed as pure addition |
-| Mothership adopts mid-phase | Incremental releases; Phase A alone gives it registry+mutation |
-| Registry poisoning via symlink/path tricks | Canonicalization + symlink rejection + charset validation (R15), tested |
+| Registry tests leak into real `~/.config`        | Preload isolation + leak guard extended before any test lands (Unit 1 execution note)            |
+| Roster param silently changes no-param behavior  | No-param paths pinned by existing suite; param plumbed as pure addition                          |
+| Mothership adopts mid-phase                      | Incremental releases; Phase A alone gives it registry+mutation                                   |
+| Registry poisoning via symlink/path tricks       | Canonicalization + symlink rejection + charset validation (R15), tested                          |
 
 ## Sources & References
 

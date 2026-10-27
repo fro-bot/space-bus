@@ -11,13 +11,13 @@ on:
   pull_request:
     types: [opened, synchronize, ready_for_review, reopened, review_requested]
   schedule:
-    - cron: '0 0 * * *'
+    - cron: "0 0 * * *"
   workflow_dispatch:
     inputs:
       prompt:
-        description: 'Custom prompt for the Fro Bot agent (leave empty to run the default daily oversight + autohealing pass)'
+        description: "Custom prompt for the Fro Bot agent (leave empty to run the default daily oversight + autohealing pass)"
         required: false
-        default: ''
+        default: ""
 
 permissions:
   contents: read
@@ -270,7 +270,7 @@ jobs:
         id: fro-bot-agent
         uses: fro-bot/agent@5494812ab3b9a96573e9807e99f7fdfdd5d92e81 # v0.112.0
         env:
-          OPENCODE_PROMPT_ARTIFACT: 'true'
+          OPENCODE_PROMPT_ARTIFACT: "true"
           TASK_PROMPT: >-
             ${{
               (github.event_name == 'workflow_dispatch' && github.event.inputs.prompt)

@@ -1,4 +1,5 @@
 ---
+
 title: Isolate env/home-derived filesystem paths in tests, not just the hashed input
 date: 2026-07-05
 category: best-practices
@@ -7,19 +8,20 @@ problem_type: best_practice
 component: testing_framework
 severity: medium
 applies_when:
-  - code under test derives filesystem write paths from environment variables (XDG_*, HOME, APPDATA) or homedir()
-  - tests randomize the input that gets hashed into a path but leave the base env var unset
-  - leaked state would land in the developer's real home directory
-symptoms:
-  - all tests pass but stray state directories accumulate in the developer's real ~/.local/state
-  - randomized input paths hash into unique real state-dir paths that are never cleaned up
-root_cause: test_isolation
-tags:
-  - test-isolation
-  - xdg-state-home
-  - preload
-  - environment-setup
-  - filesystem
+- code under test derives filesystem write paths from environment variables (XDG_*, HOME, APPDATA) or homedir()
+- tests randomize the input that gets hashed into a path but leave the base env var unset
+- leaked state would land in the developer's real home directory
+  symptoms:
+- all tests pass but stray state directories accumulate in the developer's real ~/.local/state
+- randomized input paths hash into unique real state-dir paths that are never cleaned up
+  root_cause: test_isolation
+  tags:
+- test-isolation
+- xdg-state-home
+- preload
+- environment-setup
+- filesystem
+
 ---
 
 # Isolate env/home-derived filesystem paths in tests, not just the hashed input
@@ -29,11 +31,12 @@ tags:
 space-bus's managed-server tests write discovery, lock, and provisional files. Their location comes from `stateDirFor` in `src/discovery.ts`:
 
 ```ts
-const base = process.env["XDG_STATE_HOME"] ?? join(homedir(), ".local", "state");
+const base =
+  process.env["XDG_STATE_HOME"] ?? join(homedir(), ".local", "state");
 // then: join(base, "space-bus", sha256(rosterPath).slice(0, 16))
 ```
 
-The tests randomized the **roster path** (via `mkdtemp`) so each test hashed a unique value — which *looks* like isolation. But they never set `XDG_STATE_HOME`. So every run that wrote state hashed its unique temp roster into a brand-new directory under the developer's **real** `~/.local/state/space-bus/` and never cleaned it up. **791 stray directories** accumulated across one session's test runs.
+The tests randomized the **roster path** (via `mkdtemp`) so each test hashed a unique value — which _looks_ like isolation. But they never set `XDG_STATE_HOME`. So every run that wrote state hashed its unique temp roster into a brand-new directory under the developer's **real** `~/.local/state/space-bus/` and never cleaned it up. **791 stray directories** accumulated across one session's test runs.
 
 Nothing failed. CI stayed green. It was found only when a human ran `ls ~/.local/state/space-bus | wc -l` during unrelated live validation.
 
@@ -82,7 +85,7 @@ Proof it holds: `ls ~/.local/state/space-bus | wc -l` stays `0` before and after
 
 ## Why This Matters
 
-Leaking is not failing. A test that writes to the wrong directory still asserts correctly and still passes — so green CI and a green local run are both blind to it. The damage accumulates silently in the developer's home and only surfaces via manual inspection or dogfooding, if at all. Per-test input randomization gives a false sense of isolation precisely because the tests *pass*; the leak is in the un-randomized base.
+Leaking is not failing. A test that writes to the wrong directory still asserts correctly and still passes — so green CI and a green local run are both blind to it. The damage accumulates silently in the developer's home and only surfaces via manual inspection or dogfooding, if at all. Per-test input randomization gives a false sense of isolation precisely because the tests _pass_; the leak is in the un-randomized base.
 
 ## When to Apply
 

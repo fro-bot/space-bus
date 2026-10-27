@@ -1,4 +1,5 @@
 ---
+
 title: MCP tools with outputSchema must return structuredContent for every successful action
 date: 2026-07-13
 category: integration-issues
@@ -6,21 +7,22 @@ module: space-bus
 problem_type: integration_issue
 component: tooling
 symptoms:
-  - "successful non-list bus_registry mutations returned MCP error -32602"
-  - "registry or session state changed even though the client saw an error"
-  - "bus_registry list worked while the other actions failed"
-root_cause: missing_validation
-resolution_type: code_fix
-severity: high
-tags:
-  - mcp
-  - output-schema
-  - structured-content
-  - response-contract
-  - bus-registry
-  - sdk-validation
-  - mutation-safety
-  - transport-testing
+- "successful non-list bus_registry mutations returned MCP error -32602"
+- "registry or session state changed even though the client saw an error"
+- "bus_registry list worked while the other actions failed"
+  root_cause: missing_validation
+  resolution_type: code_fix
+  severity: high
+  tags:
+- mcp
+- output-schema
+- structured-content
+- response-contract
+- bus-registry
+- sdk-validation
+- mutation-safety
+- transport-testing
+
 ---
 
 # MCP tools with outputSchema must return structuredContent for every successful action
@@ -70,8 +72,7 @@ return {
 The regression test connects a real SDK `Client` to the production `McpServer` registration through linked in-memory transports:
 
 ```ts
-const [clientTransport, serverTransport] =
-  InMemoryTransport.createLinkedPair();
+const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
 
 await Promise.all([
   client.connect(clientTransport),

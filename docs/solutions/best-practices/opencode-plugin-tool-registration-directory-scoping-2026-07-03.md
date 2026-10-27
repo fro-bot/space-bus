@@ -1,4 +1,5 @@
 ---
+
 title: OpenCode plugin tool registration and directory scoping
 date: 2026-07-03
 category: best-practices
@@ -7,10 +8,11 @@ problem_type: best_practice
 component: tooling
 severity: high
 applies_when:
-  - building or converting an OpenCode plugin that ships custom tools
-  - plugin behavior depends on per-workspace config on a shared serve instance
-  - migrating tools from .opencode/tools/ files to programmatic registration
-tags: [opencode, plugin, tool-registration, directory-scoping, ctx-directory, lazy-loading, harness]
+- building or converting an OpenCode plugin that ships custom tools
+- plugin behavior depends on per-workspace config on a shared serve instance
+- migrating tools from .opencode/tools/ files to programmatic registration
+  tags: [opencode, plugin, tool-registration, directory-scoping, ctx-directory, lazy-loading, harness]
+
 ---
 
 # OpenCode plugin tool registration and directory scoping
@@ -37,7 +39,7 @@ export default SpaceBusPlugin;
 
 **Loading.** The `plugin` config array (singular key) accepts bare absolute file paths (no `file://` prefix) and npm names including `@scope/pkg@version`; npm plugins are auto-installed by Bun at startup. A file-path reference resolves the package's `main` — the built output loads, not `src/`.
 
-**Reserved-subpath hazard (npm-name loads only).** For an npm-name pin, OpenCode resolves the plugin entry as `exports["./server"]` *before* `main` — so `./server` is reserved for the plugin factory. Publishing a library surface there breaks loading with `Plugin export is not a function`, and a **file-path ref won't catch it** (it bypasses exports-map resolution). See the linked integration doc.
+**Reserved-subpath hazard (npm-name loads only).** For an npm-name pin, OpenCode resolves the plugin entry as `exports["./server"]` _before_ `main` — so `./server` is reserved for the plugin factory. Publishing a library surface there breaks loading with `Plugin export is not a function`, and a **file-path ref won't catch it** (it bypasses exports-map resolution). See the linked integration doc.
 
 **Directory scoping.** On a shared server routing per-request via `x-opencode-directory`, each session's plugin instance receives the correct per-request workspace in `input.directory` (factory arg) and `ctx.directory` (per tool call). `process.cwd()` stays pinned to the server's launch directory — never use it. Resolution pattern:
 
