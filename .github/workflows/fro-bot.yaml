@@ -188,13 +188,39 @@ env:
     Use a single "Tasks for Agents" section for any deferred, actionable work
     items — do not split into per-agent subsections.
 
+    REPORT TITLE RULE
+    A daily report title is a whole-title match for
+    `Daily Fro Bot Report — YYYY-MM-DD (UTC)`: the em dash is literal and the
+    date is a real calendar date. Test every candidate title locally against
+    this anchored regex, which must match the entire title:
+    `^Daily Fro Bot Report — [0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01]) \(UTC\)$`
+    Prefix, substring, and fuzzy matching never qualify; for example
+    `Daily Fro Bot Report — rotation bug` is not a report. The only other title
+    rotation may close is exactly `Daily Autohealing Report`, as a whole-title
+    match. A report issue must also be authored by exactly `fro-bot`; no other
+    author qualifies. GitHub search is only a fuzzy pre-filter, so for example
+    `gh issue list --state all --search "Daily Fro Bot Report in:title"
+    --json number,title,author,createdAt` is followed by the local title and
+    author checks. Every selection of report issues below uses this rule.
+
     OUTPUT — ONE PERPETUAL SUMMARY ISSUE
-    Maintain exactly one daily report. Create an issue titled
+    Maintain exactly one daily report. Create an issue titled exactly
     "Daily Fro Bot Report — YYYY-MM-DD (UTC)" for today (use today's UTC date).
-    Before or after creating it, CLOSE every older open issue whose title starts
-    with "Daily Fro Bot Report —" (and any earlier "Daily Autohealing Report"
-    variant), leaving a one-line closing comment that links the newest report.
+    Only after today's issue is created successfully, CLOSE every other open
+    issue authored by
+    exactly `fro-bot` whose title passes the REPORT TITLE RULE or is exactly
+    `Daily Autohealing Report`, leaving a one-line closing comment that links the
+    newest report. Never close any other issue, including one with a similar
+    title that fails the rule, and never read one as a report. A failed create
+    never closes the previous report.
     There must be exactly one open daily report when the run finishes.
+
+    ONE REPORT, ONE BODY
+    The full report lives in the issue body. Never post the report, or a copy of
+    any previous body, as a comment. The only comments on report issues are the
+    one-line closing or superseded comments above. Never write canary or
+    placeholder content to the report issue. Build the complete body in a local
+    file and write it once with `--body-file`.
 
     The issue body MUST use this structure (write "None" for empty sections,
     links only — no full content duplication; write "data unavailable" for
