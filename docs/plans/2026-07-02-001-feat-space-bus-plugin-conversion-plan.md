@@ -1,4 +1,5 @@
 ---
+
 title: 'feat: Convert space-bus into the distributable @fro.bot/space-bus plugin'
 type: feat
 status: completed
@@ -102,16 +103,19 @@ R1–R12 from the origin document, grouped: packaging (R1–R4), roster discover
 **Dependencies:** None
 
 **Files:**
+
 - Create: `src/config.ts`
 - Modify: `src/core.ts`, `src/mcp.ts`, `scripts/smoke.ts`, `.opencode/tools/bus_*.ts` (pass directory through)
 - Test: `src/config.test.ts`
 
 **Approach:**
+
 - `resolveRosterPath(directory?)`: `SPACE_BUS_CONFIG` (expand `~`; reject URLs and bare-relative with an actionable error; canonicalize the resolved path) → `<directory>/spacebus.json` → error naming both options. Exact-path discovery, no upward walk.
 - `getRoster(directory?)`: no caching — read + validate per call (hot roster edits apply immediately); localhost guard and zod parse move here; every exported core function resolves the roster per call — zero module-level roster/project state remains (the current `const manifest = loadManifest()` and derived `projects` are removed, and each of roster/dispatch/status/result/steer takes the directory through its call chain).
 - During transition the repo-root `.opencode/tools/` adapters pass their `ctx.directory`; a `spacebus.json` copy of `workspace.json` lands at repo root until Unit 6 removes both.
 
 **Test scenarios:**
+
 - Happy path: directory with valid `spacebus.json` → parsed roster with expanded `~` paths.
 - Happy path: `SPACE_BUS_CONFIG=~/x/spacebus.json` wins over directory discovery.
 - Error path: missing file → error naming `<dir>/spacebus.json` and the env override.
@@ -130,16 +134,19 @@ R1–R12 from the origin document, grouped: packaging (R1–R4), roster discover
 **Dependencies:** Unit 1
 
 **Files:**
+
 - Create: `src/index.ts`, `src/tools/bus_roster.ts`, `src/tools/bus_task.ts`, `src/tools/bus_status.ts`, `src/tools/bus_result.ts`
 - Test: `src/index.test.ts`
 
 **Approach:**
+
 - Factory captures `input.directory`; each tool's `execute` prefers `ctx.directory`, falls back to the captured directory (probe verified both track the request workspace; never `process.cwd()`).
 - Tool files: same thin adapter shape as today's `.opencode/tools/` (throw on `ok:false`), descriptions byte-identical to the MCP facade.
 
 **Patterns to follow:** copilot-delegate `src/index.ts` central registry; existing adapter bodies.
 
 **Test scenarios:**
+
 - Happy path: factory returns a `tool` map with exactly the four keys; each has description + args + execute.
 - Integration: loading the built package from `fixtures/dev-workspace/` via file-path plugin reference registers working tools (manual/scripted probe, mirrors the /tmp probe).
 
@@ -154,11 +161,13 @@ R1–R12 from the origin document, grouped: packaging (R1–R4), roster discover
 **Dependencies:** Unit 2
 
 **Files:**
+
 - Modify: `package.json`, `tsconfig.json`, `.gitignore`
 - Create: `biome.json`, `.changeset/config.json`, `scripts/build.ts` (or inline package scripts), `scripts/make-fixture.ts` (generates gitignored `fixtures/dev-workspace/`)
 - Test: `Test expectation: none — packaging/config; gated by build output checks below`
 
 **Approach:**
+
 - `name: @fro.bot/space-bus`, `type: module`, `main/types/exports` → `dist/`, `bin: {"space-bus-mcp": "dist/mcp.js"}`, `files: [dist, README.md, LICENSE]`, `publishConfig: {access: public}` (trusted publishing auto-generates provenance — no flag needed).
 - Scripts contract (copilot-delegate): `clean` (rimraf dist), `build` (clean → bun bundle → `tsc --emitDeclarationOnly --noEmit false`), `version-changesets` (`changeset version && bun install --lockfile-only`), `publish-changesets` (`bun run build && changeset publish`), `prepublishOnly` (build). `.changeset/config.json` copied verbatim (access public, baseBranch main).
 - `peerDependencies: {"@opencode-ai/plugin": ">=1.17.13 <2"}`; move today's exact pins to devDependencies; keep `@modelcontextprotocol/sdk` + `zod` as regular dependencies.
@@ -178,10 +187,12 @@ R1–R12 from the origin document, grouped: packaging (R1–R4), roster discover
 **Dependencies:** Unit 3
 
 **Files:**
+
 - Create: `.github/workflows/{ci.yaml,release.yaml,fro-bot.yaml,renovate.yaml,codeql-analysis.yaml,scorecard.yaml,update-repo-settings.yaml}`, `.github/settings.yml`, `.github/renovate.json5`
 - Test: `Test expectation: none — CI config; verified by live runs on push/PR`
 
 **Approach:**
+
 - ci.yaml: one job — name it exactly as settings.yml's required context will reference (copilot-delegate uses `Lint, typecheck, build, unit tests`); steps: checkout → mise/bun setup → install → typecheck → lint → build → ESM export-shape smoke (`node --input-type=module -e "import(...)"`) → unit tests.
 - release.yaml (copilot-delegate contract): triggers `workflow_dispatch` + `workflow_run: {workflows: [CI], branches: [main], types: [completed]}` with a job-level `if` on `workflow_run.conclusion == 'success'` (the branches filter is the fork gate); job permissions `contents: write, id-token: write, pull-requests: write`; App token via `actions/create-github-app-token` feeds changesets/action (`setupGitUser: false`, version/publish = the package scripts above); `actions/setup-node` with `registry-url: https://registry.npmjs.org`; npm ≥ 11.5.1 in the job for OIDC (upgrade step if the runner's is older); no NPM_TOKEN anywhere.
 - fro-bot.yaml: pinned fro-bot/agent SHA; review prompt customized to this package (plugin API contracts, roster/config safety, changeset hygiene) keeping the standard verdict heading structure. renovate.json5 lives at `.github/renovate.json5` extending `github>marcusrbrown/renovate-config`; add a packageRule preventing automerge on `matchManagers: [github-actions]` if the preset doesn't already.
@@ -200,10 +211,12 @@ R1–R12 from the origin document, grouped: packaging (R1–R4), roster discover
 **Dependencies:** Units 1–3 (accurate content)
 
 **Files:**
+
 - Modify: `README.md`, `AGENTS.md`
 - Test: `Test expectation: none — docs`
 
 **Approach:**
+
 - README: opencode.json `{"plugin": ["@fro.bot/space-bus"]}` + `spacebus.json` schema + Claude Desktop bin snippet with `SPACE_BUS_CONFIG`; implementation notes trimmed to what still applies; delegation-policy content moves to the new workspace's AGENTS.md (Unit 6).
 - AGENTS.md: plugin-development guidance (fixture workspace dev loop, build/watch, tool-parity rule, no-cwd rule, stdio discipline), keeping the docs/solutions pointer.
 
@@ -218,11 +231,13 @@ R1–R12 from the origin document, grouped: packaging (R1–R4), roster discover
 **Dependencies:** Units 1–5 shipped; plugin loadable (file-path reference is sufficient — npm publish not required for cutover)
 
 **Files:**
+
 - Create (outside repo, untracked): `~/src/github.com/fro-bot/workspace/{opencode.json,spacebus.json,AGENTS.md}`
 - Delete: `.opencode/tools/bus_*.ts`, root `workspace.json` + transitional `spacebus.json`
 - Test: `Test expectation: none — operational cutover; gated by the AE4 live check`
 
 **Approach:**
+
 - New workspace's opencode.json references the plugin by file path first (`/Users/mrbrown/src/github.com/fro-bot/space-bus`), switching to the npm name after first publish (AE6 completes then).
 - Cutover gate: from the new workspace, roster → task dashboard → status → result round-trip (AE4). Rollback: relaunch from this repo — deletions land only after the gate passes.
 - `scripts/smoke.ts` switches to the fixture roster.
@@ -238,6 +253,7 @@ R1–R12 from the origin document, grouped: packaging (R1–R4), roster discover
 **Dependencies:** Units 4, 6; Marcus's manual bootstrap publish + trusted-publisher config
 
 **Files:**
+
 - Create: `.changeset/*.md` (initial version changeset)
 - Modify: `~/src/github.com/fro-bot/workspace/opencode.json` (file path → npm name)
 - Test: `Test expectation: none — release operations; gated by AE5/AE6 live checks`
@@ -259,14 +275,14 @@ R1–R12 from the origin document, grouped: packaging (R1–R4), roster discover
 
 ## Risks & Dependencies
 
-| Risk | Mitigation |
-|------|------------|
-| Eager-load regression sneaks back (import-time I/O) | Unit 1 test asserts import performs no filesystem reads |
-| Published ESM fails to load in harness (1.17.x extension footgun) | Bundled build; AE6 exercises the real npm install path before the cutover is called done |
-| Tool double-registration during transition | Fixture-only dev loop; deletions gated on AE4 |
-| Trusted publishing misconfigured on first release | AE5 is a gate; failure mode is a failed CI publish, not a broken package |
-| settings.yml reusable workflow needs App secrets | Named as manual prerequisite in the conversion PR checklist |
-| Control board offline / npm registry down at startup | File-path plugin reference documented as the permanent offline fallback; version pinning as the bad-release escape |
+| Risk                                                              | Mitigation                                                                                                         |
+| ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| Eager-load regression sneaks back (import-time I/O)               | Unit 1 test asserts import performs no filesystem reads                                                            |
+| Published ESM fails to load in harness (1.17.x extension footgun) | Bundled build; AE6 exercises the real npm install path before the cutover is called done                           |
+| Tool double-registration during transition                        | Fixture-only dev loop; deletions gated on AE4                                                                      |
+| Trusted publishing misconfigured on first release                 | AE5 is a gate; failure mode is a failed CI publish, not a broken package                                           |
+| settings.yml reusable workflow needs App secrets                  | Named as manual prerequisite in the conversion PR checklist                                                        |
+| Control board offline / npm registry down at startup              | File-path plugin reference documented as the permanent offline fallback; version pinning as the bad-release escape |
 
 ## Documentation / Operational Notes
 

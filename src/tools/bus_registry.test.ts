@@ -547,16 +547,19 @@ describe("bus_registry: strict per-action schemas reject foreign fields (Fix 3)"
       },
       "server",
     ],
-  ] as const)("%s rejects a foreign field naming it", async (_action, args, foreignField) => {
-    const busRegistry = makeBusRegistry();
-    await expect(
-      busRegistry.execute(
-        args,
-        // biome-ignore lint: minimal stub
-        {} as any,
-      ),
-    ).rejects.toThrow(new RegExp(foreignField));
-  });
+  ] as const)(
+    "%s rejects a foreign field naming it",
+    async (_action, args, foreignField) => {
+      const busRegistry = makeBusRegistry();
+      await expect(
+        busRegistry.execute(
+          args,
+          // biome-ignore lint: minimal stub
+          {} as any,
+        ),
+      ).rejects.toThrow(new RegExp(foreignField));
+    },
+  );
 });
 
 describe("bus_registry: per-action invalid-payload errors name the action", () => {
