@@ -5,7 +5,6 @@
 ### Minor Changes
 
 - fe0cc42: `@fro.bot/space-bus/core` gains a browser-safe message-correlation primitive for dispatched prompts, plus typed partial-failure handles for dispatch:
-
   - `createDispatchMessageId()` — generates an OpenCode-compatible ascending user message id (`msg_` + a 12-character lowercase-hex timestamp/counter prefix + 14 random base62 characters), using only `Date.now()` and Web Crypto's `crypto.getRandomValues` — no Node builtins, no dependency. IDs generated in the same millisecond sort ascending by an internal per-millisecond counter, matching OpenCode's own id ordering.
   - `dispatch()`/`toDispatchArgs()` accept an optional `messageId` on `DispatchArgs`. `toDispatchArgs` validates a caller-supplied id against the exact `msg_` + 12-hex + 14-alphanumeric shape and rejects anything else — including oversized or injection-like input — with a single stable, generic `Result` error that never echoes the rejected value. `dispatch()` re-validates independently as defense in depth for callers that construct `DispatchArgs` directly.
   - When `messageId` is supplied, `new` and `follow-up` dispatch modes include it as the OpenCode `messageID` field alongside the prompt's `parts` and echo it back as `messageId` on the result. The key is omitted entirely — not sent as `null` — whenever no `messageId` is given, and `blocked`/`question-reply` results never carry a `messageId` since no ordinary prompt message is sent on those branches.
@@ -19,7 +18,6 @@
 ### Minor Changes
 
 - 8802338: Add browser-safe session-content primitives to `@fro.bot/space-bus/core` so consumers (e.g. Mothership's `ide_*` MCP surface) don't need to duplicate OpenCode message/question HTTP behavior:
-
   - `messages(sessionId, { context, limit? })` — bounded full-message read. Resolves session ownership from the roster (never a caller-supplied directory) and returns `{ sessionId, project, messages: [{ id?, role, createdAt?, parts }] }` — stable message identity/ordering metadata plus parsed parts, no unknown envelope fields. `limit` defaults to 20 and is capped at a hard maximum of 200; `0`, negative, fractional, `NaN`, and `Infinity` values are rejected before any fetch.
   - `questions(target, { context })` — complete project- or session-scoped pending-question read (`target: { project } | { sessionId }`, exactly one — both-present or neither-present is rejected before any fetch). Returns one entry per pending request with its **full nested subquestion list** (`requestId`, `sessionId`, `questions: [{ header?, question, multiple, custom, options: [{ label, description? }] }]`) — a single request can carry more than one subquestion, and every subquestion's header/question/multiple/custom/options round-trips.
   - `answerQuestion({ sessionId, requestId, answers }, { context })` — explicit question answer. Runtime-validates `answers` is a non-empty `string[][]` before any fetch, verifies `requestId` belongs to a pending question on `sessionId` (a `requestId` for a different session is refused with no mutation), and verifies `answers.length` matches that request's subquestion count before sending (mismatched cardinality is refused with no mutation).
@@ -52,7 +50,6 @@
 ### Minor Changes
 
 - 9897976: Multi-roster substrate: roster registry + mutation library on a new `/registry` subpath.
-
   - **Roster registry** — a per-user, machine-level registry (`$XDG_CONFIG_HOME/space-bus/rosters.json`, else `~/.config/space-bus/rosters.json`) mapping human-readable names to roster paths: `readRegistry`, `registerRoster`, `unregisterRoster`, `setDefaultRoster`, `resolveRosterByName`. Names are validated (`[a-z0-9-]`, case-insensitive-unique), paths are canonicalized with symlinked entries rejected, and the registry never stores credentials. The registry is additive and optional — `SPACE_BUS_CONFIG` and `<directory>/spacebus.json` resolution are unchanged.
   - **Roster mutation** — programmatic `spacebus.json` editing: `createRoster` (write + register in one op), `addProject`, `removeProject`, `updateProject`, `editServer`. Every edit is read-validate-mutate-validate-write with atomic replacement; an invalid edit (schema violation or non-loopback `baseUrl`) leaves the file byte-identical and returns `ok:false`.
   - **Discovery `rosterPath`** — managed-daemon discovery files now record their roster path at spawn (optional field; pre-field files parse unchanged), enabling future reconciliation to name which roster a running daemon belongs to.
@@ -84,7 +81,6 @@
 ### Minor Changes
 
 - 6e57bff: Add asynchronous-delegation foundation: a normalized session-state enum and the `bus_wait` tool.
-
   - **Normalized state enum** (`running | blocked | complete | failed | not_found`) plus a `resultAvailable` signal, derived once in core (`deriveSessionState`) and emitted identically by `bus_status`, the library `snapshot()`, and `bus_wait` — callers no longer infer state from `busy`/`blocked`. Exported on the `/core` and `/contract` subpaths (`SessionState`, `SessionStateInfo`).
   - **`bus_wait`** (fifth tool, both plugin and MCP surfaces): blocks until any watched session needs attention (completes, blocks on a question, fails, or is not found) or a bounded timeout elapses, then returns each session's normalized state plus which session(s) woke the wait. Level-triggered, stateless (a bounded long-poll within the single call), watches sessions across directories, and never throws across the boundary. Replaces the poll-`bus_status`-in-a-loop pattern with one call that makes progress.
 
