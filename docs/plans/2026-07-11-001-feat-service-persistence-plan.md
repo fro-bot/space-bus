@@ -1,4 +1,5 @@
 ---
+
 title: "feat: space-bus service — reboot-persistent managed daemon (launchd v1)"
 type: feat
 status: active
@@ -84,10 +85,12 @@ Per origin: no systemd in v1 (seam only), no auto-install, no Windows, no alerti
 **Dependencies:** none
 
 **Files:**
+
 - Create: `src/launchd.ts`
 - Test: `src/launchd.test.ts`
 
 **Approach:**
+
 - `serviceLabel(rosterPath)` / `plistPath(label)` — label from `stateDirFor`'s hash-prefix keying; plist under `~/Library/LaunchAgents/<label>.plist`.
 - `renderPlist({runtime, cliEntry, rosterPath, stateDir})` — returns the XML string: Label, ProgramArguments, KeepAlive dict, RunAtLoad, ThrottleInterval 10, EnvironmentVariables, StandardOut/ErrorPath into the state dir. XML-escape all interpolated paths.
 - `writePlistAtomic(path, content)` — temp+rename, 0600→0644 owner-only (launchd requires readable; must not be group/world-writable), mirror `writeDiscovery`.
@@ -95,6 +98,7 @@ Per origin: no systemd in v1 (seam only), no auto-install, no Windows, no alerti
 - `launchctl(args, exec)` — exec seam returning `{code, stdout, stderr}`; helpers `bootstrap`/`bootout`/`kickstart`/`printJob` built on it. `printJob` returns `{loaded, pid?}` from exit code + permissive `pid = (\d+)` match.
 
 **Test scenarios:**
+
 - Happy path: rendered plist contains pinned absolute ProgramArguments, KeepAlive SuccessfulExit=false, RunAtLoad, throttle, SPACE_BUS_CONFIG, log paths; label derivation stable per roster and distinct across rosters.
 - Edge case: paths with spaces/ampersands XML-escaped; two rosters → distinct labels/plists (AE5 seed).
 - Error path: `verifyPlistSafe` rejects group/world-writable and foreign-owner plists; `printJob` on non-zero exit → `{loaded:false}`; unparsable print output → `{loaded:true, pid:undefined}`.
@@ -111,10 +115,12 @@ Per origin: no systemd in v1 (seam only), no auto-install, no Windows, no alerti
 **Dependencies:** Unit 1
 
 **Files:**
+
 - Create: `src/service.ts`
 - Test: `src/service.test.ts`
 
 **Approach:**
+
 - `installService(rosterPath, seams)`: platform gate → resolve runtime+entry (warn on ephemeral-cache path) → ensure state dir + pre-create 0600 logs → bootout existing job if loaded (R9) → write plist atomically → verifyPlistSafe → bootstrap → kickstart → verify via printJob + `serverStatus` (bounded wait) → `{ok:true, ...}` or `{ok:false, error}` with the launchctl stderr surfaced (R14). Never report success on partial install.
 - `uninstallService`: bootout (tolerate not-loaded) → remove plist → report what was removed (R13; state dir untouched beyond service artifacts).
 - `serviceStatus`: `{installed, loaded, running, pid?, label, plistPath}` — three independent probes (R3).
@@ -122,6 +128,7 @@ Per origin: no systemd in v1 (seam only), no auto-install, no Windows, no alerti
 - All functions return unions, never throw across the boundary (repo invariant); seams injectable for tests (exec, fs, platform, execPath) following `RunServeDeps`.
 
 **Test scenarios:**
+
 - Happy path (seam-injected): install sequences bootout?→write→verify→bootstrap→kickstart and reports ok; status maps the three probes into distinct fields; stop issues bootout only and leaves plist; start re-bootstraps.
 - Edge case: install on already-installed roster boots out first, exactly one plist after (AE6/R9); uninstall when not loaded still removes plist and succeeds; status with plist absent → all-false without probing launchctl errors as failures.
 - Error path: bootstrap non-zero → `{ok:false}` with stderr in message, no success report, plist state reported honestly (AE7/R14); non-darwin platform → fail-fast "not supported on this platform (v1 supports macOS/launchd)" for every verb (AE8/R16); tampered plist (verifyPlistSafe fail) → refuse+rewrite path exercised.
@@ -138,12 +145,14 @@ Per origin: no systemd in v1 (seam only), no auto-install, no Windows, no alerti
 **Dependencies:** Unit 2
 
 **Files:**
+
 - Modify: `src/cli.ts`
 - Test: `src/cli.test.ts` (extend)
 
 **Approach:** `main` dispatches `service` → sub-verb; reuse `parseArgs`/`resolveRoster`/`printJson`; plain output mirrors existing verbs' concise style; non-zero exit on `{ok:false}`. USAGE block gains the service verbs.
 
 **Test scenarios:**
+
 - Happy path: each verb routes to its `service.ts` function with resolved roster; `--json` emits stable field names (R5).
 - Edge case: unknown sub-verb → usage + non-zero; missing verb → usage.
 - Error path: `{ok:false}` from service layer → message on stderr + exit 1.
@@ -159,6 +168,7 @@ Per origin: no systemd in v1 (seam only), no auto-install, no Windows, no alerti
 **Dependencies:** Units 1–3
 
 **Files:**
+
 - Modify: `src/browser-safety.test.ts` (assert `launchd.ts`/`service.ts` unreachable from browser-safe bundles)
 - Modify: `README.md` (service section: verbs, launchd behavior, login-not-boot note, logs location, upgrade = reinstall)
 - Modify: `AGENTS.md` (structure map: launchd.ts/service.ts in the Node-only lane)
@@ -179,12 +189,12 @@ Per origin: no systemd in v1 (seam only), no auto-install, no Windows, no alerti
 
 ## Risks & Dependencies
 
-| Risk | Mitigation |
-|------|------------|
-| Pinned runtime path breaks after runtime upgrade/move (bun relocated) | Documented upgrade story: re-run `service install` (idempotent); `status` exposes running=false so the failure is visible; install warns when pinning ephemeral cache paths |
-| `launchctl` output/behavior drift across macOS versions | Logic keys off exit codes only; `pid =` parse is permissive and non-fatal; deferred-to-implementation note pins AE6 live check |
-| Live AE testing perturbs the operator board | Run AEs against a throwaway roster + isolated XDG_STATE_HOME first (test-isolation lesson); the workspace roster install is the final dogfood step, gated on the throwaway pass |
-| launchd restarts a failing daemon into a crash loop writing logs | Default 10s throttle + fail-closed supervisor exit; logs live in the bounded state dir |
+| Risk                                                                  | Mitigation                                                                                                                                                                      |
+| --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Pinned runtime path breaks after runtime upgrade/move (bun relocated) | Documented upgrade story: re-run `service install` (idempotent); `status` exposes running=false so the failure is visible; install warns when pinning ephemeral cache paths     |
+| `launchctl` output/behavior drift across macOS versions               | Logic keys off exit codes only; `pid =` parse is permissive and non-fatal; deferred-to-implementation note pins AE6 live check                                                  |
+| Live AE testing perturbs the operator board                           | Run AEs against a throwaway roster + isolated XDG_STATE_HOME first (test-isolation lesson); the workspace roster install is the final dogfood step, gated on the throwaway pass |
+| launchd restarts a failing daemon into a crash loop writing logs      | Default 10s throttle + fail-closed supervisor exit; logs live in the bounded state dir                                                                                          |
 
 ## Sources & References
 

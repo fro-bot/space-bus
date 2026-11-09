@@ -1,4 +1,5 @@
 ---
+
 title: 'feat: managed bus server — lifecycle in the plugin'
 type: feat
 status: active
@@ -132,12 +133,12 @@ Origin doc R1–R13 (incl. R2 lock bound, R4b pid identity, R5b config drift, R5
 
 ## Risks & Dependencies
 
-| Risk | Mitigation |
-|------|------------|
-| Detached-spawn/unref quirks under Bun | Unit 2's opening spike gates the approach; Bun.spawn fallback ready |
+| Risk                                                 | Mitigation                                                                                                                                                          |
+| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Detached-spawn/unref quirks under Bun                | Unit 2's opening spike gates the approach; Bun.spawn fallback ready                                                                                                 |
 | Stub-vs-real-harness fidelity (auth timing, signals) | Live validation step: after release, flip the operator workspace roster to `managed` and run the full delegation loop against real harness before calling it stable |
-| Discovery/lock edge cases on shared filesystems | Out of scope (local state dir only, documented) |
-| Operator workspace migration | Separate step after release: flip workspace roster to `managed`, delete manual-start habit |
+| Discovery/lock edge cases on shared filesystems      | Out of scope (local state dir only, documented)                                                                                                                     |
+| Operator workspace migration                         | Separate step after release: flip workspace roster to `managed`, delete manual-start habit                                                                          |
 
 ## Sources & References
 

@@ -1,4 +1,5 @@
 ---
+
 date: 2026-07-02
 topic: space-bus-plugin-conversion
 ---
@@ -29,21 +30,25 @@ The MVP works, but only inside this repo: tools load from `.opencode/tools/`, an
 ## Requirements
 
 **Packaging**
+
 - R1. The package publishes as `@fro.bot/space-bus`: ESM-only `dist/` (built JS + `.d.ts`), `@opencode-ai/plugin` as a peerDependency (loose range) with an exact dev-pin, `publishConfig` with public access and provenance.
 - R2. The plugin entry default-exports a Plugin factory returning the four tools via the `tool` map (`bus_roster`, `bus_task`, `bus_status`, `bus_result`) — names unchanged, logic unchanged (packaging move, not a rewrite).
 - R3. `.opencode/tools/` is deleted at conversion; plugin registration is the only tool source (no double-registration path).
 - R4. The MCP facade ships in the package (bin or export path) so Claude Desktop config points at the installed package, not a repo checkout. It remains stdio-only — no network listener — and applies the same roster validation as the plugin.
 
 **Roster discovery**
+
 - R5. The plugin resolves its roster from `spacebus.json` in the consuming workspace, replacing repo-relative `workspace.json` resolution. Planning must pin the exact directory source (plugin-load input vs per-call tool context) and prove it resolves the loading workspace's roster — not a delegated target's — under the multiplexed server.
 - R6. The `SPACE_BUS_CONFIG` env var overrides the roster path (primary consumer: the MCP facade, which has no workspace directory). The override accepts a local file path only — URLs are rejected; the file's contents pass the same validation as any roster (localhost guard included).
 - R7. A missing or invalid `spacebus.json` produces an immediate actionable error naming the expected path — same fail-fast contract as today, localhost guard included.
 
 **Migration**
+
 - R8. The live control board moves to a new untracked sibling dir (`~/src/github.com/fro-bot/workspace`): `spacebus.json`, the delegation-policy `AGENTS.md`, and an `opencode.json` loading the plugin. The cutover is reversible: `.opencode/tools/` and `workspace.json` stay in this repo until the new workspace passes a live smoke check (AE4), and rolling back is reverting to launching from this repo.
 - R9. This repo sheds its machine-local details: `workspace.json` and the control-board portions of `AGENTS.md` move to the new workspace; the repo's `AGENTS.md` reorients to plugin development.
 
 **Repo posture / CI**
+
 - R10. Release automation is Changesets with npm trusted publishing (OIDC, `id-token: write`, no NPM_TOKEN), following `opencode-copilot-delegate`'s release workflow.
 - R11. Lint/format is Biome, following the plugin-repo template.
 - R12. Workflow set: ci, release, fro-bot (review + maintenance), renovate, codeql, scorecard, update-repo-settings — actions SHA-pinned, branch protection via `settings.yml` with required checks matching the CI job names. The full set on day one is a deliberate org-standardization decision (every fro-bot repo carries it), not per-package cost-benefit.
