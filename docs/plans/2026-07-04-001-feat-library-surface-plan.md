@@ -1,4 +1,5 @@
 ---
+
 title: 'feat: publish the space-bus library surface (subpath exports)'
 type: feat
 status: active
@@ -81,6 +82,7 @@ R1–R9 from the origin doc: export surface (R1–R2), browser-safe core with bo
 **Dependencies:** None
 
 **Files:**
+
 - Create: `src/contract.ts`
 - Modify: `src/core.ts` (import schemas from contract)
 - Test: `src/contract.test.ts`
@@ -88,6 +90,7 @@ R1–R9 from the origin doc: export surface (R1–R2), browser-safe core with bo
 **Approach:** Mechanical move of the 19 schemas + type exports; keep names; add `@experimental` JSDoc at module head. No behavior change.
 
 **Test scenarios:**
+
 - Happy path: representative fixtures (session, status map, turn message with diffs, question entry, vcs status) parse to the expected shapes.
 - Edge: unknown extra fields pass through (passthrough posture preserved).
 - Integration: `bun test` whole suite green (core still parses identically).
@@ -103,10 +106,12 @@ R1–R9 from the origin doc: export surface (R1–R2), browser-safe core with bo
 **Dependencies:** Unit 1
 
 **Files:**
+
 - Modify: `src/core.ts`, `src/config.ts` (context loader, `exists` flag, credential supply), `src/tools/bus_*.ts`, `src/mcp.ts`, `src/index.ts`, `scripts/smoke.ts`
 - Test: `src/core.test.ts` (adapt harness), `src/config.test.ts` (context loader), new boundary cases
 
 **Approach:**
+
 - `/config` exports the Node-side context loader (directory → context: roster with `exists`-flagged projects + env credentials).
 - Core validates at the single entry gate per exported call (zod parse copies the input; localhost guard travels); `existsSync` call sites switch to the `exists` flag; `authHeader` derives from context credentials.
 - Adapters/MCP/plugin factory swap `{directory}` plumbing for load-context-then-call — preserving the pinned fail-fast ordering: argument-shape validation (toDispatchArgs) runs BEFORE context loading, exactly as `index.test.ts` asserts today; that pin must stay green unmodified.
@@ -115,6 +120,7 @@ R1–R9 from the origin doc: export surface (R1–R2), browser-safe core with bo
 **Execution note:** adapt the existing mocked-fetch harness first — it pins the semantics this unit must not move.
 
 **Test scenarios:**
+
 - Happy path: context loaded from a temp roster produces identical results to today's suite expectations (existing 60 tests keep passing, adjusted only for signatures).
 - Error path: consumer-crafted context with non-localhost baseUrl → `ok:false` citing the localhost rule, no fetch attempted (AE2b).
 - Error path: malformed roster object (missing projects, wrong types) → `ok:false`, nothing throws.
@@ -135,10 +141,12 @@ R1–R9 from the origin doc: export surface (R1–R2), browser-safe core with bo
 **Dependencies:** Unit 2
 
 **Files:**
+
 - Modify: `src/core.ts` (or `src/snapshot.ts` re-exported from core if size warrants)
 - Test: `src/core.test.ts` (snapshot describe block)
 
 **Test scenarios:**
+
 - Happy path: multi-project roster → all projects present with status + questions merged.
 - Error path: one project's status fetch fails → per-project error entry (message only), other projects intact, call resolves ok.
 - Edge: project with `exists: false` → reported as such, not fetched.
@@ -155,6 +163,7 @@ R1–R9 from the origin doc: export surface (R1–R2), browser-safe core with bo
 **Dependencies:** Units 1–3
 
 **Files:**
+
 - Modify: `package.json` (exports map with per-subpath types), `build.ts` (entrypoints), `tsconfig.build.json` (verify coverage)
 - Create: `src/browser-safety.test.ts`
 - Test: `src/version-injection.test.ts` (extend for new dist files if needed)
@@ -162,6 +171,7 @@ R1–R9 from the origin doc: export surface (R1–R2), browser-safe core with bo
 **Approach:** Add the four entrypoints to Bun.build; exports map entries with `types` per subpath; browser-safety test bundles core/contract/format with `--target browser` (or Bun.build target browser) and asserts success with Node builtins forbidden.
 
 **Test scenarios:**
+
 - Happy path: build emits dist/{core,config,contract,format}.js + .d.ts; pack dry-run includes them; root import shape unchanged.
 - Error path (the guard): introducing a `node:fs` import into core/contract/format makes the browser-safety test fail (verify once by temporary mutation during development, not committed).
 
@@ -176,6 +186,7 @@ R1–R9 from the origin doc: export surface (R1–R2), browser-safe core with bo
 **Dependencies:** Units 1–4
 
 **Files:**
+
 - Modify: `README.md`, `AGENTS.md`
 - Create: `.changeset/library-surface.md` (minor)
 - Test: `Test expectation: none — docs; gated by the accuracy cross-checks below`
@@ -192,12 +203,12 @@ R1–R9 from the origin doc: export surface (R1–R2), browser-safe core with bo
 
 ## Risks & Dependencies
 
-| Risk | Mitigation |
-|------|------------|
-| Signature churn breaks a consumer path silently | Existing 60-test suite + smoke pin every adapter path; parity tests pin descriptions/args |
-| Browser-safety regresses after v1 | CI bundle-probe test fails on any Node-builtin import in public browser modules |
-| Contract schemas drift from upstream API | Already true today (internal); publishing changes visibility, not risk; experimental label + pin guidance |
-| Exports map/type resolution quirks in consumer bundlers | Per-subpath `types` fields; AE1-style Vite probe can be added on Mothership's side |
+| Risk                                                    | Mitigation                                                                                                |
+| ------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| Signature churn breaks a consumer path silently         | Existing 60-test suite + smoke pin every adapter path; parity tests pin descriptions/args                 |
+| Browser-safety regresses after v1                       | CI bundle-probe test fails on any Node-builtin import in public browser modules                           |
+| Contract schemas drift from upstream API                | Already true today (internal); publishing changes visibility, not risk; experimental label + pin guidance |
+| Exports map/type resolution quirks in consumer bundlers | Per-subpath `types` fields; AE1-style Vite probe can be added on Mothership's side                        |
 
 ## Documentation / Operational Notes
 

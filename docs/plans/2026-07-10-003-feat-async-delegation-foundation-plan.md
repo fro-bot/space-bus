@@ -1,4 +1,5 @@
 ---
+
 title: "feat: Async-delegation foundation — normalized state enum + bus_wait"
 type: feat
 status: active
@@ -85,13 +86,13 @@ A control agent that delegates via `bus_task` today calls `bus_status` in parall
 ### Deferred to Implementation
 
 - Exact poll interval and default/max `timeoutMs` — tune against the live harness and any MCP-facade call ceiling; the requirement is "bounded, below the facade ceiling," not a specific number.
-- Concrete member spelling (`failed` vs `error`, `not_found` vs `unknown`) — settle at implementation; the state *set* is fixed.
+- Concrete member spelling (`failed` vs `error`, `not_found` vs `unknown`) — settle at implementation; the state _set_ is fixed.
 - Exact concurrent-wait cap (R9) and whether it's per-call fan-out only or a global guard — settle when wiring; that a bound exists is required.
 - Whether `bus_status` adopts the new state object shape additively (keeps current fields, adds `state`) or restructures — verify against `formatStatus` and existing tests to avoid a breaking output change.
 
 ## High-Level Technical Design
 
-> *This illustrates the intended approach and is directional guidance for review, not implementation specification. Treat it as context, not code to reproduce.*
+> _This illustrates the intended approach and is directional guidance for review, not implementation specification. Treat it as context, not code to reproduce._
 
 ```
 bus_wait(sessionIds[], timeoutMs)
@@ -121,11 +122,13 @@ deriveSessionState(statusEntry, pendingQuestion, resolved) -> "running"|"blocked
 **Dependencies:** None
 
 **Files:**
+
 - Modify: `src/contract.ts` (add the state enum + per-session state object schema, browser-safe)
 - Modify: `src/core.ts` (add `deriveSessionState`; have `status()` populate the normalized state from it)
 - Test: `src/contract.test.ts`, `src/core.test.ts`
 
 **Approach:**
+
 - Add a zod enum `sessionStateSchema` (`running | blocked | complete | failed | not_found`) and a `sessionStateInfoSchema` (`{ sessionId, project, state, resultAvailable, pendingQuestion? }`) to `contract.ts`.
 - Add `deriveSessionState(statusEntry, pendingQuestion, resolved)` to `core.ts`: `not_found` when unresolved; `blocked` when a pending question exists; `complete` when not busy and resolved; `running` when busy; `failed` for a server-reported errored/aborted session. Encode the precedence explicitly.
 - Have `status()` emit the normalized `state` additively (keep existing fields to avoid a breaking change; add `state`).
@@ -133,9 +136,11 @@ deriveSessionState(statusEntry, pendingQuestion, resolved) -> "running"|"blocked
 **Execution note:** Test-first — pin the derivation precedence (blocked-vs-complete-vs-running-vs-failed) before wiring emitters.
 
 **Patterns to follow:**
+
 - `src/core.ts` `status` busy/pendingQuestion computation; `src/contract.ts` existing zod `looseObject`/enum exports.
 
 **Test scenarios:**
+
 - Happy path: busy entry → `running`; not-busy resolved → `complete` with `resultAvailable:true`; pending question present → `blocked` with the question; unresolved id → `not_found`; server-errored session → `failed`.
 - Edge: busy AND a pending question → `blocked` wins (precedence); not-busy but a pending question still open → `blocked` wins over `complete`.
 - Edge: the enum + state object parse/round-trip through the contract schema (browser-safe, zod-only).
@@ -152,15 +157,18 @@ deriveSessionState(statusEntry, pendingQuestion, resolved) -> "running"|"blocked
 **Dependencies:** Unit 1
 
 **Files:**
+
 - Modify: `src/core.ts` (`fetchSnapshotProject` / `snapshot` include per-session `state`)
 - Test: `src/core.test.ts`
 
 **Approach:**
+
 - Where `snapshot()` already surfaces per-session busy/pending info, add the normalized `state` from `deriveSessionState` so it reads identically to `status()` and `bus_wait`.
 
 **Patterns to follow:** `src/core.ts` `snapshot` / `fetchSnapshotProject`, `mapWithConcurrency`.
 
 **Test scenarios:**
+
 - Happy path: a snapshot over projects with busy / idle / blocked sessions reports the matching `state` per session.
 - Integration: the `state` a session reports via `snapshot()` equals what `status()` reports for the same session (parity of the shared derivation).
 
@@ -175,10 +183,12 @@ deriveSessionState(statusEntry, pendingQuestion, resolved) -> "running"|"blocked
 **Dependencies:** Unit 1
 
 **Files:**
+
 - Modify: `src/core.ts` (add `wait(sessionIds, opts)` returning a discriminated-union `Result`)
 - Test: `src/core.test.ts`
 
 **Approach:**
+
 - Resolve each session's directory (`findSessionDirectory`); unresolved → `not_found` state, kept in the result, not thrown.
 - Group resolved sessions by directory; poll each group's `/session/status` (+ `/question`) with bounded concurrency, mapping each session through `deriveSessionState`.
 - Loop with an owned deadline (`timeoutMs`) and a bounded poll interval; break as soon as any watched session is in `complete|blocked|failed|not_found`. Level-triggered: the first poll already wakes on an at-entry needs-attention session.
@@ -191,6 +201,7 @@ deriveSessionState(statusEntry, pendingQuestion, resolved) -> "running"|"blocked
 **Patterns to follow:** `src/core.ts` `status`, `findSessionDirectory`, `mapWithConcurrency`, `validateContext`; the never-throw `Result` union used throughout core.
 
 **Test scenarios:**
+
 - Happy path: three sessions, one already `complete` at entry → returns immediately, waker = [that id], all three states present.
 - Level-triggered: a session already `blocked` at entry → immediate return (no waiting for a transition).
 - Transition: all `running` at entry, one flips to `complete`/`blocked` mid-wait (stub timer) → wakes before timeout with that session as waker.
@@ -211,12 +222,14 @@ deriveSessionState(statusEntry, pendingQuestion, resolved) -> "running"|"blocked
 **Dependencies:** Unit 3
 
 **Files:**
+
 - Create: `src/tools/bus_wait.ts` (`makeBusWait` + `BUS_WAIT_DESCRIPTION`)
 - Modify: `src/index.ts` (register `bus_wait` in the tool map), `src/mcp.ts` (register the fifth MCP tool from the same factory/description), `src/format.ts` (`formatWait`)
 - Test: `src/tools/*.test.ts` (or the existing tool/MCP parity test), `src/format.test.ts`, `src/mcp` parity test
 - Modify: `README.md`, `AGENTS.md` (tool count 4→5, `bus_wait` description)
 
 **Approach:**
+
 - Mirror `makeBusStatus`: accept `sessionIds` (array) + optional `timeoutMs`, call `wait()`, throw on `ok:false` (plugin) / `isError` (MCP), format the snapshot via `formatWait`.
 - Register in `src/index.ts` and `src/mcp.ts` from the same `BUS_WAIT_DESCRIPTION` + core call so descriptions/output stay byte-identical (the two-surface-parity invariant).
 - `formatWait` renders the per-session normalized state + waker(s) + timedOut, reading the enum identically to `formatStatus`.
@@ -224,6 +237,7 @@ deriveSessionState(statusEntry, pendingQuestion, resolved) -> "running"|"blocked
 **Patterns to follow:** `src/tools/bus_status.ts` (`makeBusStatus`), `src/mcp.ts` existing registrations, `src/format.ts` `formatStatus`.
 
 **Test scenarios:**
+
 - Happy path: `bus_wait` tool returns a formatted snapshot with per-session state and waker.
 - Parity: the plugin tool and MCP registration produce byte-identical description + output for the same input (extend the existing parity test).
 - Error path: `wait()` returns `ok:false` → plugin tool throws, MCP returns `isError` (no raw context leak).
@@ -240,6 +254,7 @@ deriveSessionState(statusEntry, pendingQuestion, resolved) -> "running"|"blocked
 **Dependencies:** Unit 4
 
 **Files:**
+
 - Create: `.changeset/async-delegation-foundation.md` (minor — new tool + new exported contract)
 - Modify: `README.md`, `AGENTS.md` (if not fully covered in Unit 4)
 
@@ -259,14 +274,14 @@ deriveSessionState(statusEntry, pendingQuestion, resolved) -> "running"|"blocked
 
 ## Risks & Dependencies
 
-| Risk | Mitigation |
-|------|------------|
-| Long-poll adds latency vs event-driven SSE | Bounded poll interval tuned against live harness; SSE deferred as an optimization if latency proves inadequate. Level-triggering means an already-done session returns on the first poll. |
-| A long `bus_wait` exceeds an MCP-facade call timeout (Claude Desktop) | Default `timeoutMs` capped below the facade ceiling (verified at implementation); timeout returns a snapshot, not an error, so a re-wait is cheap. |
-| `deriveSessionState` precedence wrong (e.g. blocked vs complete) | Precedence pinned test-first in Unit 1 before any emitter wires to it. |
-| Enum change breaks `bus_status` output for existing callers | `state` added additively; existing fields unchanged; verified against `formatStatus` + existing tests. |
-| Unbounded concurrent waits pin resources | Per-call fan-out concurrency bound + a wait cap (R9); each poll keeps `api`'s 30s per-request abort. |
-| New long-lived-ish poll path bypasses loopback guard | R10 re-validates the resolved endpoint against the loopback guard before each request; fail closed. |
+| Risk                                                                  | Mitigation                                                                                                                                                                                |
+| --------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Long-poll adds latency vs event-driven SSE                            | Bounded poll interval tuned against live harness; SSE deferred as an optimization if latency proves inadequate. Level-triggering means an already-done session returns on the first poll. |
+| A long `bus_wait` exceeds an MCP-facade call timeout (Claude Desktop) | Default `timeoutMs` capped below the facade ceiling (verified at implementation); timeout returns a snapshot, not an error, so a re-wait is cheap.                                        |
+| `deriveSessionState` precedence wrong (e.g. blocked vs complete)      | Precedence pinned test-first in Unit 1 before any emitter wires to it.                                                                                                                    |
+| Enum change breaks `bus_status` output for existing callers           | `state` added additively; existing fields unchanged; verified against `formatStatus` + existing tests.                                                                                    |
+| Unbounded concurrent waits pin resources                              | Per-call fan-out concurrency bound + a wait cap (R9); each poll keeps `api`'s 30s per-request abort.                                                                                      |
+| New long-lived-ish poll path bypasses loopback guard                  | R10 re-validates the resolved endpoint against the loopback guard before each request; fail closed.                                                                                       |
 
 ## Documentation / Operational Notes
 

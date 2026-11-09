@@ -28,33 +28,33 @@ The Fro Bot visual identity blends bold streetwear confidence with futuristic ro
 
 These five colors define the Fro Bot identity. They map directly to the avatar's visual elements — the afro, the faceplate, the jacket, and the void of space.
 
-| Token | Name | Hex | Swatch | Usage |
-| --- | --- | --- | --- | --- |
-| `--frobot-void` | Void | `#0D0216` | ![#0D0216](https://placehold.co/80x28/0D0216/FFFFFF?text=%230D0216) | Deepest background, shadows |
-| `--frobot-purple` | Deep Purple | `#1A0B2E` | ![#1A0B2E](https://placehold.co/80x28/1A0B2E/FFFFFF?text=%231A0B2E) | Primary dark background, cards |
-| `--frobot-cyan` | Cyber Cyan | `#00BCD4` | ![#00BCD4](https://placehold.co/80x28/00BCD4/000000?text=%2300BCD4) | Primary accent, links (dark mode) |
-| `--frobot-magenta` | Neon Magenta | `#E91E63` | ![#E91E63](https://placehold.co/80x28/E91E63/FFFFFF?text=%23E91E63) | Secondary accent, CTAs (large) |
-| `--frobot-amber` | Solar Amber | `#FFC107` | ![#FFC107](https://placehold.co/80x28/FFC107/000000?text=%23FFC107) | Highlights, warnings, badges |
+| Token              | Name         | Hex       | Swatch                                                              | Usage                             |
+| ------------------ | ------------ | --------- | ------------------------------------------------------------------- | --------------------------------- |
+| `--frobot-void`    | Void         | `#0D0216` | ![#0D0216](https://placehold.co/80x28/0D0216/FFFFFF?text=%230D0216) | Deepest background, shadows       |
+| `--frobot-purple`  | Deep Purple  | `#1A0B2E` | ![#1A0B2E](https://placehold.co/80x28/1A0B2E/FFFFFF?text=%231A0B2E) | Primary dark background, cards    |
+| `--frobot-cyan`    | Cyber Cyan   | `#00BCD4` | ![#00BCD4](https://placehold.co/80x28/00BCD4/000000?text=%2300BCD4) | Primary accent, links (dark mode) |
+| `--frobot-magenta` | Neon Magenta | `#E91E63` | ![#E91E63](https://placehold.co/80x28/E91E63/FFFFFF?text=%23E91E63) | Secondary accent, CTAs (large)    |
+| `--frobot-amber`   | Solar Amber  | `#FFC107` | ![#FFC107](https://placehold.co/80x28/FFC107/000000?text=%23FFC107) | Highlights, warnings, badges      |
 
 ### 1.2 Neutral Scale
 
-| Token | Name | Hex | Swatch | Usage |
-| --- | --- | --- | --- | --- |
-| `--frobot-white` | Pure White | `#FFFFFF` | ![#FFFFFF](https://placehold.co/80x28/FFFFFF/000000?text=%23FFFFFF) | Text on dark, faceplates |
-| `--frobot-cream` | Warm Cream | `#F5EBEB` | ![#F5EBEB](https://placehold.co/80x28/F5EBEB/000000?text=%23F5EBEB) | Secondary text, muted surfaces |
-| `--frobot-purple-mid` | Purple Mid | `#2D1B4E` | ![#2D1B4E](https://placehold.co/80x28/2D1B4E/FFFFFF?text=%232D1B4E) | Elevated cards on dark |
-| `--frobot-purple-muted` | Purple Muted | `#3D2A5F` | ![#3D2A5F](https://placehold.co/80x28/3D2A5F/FFFFFF?text=%233D2A5F) | Borders on dark bg |
+| Token                   | Name         | Hex       | Swatch                                                              | Usage                          |
+| ----------------------- | ------------ | --------- | ------------------------------------------------------------------- | ------------------------------ |
+| `--frobot-white`        | Pure White   | `#FFFFFF` | ![#FFFFFF](https://placehold.co/80x28/FFFFFF/000000?text=%23FFFFFF) | Text on dark, faceplates       |
+| `--frobot-cream`        | Warm Cream   | `#F5EBEB` | ![#F5EBEB](https://placehold.co/80x28/F5EBEB/000000?text=%23F5EBEB) | Secondary text, muted surfaces |
+| `--frobot-purple-mid`   | Purple Mid   | `#2D1B4E` | ![#2D1B4E](https://placehold.co/80x28/2D1B4E/FFFFFF?text=%232D1B4E) | Elevated cards on dark         |
+| `--frobot-purple-muted` | Purple Muted | `#3D2A5F` | ![#3D2A5F](https://placehold.co/80x28/3D2A5F/FFFFFF?text=%233D2A5F) | Borders on dark bg             |
 
 ### 1.3 Accessible Variants (Light-Mode Safe)
 
 These adjusted values maintain the brand feel while meeting WCAG AA/AAA on white (`#FFFFFF`) and cream (`#F5EBEB`) backgrounds.
 
-| Token | Name | Hex | Swatch | Based On | Ratio on White |
-| --- | --- | --- | --- | --- | --- |
-| `--frobot-cyan-aa` | Teal Accessible | `#00838F` | ![#00838F](https://placehold.co/80x28/00838F/FFFFFF?text=%2300838F) | Cyber Cyan | **4.52:1 AA** |
-| `--frobot-cyan-aaa` | Dark Teal | `#006064` | ![#006064](https://placehold.co/80x28/006064/FFFFFF?text=%23006064) | Cyber Cyan | **7.35:1 AAA** |
-| `--frobot-magenta-aaa` | Deep Rose | `#880E4F` | ![#880E4F](https://placehold.co/80x28/880E4F/FFFFFF?text=%23880E4F) | Neon Magenta | **9.45:1 AAA** |
-| `--frobot-amber-large` | Burnt Amber | `#E65100` | ![#E65100](https://placehold.co/80x28/E65100/FFFFFF?text=%23E65100) | Solar Amber | **3.79:1 AA Large** |
+| Token                  | Name            | Hex       | Swatch                                                              | Based On     | Ratio on White      |
+| ---------------------- | --------------- | --------- | ------------------------------------------------------------------- | ------------ | ------------------- |
+| `--frobot-cyan-aa`     | Teal Accessible | `#00838F` | ![#00838F](https://placehold.co/80x28/00838F/FFFFFF?text=%2300838F) | Cyber Cyan   | **4.52:1 AA**       |
+| `--frobot-cyan-aaa`    | Dark Teal       | `#006064` | ![#006064](https://placehold.co/80x28/006064/FFFFFF?text=%23006064) | Cyber Cyan   | **7.35:1 AAA**      |
+| `--frobot-magenta-aaa` | Deep Rose       | `#880E4F` | ![#880E4F](https://placehold.co/80x28/880E4F/FFFFFF?text=%23880E4F) | Neon Magenta | **9.45:1 AAA**      |
+| `--frobot-amber-large` | Burnt Amber     | `#E65100` | ![#E65100](https://placehold.co/80x28/E65100/FFFFFF?text=%23E65100) | Solar Amber  | **3.79:1 AA Large** |
 
 ---
 

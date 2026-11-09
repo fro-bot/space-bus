@@ -70,7 +70,7 @@ jobs:
           GITHUB_TOKEN: ${{ steps.get-app-token.outputs.token }}
         with:
           setupGitUser: false
-          commit: 'chore(changesets): version packages'
-          title: 'chore(🦋📦): version packages'
+          commit: "chore(changesets): version packages"
+          title: "chore(🦋📦): version packages"
           version: bun run version-changesets
           publish: bun run publish-changesets
