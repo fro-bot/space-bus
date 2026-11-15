@@ -283,8 +283,7 @@ jobs:
           # run fork-controlled code with FRO_BOT_PAT present. Default checkout
           # closes that secret-exfiltration vector.
           token: ${{ secrets.FRO_BOT_PAT }}
-          persist-credentials: >-
-            ${{ !contains(fromJSON('["pull_request", "issue_comment", "issues"]'), github.event_name) }}
+          persist-credentials: false
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
@@ -294,7 +293,7 @@ jobs:
 
       - name: Run Fro Bot
         id: fro-bot-agent
-        uses: fro-bot/agent@30be0191e13adb7e6ec1ec6a4714482c0da1ff65 # v0.142.0
+        uses: fro-bot/agent@4e394905b7eafda2d7424816eb7846d3f09c40df # v0.144.2
         env:
           OPENCODE_PROMPT_ARTIFACT: 'true'
           TASK_PROMPT: >-
@@ -305,6 +304,7 @@ jobs:
               || ''
             }}
         with:
+          isolate-agent: 'true'
           github-token: ${{ secrets.FRO_BOT_PAT }}
           auth-json: ${{ secrets.OPENCODE_AUTH_JSON }}
           model: ${{ vars.FRO_BOT_MODEL }}
