@@ -1,4 +1,5 @@
 ---
+
 date: 2026-07-11
 topic: service-persistence
 ---
@@ -13,7 +14,7 @@ Add a `space-bus service install|uninstall|status|stop|start` CLI subcommand tha
 
 ## Problem Frame
 
-The managed daemon is spawned by the first caller and supervised only while a `serve --foreground` process runs. Nothing restarts it after a host reboot or logout: the operator workspace daemon died silently during a multi-day gap, and every consumer attached through it — including Claude Desktop's bus access — was dead until someone noticed and manually ran `serve` again. Detection was accidental (a live dogfood failed to attach). The supervision work from issue #49 fails *closed* on daemon death, and its `--foreground` exit-code contract was designed for a process manager to consume — but space-bus ships no supported way to register one, so every operator machine carries a hand-rolled persistence gap.
+The managed daemon is spawned by the first caller and supervised only while a `serve --foreground` process runs. Nothing restarts it after a host reboot or logout: the operator workspace daemon died silently during a multi-day gap, and every consumer attached through it — including Claude Desktop's bus access — was dead until someone noticed and manually ran `serve` again. Detection was accidental (a live dogfood failed to attach). The supervision work from issue #49 fails _closed_ on daemon death, and its `--foreground` exit-code contract was designed for a process manager to consume — but space-bus ships no supported way to register one, so every operator machine carries a hand-rolled persistence gap.
 
 ---
 

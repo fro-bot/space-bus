@@ -1,4 +1,5 @@
 ---
+
 date: 2026-07-11
 topic: multi-roster-support
 ---
@@ -53,28 +54,33 @@ Verified substrate facts that shape the work: core is already N-roster-capable (
 ## Requirements
 
 **Roster registry**
+
 - R1. A per-user, machine-level registry maps a unique human-readable name to an absolute roster path; one registry per machine.
 - R2. The registry is additive and optional: `SPACE_BUS_CONFIG` and `<directory>/spacebus.json` resolution keep working for unregistered rosters, unchanged.
 - R3. Registry operations: register an existing roster file, unregister (never deletes the roster file), and set a machine default (R10's session-default initialization depends on it); rename is deferred.
 - R4. Roster creation is a single operation: given a name, workspace root folder, and server mode, write a schema-valid `spacebus.json` and register it.
 
 **Roster mutation**
+
 - R5. One shared Node-only mutation module owns all roster writes: create roster, add/remove/modify project entries, edit the server block. Writes are atomic (temp + rename) and schema-validated before landing; the localhost guard applies to any `baseUrl` written.
 - R6. The mutation module is exposed on three surfaces backed by the same implementation: a library subpath (Mothership's in-app editing), MCP tooling (connectors), and `space-bus roster` CLI verbs (operators/scripts).
 - R7. Mutation results are discriminated unions (`ok:false` with an actionable error, never a throw across the library boundary, never a partial write).
 - R8. Mothership adoption is a goal: the module (with the existing exported roster schema) must cover what Mothership needs to delete its own `spacebus.json` parsing and use space-bus as the single source of truth.
 
 **Roster addressing (tool surfaces)**
+
 - R9. The five `bus_*` tools gain an optional `roster` parameter (a registry name) that overrides ambient resolution on both surfaces, and every tool result names the roster the call resolved. Two-surface parity holds: plugin tools and MCP registrations stay byte-identical.
 - R10. When `roster` is omitted, MCP calls resolve in precedence order: explicit `roster` param > the session's active roster (ephemeral in-memory state per MCP server process, one per stdio connection, selectable via the management tool, reset on restart) > `SPACE_BUS_CONFIG` (ambient resolution) > the registry default (`bus_registry set-default`), consulted only when `SPACE_BUS_CONFIG` is unset. Plugin calls keep directory-first resolution (`ctx.directory`) when `roster` is omitted — the registry-default fallback is MCP-only.
 - R11. One new management tool (single tool, both surfaces) covers roster listing, active-roster selection, creation, registration, and project mutation — the tool surface grows by exactly one, with a narrow action enum, per-action input validation, and per-action errors.
 - R12. When a named roster is not in the registry, the call fails with an actionable error listing known roster names.
 
 **Reconciliation and lifecycle**
+
 - R13. The discovery file records its roster path at spawn — metadata in the same 0600 file, never logged and surfaced only in reconciliation output. Reconciliation names registered rosters by hashing registry paths against state-dir keys (covers pre-field files); the recorded path names unregistered daemons, and pre-field unregistered daemons stay unknown.
 - R14. A reconciliation view (library + MCP + CLI) lists registered rosters with daemon liveness plus drift flags (unknown state-dir daemons; registry entries whose roster file is gone); v1 is listing and flags only — no repair actions or richer classification.
 
 **Security and compatibility**
+
 - R15. The registry stores names and paths only — never credentials; paths are canonicalized on write and read with symlinked entries rejected, names are validated against a safe charset, and every roster load through the registry re-applies the existing validation (schema, localhost guard).
 - R16. Space-bus never edits MCP client configs (Claude Desktop et al.); adopting a new roster in a client is the client's action.
 
