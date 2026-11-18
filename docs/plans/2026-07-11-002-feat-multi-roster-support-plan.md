@@ -1,4 +1,5 @@
 ---
+
 title: "feat: Multi-roster support — registry, mutation module, per-call addressing"
 type: feat
 status: active
@@ -96,6 +97,7 @@ Everything above the substrate is single-roster today: `src/mcp.ts` pins one ros
 **Dependencies:** None
 
 **Files:**
+
 - Modify: `src/contract.ts` (registry file schema, zod-only)
 - Create: `src/registry.ts` (Node-only reader/writer)
 - Test: `src/registry.test.ts`
@@ -106,6 +108,7 @@ Everything above the substrate is single-roster today: `src/mcp.ts` pins one ros
 **Execution note:** Test-first; registry writes in tests must land under an isolated XDG_CONFIG_HOME (extend the preload guard — the LaunchAgents incident must not repeat for `~/.config`).
 
 **Test scenarios:**
+
 - Happy path: register two rosters → list returns both with default flagged; resolve by name returns canonical path.
 - Edge: absent registry file → empty list; duplicate name (case-insensitive) → ok:false naming the collision; unregister keeps roster file on disk.
 - Error: symlinked registry entry → rejected naming the path; invalid name charset → ok:false; registry JSON corrupted → ok:false with actionable message (not a throw).
@@ -122,6 +125,7 @@ Everything above the substrate is single-roster today: `src/mcp.ts` pins one ros
 **Dependencies:** Unit 1 (createRoster registers)
 
 **Files:**
+
 - Create: `src/roster-edit.ts` (Node-only)
 - Test: `src/roster-edit.test.ts`
 - Modify: `src/browser-safety.test.ts`
@@ -131,6 +135,7 @@ Everything above the substrate is single-roster today: `src/mcp.ts` pins one ros
 **Execution note:** Test-first.
 
 **Test scenarios:**
+
 - Happy path: createRoster(name, root, managed) → valid file on disk + registered; addProject/removeProject/updateProject round-trips.
 - Error: non-loopback baseUrl edit → ok:false, file unchanged (byte-compare); duplicate project name → ok:false; edit on missing/invalid roster file → ok:false actionable.
 - Edge: remove last project → valid empty-projects roster; concurrent edit lost-update is accepted v1 behavior (document in test as characterization).
@@ -146,12 +151,14 @@ Everything above the substrate is single-roster today: `src/mcp.ts` pins one ros
 **Dependencies:** Units 1–2
 
 **Files:**
+
 - Modify: `src/contract.ts` (optional `rosterPath` on discovery schema), `src/server.ts` (write it at spawn), `package.json` (exports `./registry`), `build.ts` (entry), `src/plugin-entry-guard.test.ts` (assert `./registry` is NOT the loader-resolved entry and root entry still single-function), `src/browser-safety.test.ts` (dist-level twin)
 - Test: existing `src/discovery.test.ts` + `src/server.test.ts` additions
 
 **Approach:** Field optional (old files parse); written from the canonicalized roster path `ensureServer` already holds; excluded from all log lines. Subpath exports `registry` + `roster-edit` + (later) `reconcile` symbols.
 
 **Test scenarios:**
+
 - Happy path: spawn → discovery file contains rosterPath matching the canonical roster.
 - Edge: pre-field discovery file parses and attaches (no regression).
 - Integration: packaged-artifact guard — built dist entry for `./registry` exists, root plugin entry unchanged (loader-emulation test still selects `dist/index.js` single-function namespace).
@@ -169,12 +176,14 @@ Everything above the substrate is single-roster today: `src/mcp.ts` pins one ros
 **Dependencies:** Phase A
 
 **Files:**
+
 - Modify: `src/config.ts` (loadContext accepts roster-name source; unknown name → error listing known names), `src/tools/bus_roster.ts` + `bus_task.ts` + `bus_status.ts` + `bus_result.ts` + `bus_wait.ts` (optional `roster` input; result header line naming resolved roster), `src/format.ts` (roster-name header helper), `src/mcp.ts` + `src/index.ts` (wire param through)
 - Test: `src/tools/bus_wait.test.ts` additions, `src/mcp-parity.test.ts`, `src/config.test.ts`
 
 **Approach:** Resolution precedence everywhere: explicit `roster` param > surface ambient (plugin: `ctx.directory`; MCP: session active roster). Echo is a single shared formatter so both surfaces emit identical lines.
 
 **Test scenarios:**
+
 - Happy path: call with `roster: "personal"` resolves that roster's context (AE2); omitted param keeps today's behavior byte-identical (AE3 regression).
 - Error: unknown name → error listing known rosters (AE5).
 - Integration: parity test — all five descriptions + input schemas byte-identical across surfaces (AE7).
@@ -190,6 +199,7 @@ Everything above the substrate is single-roster today: `src/mcp.ts` pins one ros
 **Dependencies:** Unit 4
 
 **Files:**
+
 - Create: `src/tools/bus_registry.ts` (factory + description constant + action-enum zod discriminated union)
 - Modify: `src/index.ts`, `src/mcp.ts` (register + in-memory active-roster state), `src/mcp-parity.test.ts`
 - Test: `src/tools/bus_registry.test.ts`
@@ -197,6 +207,7 @@ Everything above the substrate is single-roster today: `src/mcp.ts` pins one ros
 **Approach:** One factory, action-discriminated input; mutating actions call `roster-edit`; `use` sets MCP session state (plugin surface: `use` returns an actionable error — plugin resolution is directory-first, selection is an MCP concept). Results echo the affected roster.
 
 **Test scenarios:**
+
 - Happy path: list → use → subsequent omitted-roster call resolves the selected roster (F1); create → project add via tool (F2/AE1).
 - Edge: `use` on plugin surface → actionable error; session state resets on process restart (ephemeral).
 - Error: mutating action with invalid payload → per-action zod error naming the action.
@@ -215,6 +226,7 @@ Everything above the substrate is single-roster today: `src/mcp.ts` pins one ros
 **Dependencies:** Phase A (field), Unit 5 (tool surface)
 
 **Files:**
+
 - Create: `src/reconcile.ts` (Node-only; exported on `/registry`)
 - Modify: `src/tools/bus_registry.ts` (`reconcile` action), `src/cli.ts` (verb)
 - Test: `src/reconcile.test.ts`
@@ -222,6 +234,7 @@ Everything above the substrate is single-roster today: `src/mcp.ts` pins one ros
 **Approach:** Enumerate registry (hash paths → match state dirs) + scan state dirs; liveness via existing `serverStatus`; unregistered daemons named from discovery `rosterPath` when present, else `unknown`. Listing + flags only — no repair actions.
 
 **Test scenarios:**
+
 - Happy path: registered roster with live daemon → running; with no state dir → not-running.
 - Drift: state dir with discovery rosterPath not in registry → flagged unregistered with path; pre-field discovery → flagged unknown; registry entry whose roster file is deleted → flagged dangling.
 - Edge: tampered discovery file (invalid JSON) → skipped with flag, not a throw (AE6).
@@ -237,12 +250,14 @@ Everything above the substrate is single-roster today: `src/mcp.ts` pins one ros
 **Dependencies:** Units 1–6
 
 **Files:**
+
 - Modify: `src/cli.ts`, `README.md`, `AGENTS.md` (structure map + invariants: registry lane, sixth tool, reserved-subpath note), `.changeset/`
 - Test: `src/cli.test.ts` additions
 
 **Approach:** Thin wrappers over `registry`/`roster-edit`/`reconcile` mirroring the existing verb pattern (`--json` + plain output, exit codes).
 
 **Test scenarios:**
+
 - Happy path per verb (seam-injected); `--json` shape stable.
 - Error: unknown verb/args → usage + exit 1.
 - Test expectation for docs: none — prose only.
@@ -260,13 +275,13 @@ Everything above the substrate is single-roster today: `src/mcp.ts` pins one ros
 
 ## Risks & Dependencies
 
-| Risk | Mitigation |
-|------|------------|
+| Risk                                             | Mitigation                                                                                       |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------ |
 | New subpath collides with a loader-reserved name | `/registry` chosen deliberately; entry-guard test asserts loader still resolves the plugin entry |
-| Registry tests leak into real `~/.config` | Preload isolation + leak guard extended before any test lands (Unit 1 execution note) |
-| Roster param silently changes no-param behavior | No-param paths pinned by existing suite; param plumbed as pure addition |
-| Mothership adopts mid-phase | Incremental releases; Phase A alone gives it registry+mutation |
-| Registry poisoning via symlink/path tricks | Canonicalization + symlink rejection + charset validation (R15), tested |
+| Registry tests leak into real `~/.config`        | Preload isolation + leak guard extended before any test lands (Unit 1 execution note)            |
+| Roster param silently changes no-param behavior  | No-param paths pinned by existing suite; param plumbed as pure addition                          |
+| Mothership adopts mid-phase                      | Incremental releases; Phase A alone gives it registry+mutation                                   |
+| Registry poisoning via symlink/path tricks       | Canonicalization + symlink rejection + charset validation (R15), tested                          |
 
 ## Sources & References
 

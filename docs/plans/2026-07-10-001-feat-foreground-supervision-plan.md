@@ -1,4 +1,5 @@
 ---
+
 title: "feat: Active --foreground supervision with fail-closed exit"
 type: feat
 status: active
@@ -14,7 +15,7 @@ origin: docs/brainstorms/2026-07-09-managed-daemon-supervision-requirements.md
 
 ## Problem Frame
 
-`runServe`'s foreground branch (`src/cli.ts:113-123`) is a passive signal-waiter. Layer A (#57, merged) makes resolvers clean up a stale record when they *happen* to read one — but nothing proactively notices a foreground-supervised daemon dying, so a long-running attacher with no intervening Node-side resolve still sees the dead endpoint until something reads the record. Active supervision closes that gap for the `--foreground` case: the supervisor is the one process guaranteed to be watching, and it fails closed (cleanup + non-zero exit) so the OS-level manager can recover. (See origin: docs/brainstorms/2026-07-09-managed-daemon-supervision-requirements.md.)
+`runServe`'s foreground branch (`src/cli.ts:113-123`) is a passive signal-waiter. Layer A (#57, merged) makes resolvers clean up a stale record when they _happen_ to read one — but nothing proactively notices a foreground-supervised daemon dying, so a long-running attacher with no intervening Node-side resolve still sees the dead endpoint until something reads the record. Active supervision closes that gap for the `--foreground` case: the supervisor is the one process guaranteed to be watching, and it fails closed (cleanup + non-zero exit) so the OS-level manager can recover. (See origin: docs/brainstorms/2026-07-09-managed-daemon-supervision-requirements.md.)
 
 ## Requirements Trace
 
@@ -55,7 +56,7 @@ origin: docs/brainstorms/2026-07-09-managed-daemon-supervision-requirements.md
 ## Key Technical Decisions
 
 - **Supervision lives in an exported `superviseServer` in `server.ts`, driven by `runServe`.** Keeping the loop in `server.ts` (not inline in `cli.ts`) makes it unit-testable with injected seams (fake clock/probe/stop) and keeps `cli.ts` a thin wrapper. `runServe`'s foreground branch awaits it.
-- **Liveness = pid-identity AND authenticated HTTP probe, with a consecutive-failure threshold AND an absolute-lifetime watchdog.** pid death (`serverStatus.running === false`) is immediate death (no grace — the process is gone). An alive pid whose endpoint fails the probe is declared dead by either of two independent triggers: N consecutive probe failures (fast path — `SUPERVISE_FAILURE_THRESHOLD = 3` at `SUPERVISE_INTERVAL_MS = 5000` ≈ 15s), OR the endpoint being un-`ready` past an absolute budget (`SUPERVISE_UNHEALTHY_BUDGET_MS = 60000`). The watchdog tracks `lastReadyAt`, advanced only on a genuinely `ready` probe — so a *flapping* daemon (retry/ready alternating, which never trips the consecutive counter) and a *persistent auth-failure* (server answering 401 forever) are both bounded, closing the infinite-loop gap that consecutive-only detection leaves open. A briefly-slow daemon that recovers within the budget still survives. *(Watchdog added during ce:review — consecutive-only detection could not catch flapping or auth-failure-forever.)*
+- **Liveness = pid-identity AND authenticated HTTP probe, with a consecutive-failure threshold AND an absolute-lifetime watchdog.** pid death (`serverStatus.running === false`) is immediate death (no grace — the process is gone). An alive pid whose endpoint fails the probe is declared dead by either of two independent triggers: N consecutive probe failures (fast path — `SUPERVISE_FAILURE_THRESHOLD = 3` at `SUPERVISE_INTERVAL_MS = 5000` ≈ 15s), OR the endpoint being un-`ready` past an absolute budget (`SUPERVISE_UNHEALTHY_BUDGET_MS = 60000`). The watchdog tracks `lastReadyAt`, advanced only on a genuinely `ready` probe — so a _flapping_ daemon (retry/ready alternating, which never trips the consecutive counter) and a _persistent auth-failure_ (server answering 401 forever) are both bounded, closing the infinite-loop gap that consecutive-only detection leaves open. A briefly-slow daemon that recovers within the budget still survives. _(Watchdog added during ce:review — consecutive-only detection could not catch flapping or auth-failure-forever.)_
 - **Hung-but-alive → kill-and-fail-closed.** When the threshold is crossed with the pid still alive (hung), the supervisor calls `stopServer` (group SIGTERM→SIGKILL, which frees the port and cleans the record) then exits non-zero — predictable over leaving a wedged daemon holding the port.
 - **Exit code semantics.** Clean signal shutdown → exit 0 (unchanged). Confirmed daemon death (crash-gone or hung-killed) → exit non-zero so launchd/systemd restarts `space-bus serve`. Cleanup on the death path goes through `stopServer`/Layer A compare-and-delete, so a concurrent respawn's record is preserved.
 - **`auth-failure` from the probe is treated as alive, not dead.** A 401/403 means the server is up and answering (a password mismatch is a config problem, not death) — it must not trip the death threshold. Only `retry` (unreachable/timeout/5xx) counts toward the failure streak.
@@ -84,20 +85,24 @@ origin: docs/brainstorms/2026-07-09-managed-daemon-supervision-requirements.md
 **Dependencies:** None (composes existing `serverStatus`, `probe`, `stopServer`)
 
 **Files:**
+
 - Modify: `src/server.ts`
 - Test: `src/server.test.ts`
 
 **Approach:**
+
 - Add `SUPERVISE_INTERVAL_MS = 5000` and `SUPERVISE_FAILURE_THRESHOLD = 3`.
 - Export `probe` (or a thin `probeLive(baseUrl, password)` wrapper) so the loop can reach the authenticated endpoint.
 - Add `superviseServer(rosterPath, handle, opts?)` returning a discriminated outcome (e.g. `{ reason: "signal" } | { reason: "died" } | { reason: "hung" }`). Each tick: check `serverStatus` — if `!running`, the pid is gone → daemon died, break with `died`. Else `probe` the endpoint: `ready` or `auth-failure` → reset the failure counter; `retry` → increment. When the counter reaches the threshold with the pid still alive → `stopServer` (kill the hung daemon) and break with `hung`. Sleep `SUPERVISE_INTERVAL_MS` between ticks. Accept injectable seams (clock/sleep/probe/status/stop) for deterministic tests — default to the real ones.
 - On the `died` path, ensure the record is cleaned: the pid-gone case means `serverStatus` already ran Layer A compare-and-delete; call it explicitly/idempotently so the outcome guarantees no stale record.
 
 **Patterns to follow:**
+
 - `src/server.ts:279` `probe`, `src/server.ts:642` `serverStatus`, `src/server.ts:687` `stopServer`, `src/server.ts:76` `sleep`.
 - Discriminated-union return style used across `server.ts`/`core.ts`.
 
 **Test scenarios:**
+
 - Happy path (signal): a stop-signal seam fires → loop exits with `signal`, no cleanup-as-death.
 - Death (crash): `serverStatus` reports `running:false` on tick 2 → loop exits `died`; discovery record is gone.
 - Hung: pid alive but `probe` returns `retry` for 3 consecutive ticks → `stopServer` invoked once, loop exits `hung`, record gone, port-owner stopped.
@@ -106,6 +111,7 @@ origin: docs/brainstorms/2026-07-09-managed-daemon-supervision-requirements.md
 - Edge (threshold boundary): exactly `threshold-1` failures then success → survives; exactly `threshold` → dies.
 
 **Verification:**
+
 - With injected seams, the loop declares death only on pid-gone or `threshold` consecutive `retry`s, calls `stopServer` exactly once on the hung path, and always leaves no stale record on a death outcome.
 
 - [ ] **Unit 2: Wire supervision into runServe --foreground with fail-closed exit**
@@ -117,19 +123,23 @@ origin: docs/brainstorms/2026-07-09-managed-daemon-supervision-requirements.md
 **Dependencies:** Unit 1
 
 **Files:**
+
 - Modify: `src/cli.ts`
 - Test: `src/cli.test.ts`
 
 **Approach:**
+
 - Replace the foreground `Promise` body (cli.ts:113-123) so it races the existing SIGINT/SIGTERM shutdown against `superviseServer(rosterPath, handle)`.
 - Signal path: unchanged behavior — `stopServer` then resolve exit 0.
 - Supervision returns `died`/`hung`: write an actionable stderr line (no password), and resolve a **non-zero** exit code so an external manager restarts `space-bus serve`. Ensure the signal handlers are removed once the loop returns so a late signal can't double-stop.
 - `--json` mode: keep stdout protocol-clean (the initial running-line already printed); death diagnostics go to stderr only.
 
 **Patterns to follow:**
+
 - `src/cli.ts:96` existing `runServe` structure and `printJson`; `src/cli.ts:136` `runStop` for the `stopServer` call shape.
 
 **Test scenarios:**
+
 - Happy path (signal): simulated SIGTERM → `runServe` resolves 0, daemon stopped.
 - Death → non-zero exit: injected `superviseServer` resolving `died` → `runServe` returns a non-zero code, stderr carries an actionable message, no stale record.
 - Hung → non-zero exit: injected `hung` outcome → non-zero code, `stopServer` was invoked.
@@ -137,6 +147,7 @@ origin: docs/brainstorms/2026-07-09-managed-daemon-supervision-requirements.md
 - Regression: the initial running-line still prints before supervision starts.
 
 **Verification:**
+
 - `space-bus serve --foreground` returns 0 on clean signal and non-zero on daemon death, with no stale `discovery.json` left on the death path and stdout uncorrupted in `--json` mode.
 
 ## System-Wide Impact
@@ -149,13 +160,13 @@ origin: docs/brainstorms/2026-07-09-managed-daemon-supervision-requirements.md
 
 ## Risks & Dependencies
 
-| Risk | Mitigation |
-|------|------------|
-| A briefly-slow daemon is killed as "dead" | Consecutive-failure threshold (default 3 × 5s) + single-success reset; `auth-failure` counted as alive; boundary tests. |
-| Supervisor kills a hung daemon but leaks its child | Use group-aware `stopServer` (never bare-pid); inherits the stop-leak fix + its tests. |
-| Death cleanup deletes a concurrent respawn's fresh record | Cleanup goes through Layer A compare-and-delete via `stopServer`/`removeDiscoveryIfMatches`. |
-| Non-deterministic loop tests (real timers/daemon) | `superviseServer` takes injected clock/sleep/probe/status/stop seams; no real timers or daemon in unit tests. |
-| Late signal after loop returns double-stops | Remove signal handlers once `superviseServer` resolves; idempotent `stopServer` (`{stopped:false}` on no record). |
+| Risk                                                      | Mitigation                                                                                                              |
+| --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| A briefly-slow daemon is killed as "dead"                 | Consecutive-failure threshold (default 3 × 5s) + single-success reset; `auth-failure` counted as alive; boundary tests. |
+| Supervisor kills a hung daemon but leaks its child        | Use group-aware `stopServer` (never bare-pid); inherits the stop-leak fix + its tests.                                  |
+| Death cleanup deletes a concurrent respawn's fresh record | Cleanup goes through Layer A compare-and-delete via `stopServer`/`removeDiscoveryIfMatches`.                            |
+| Non-deterministic loop tests (real timers/daemon)         | `superviseServer` takes injected clock/sleep/probe/status/stop seams; no real timers or daemon in unit tests.           |
+| Late signal after loop returns double-stops               | Remove signal handlers once `superviseServer` resolves; idempotent `stopServer` (`{stopped:false}` on no record).       |
 
 ## Documentation / Operational Notes
 
