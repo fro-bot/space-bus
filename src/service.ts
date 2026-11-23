@@ -14,12 +14,14 @@ import {
   existsSync,
   fchmodSync,
   constants as fsConstants,
+  lstatSync,
   mkdirSync,
   openSync,
+  readlinkSync,
   unlinkSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join, sep } from "node:path";
 
 import { stateDirFor } from "./discovery";
 import {
@@ -174,6 +176,127 @@ function identityFor(
     plistFilePath: plistPath(label, launchAgentsDir),
     stateDir: stateDirFor(rosterPath),
   };
+}
+
+/** Bounds a symlink chain; a loop exhausts it. */
+const MAX_ROSTER_LINK_HOPS = 40;
+
+type PathStep =
+  | { kind: "missing" }
+  | { kind: "plain" }
+  | { kind: "link"; target: string }
+  | { kind: "error"; detail: string };
+
+/** One lstat (+ readlink for a symlink). Only ENOENT counts as missing. */
+function statStep(path: string): PathStep {
+  try {
+    return lstatSync(path).isSymbolicLink()
+      ? { kind: "link", target: readlinkSync(path) }
+      : { kind: "plain" };
+  } catch (err) {
+    return isEnoent(err)
+      ? { kind: "missing" }
+      : { kind: "error", detail: `${path}: ${String(err)}` };
+  }
+}
+
+/** Path components, with `.` and empty segments dropped but `..` kept. */
+function splitPath(path: string): string[] {
+  return path.split(sep).filter((s) => s !== "" && s !== ".");
+}
+
+/**
+ * `realpath` that tolerates a missing tail (#81): follows every existing
+ * symlink (absolute, or relative to its own physical directory), applies `..`
+ * to the physical path, and appends what follows the first missing component
+ * lexically — the path `realpathSync` yielded while the roster existed. It
+ * never pre-normalizes `input`, so `..` is not collapsed across a symlink.
+ * ENOTDIR, ELOOP, EACCES, an unreadable link or a looping chain are errors,
+ * never a guessed path.
+ */
+function realpathLoose(input: string): ResolveResult<string> {
+  const fail = (detail: string): ResolveResult<string> => ({
+    ok: false,
+    error: `cannot resolve roster path ${input}: ${detail}`,
+  });
+  let pending = splitPath(input);
+  let current: string = sep;
+  let hops = 0;
+  while (pending.length > 0) {
+    const [segment = "", ...rest] = pending;
+    pending = rest;
+    if (segment === "..") {
+      current = dirname(current);
+      continue;
+    }
+    const candidate = join(current, segment);
+    const step = statStep(candidate);
+    if (step.kind === "missing") {
+      return { ok: true, value: join(candidate, ...rest) };
+    }
+    if (step.kind === "plain") {
+      current = candidate;
+      continue;
+    }
+    if (step.kind === "error") return fail(step.detail);
+    hops += 1;
+    if (hops > MAX_ROSTER_LINK_HOPS) {
+      return fail("roster symlink chain loops or is too long");
+    }
+    if (isAbsolute(step.target)) current = sep;
+    pending = [...splitPath(step.target), ...pending];
+  }
+  return { ok: true, value: current };
+}
+
+function isSymlink(path: string): boolean {
+  try {
+    return lstatSync(path).isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The identity every verb uses for a roster path (#81). `resolveRosterPath`
+ * yields the realpath only while the roster exists, so a roster deleted behind
+ * a symlinked alias or directory arrives as a non-canonical path whose hash is
+ * not the label install used. Resolve it with `realpathLoose`, then pick
+ * between the canonical identity and the path exactly as given, because
+ * installs made before this fix are keyed on the latter:
+ *  - only one of the two plists exists: use that one (never switch an existing
+ *    install to a new label);
+ *  - both exist: ambiguous, refuse rather than act on a possibly wrong job;
+ *  - neither exists: a symlink roster uses the canonical identity (so an
+ *    install through a dangling alias reuses the canonical job); any other
+ *    path keeps the given identity, as before.
+ * An already-canonical path, and a relative path, take no branch.
+ */
+function resolveIdentity(
+  rosterPath: string,
+  launchAgentsDir: string,
+): ResolveResult<ServiceIdentity & { rosterPath: string }> {
+  const given = identityFor(rosterPath, launchAgentsDir);
+  const walked = isAbsolute(rosterPath)
+    ? realpathLoose(rosterPath)
+    : { ok: true as const, value: rosterPath };
+  if (!walked.ok) return walked;
+  if (walked.value === rosterPath)
+    return { ok: true, value: { ...given, rosterPath } };
+
+  const canonical = identityFor(walked.value, launchAgentsDir);
+  const hasCanonical = existsSync(canonical.plistFilePath);
+  const hasGiven = existsSync(given.plistFilePath);
+  if (hasCanonical && hasGiven) {
+    return {
+      ok: false,
+      error: `ambiguous service identity for roster ${rosterPath}: a plist exists for both ${walked.value} (${canonical.plistFilePath}) and the path as given (${given.plistFilePath}); boot out and remove the stale one by hand`,
+    };
+  }
+  const useCanonical = hasCanonical || (!hasGiven && isSymlink(rosterPath));
+  return useCanonical
+    ? { ok: true, value: { ...canonical, rosterPath: walked.value } }
+    : { ok: true, value: { ...given, rosterPath } };
 }
 
 export type PreCreateLogResult = { ok: true } | { ok: false; error: string };
@@ -441,10 +564,10 @@ export async function installService(
   const gate = platformGate(resolved.platform);
   if (!gate.ok) return { ok: false, error: gate.error };
 
-  const { label, plistFilePath, stateDir } = identityFor(
-    rosterPath,
-    resolved.launchAgentsDir,
-  );
+  const identity = resolveIdentity(rosterPath, resolved.launchAgentsDir);
+  if (!identity.ok) return { ok: false, error: identity.error };
+  const { label, plistFilePath, stateDir } = identity.value;
+  const roster = identity.value.rosterPath;
 
   const warning = ephemeralCacheWarning(resolved);
 
@@ -474,7 +597,7 @@ export async function installService(
   const plistXml = renderPlist({
     runtime: resolved.execPath,
     cliEntry: resolved.cliEntryPath,
-    rosterPath,
+    rosterPath: roster,
     stateDir,
     label,
     path: process.env["PATH"],
@@ -506,12 +629,7 @@ export async function installService(
     };
   }
 
-  const verified = await verifyRunning(
-    rosterPath,
-    label,
-    resolved,
-    plistFilePath,
-  );
+  const verified = await verifyRunning(roster, label, resolved, plistFilePath);
   if (!verified.ok) return verified;
 
   return {
@@ -579,10 +697,9 @@ export async function uninstallService(
   const gate = platformGate(resolved.platform);
   if (!gate.ok) return { ok: false, error: gate.error };
 
-  const { label, plistFilePath } = identityFor(
-    rosterPath,
-    resolved.launchAgentsDir,
-  );
+  const identity = resolveIdentity(rosterPath, resolved.launchAgentsDir);
+  if (!identity.ok) return { ok: false, error: identity.error };
+  const { label, plistFilePath } = identity.value;
 
   const job = await probeJob(resolved, label);
   if (!job.ok) {
@@ -650,16 +767,15 @@ export async function serviceStatus(
   const gate = platformGate(resolved.platform);
   if (!gate.ok) return { ok: false, error: gate.error };
 
-  const { label, plistFilePath } = identityFor(
-    rosterPath,
-    resolved.launchAgentsDir,
-  );
+  const identity = resolveIdentity(rosterPath, resolved.launchAgentsDir);
+  if (!identity.ok) return { ok: false, error: identity.error };
+  const { label, plistFilePath } = identity.value;
   const installed = existsSync(plistFilePath);
   const job = await probeJob(resolved, label);
   if (!job.ok) {
     return { ok: false, error: `failed to probe job: ${job.error}` };
   }
-  const status: ServerStatus = resolved.serverStatus(rosterPath);
+  const status: ServerStatus = resolved.serverStatus(identity.value.rosterPath);
 
   return {
     ok: true,
@@ -686,7 +802,9 @@ export async function stopService(
   const gate = platformGate(resolved.platform);
   if (!gate.ok) return { ok: false, error: gate.error };
 
-  const { label } = identityFor(rosterPath, resolved.launchAgentsDir);
+  const identity = resolveIdentity(rosterPath, resolved.launchAgentsDir);
+  if (!identity.ok) return { ok: false, error: identity.error };
+  const { label } = identity.value;
   const job = await probeJob(resolved, label);
   if (!job.ok) {
     return { ok: false, error: `failed to probe job: ${job.error}` };
@@ -714,10 +832,10 @@ export async function startService(
   const gate = platformGate(resolved.platform);
   if (!gate.ok) return { ok: false, error: gate.error };
 
-  const { label, plistFilePath, stateDir } = identityFor(
-    rosterPath,
-    resolved.launchAgentsDir,
-  );
+  const identity = resolveIdentity(rosterPath, resolved.launchAgentsDir);
+  if (!identity.ok) return { ok: false, error: identity.error };
+  const { label, plistFilePath, stateDir } = identity.value;
+  const roster = identity.value.rosterPath;
   if (!existsSync(plistFilePath)) {
     return {
       ok: false,
@@ -734,7 +852,7 @@ export async function startService(
   const plistXml = renderPlist({
     runtime: resolved.execPath,
     cliEntry: resolved.cliEntryPath,
-    rosterPath,
+    rosterPath: roster,
     stateDir,
     label,
     path: process.env["PATH"],
@@ -771,12 +889,7 @@ export async function startService(
 
   // Use the same bounded verification loop as install — a loaded-but-not-
   // running daemon must not be reported as a successful start.
-  const verified = await verifyRunning(
-    rosterPath,
-    label,
-    resolved,
-    plistFilePath,
-  );
+  const verified = await verifyRunning(roster, label, resolved, plistFilePath);
   if (!verified.ok) return verified;
 
   return { ok: true, label, pid: verified.pid };
