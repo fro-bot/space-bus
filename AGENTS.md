@@ -35,6 +35,7 @@ This is the source repo for the `@fro.bot/space-bus` OpenCode plugin: six `bus_*
 - **Discovery file is locked down:** the discovery file is written 0600 with a freshly generated per-spawn password; never reused across spawns, never in argv, never logged.
 - **Localhost guard travels to discovery:** an attached endpoint from the discovery file is re-validated against the loopback guard regardless of source — a tampered discovery file can't bypass it.
 - **MCP attach-only by default:** `mcp.ts` never calls `ensureServer` unless `SPACE_BUS_MCP_SPAWN` is set.
+- **`./server` is a reserved subpath:** OpenCode's plugin loader resolves `exports["./server"]` before `main`, so `package.json` must keep `./server` mapped to the plugin entry (`dist/index.js`). The managed-server lifecycle API lives at `./managed-server`. Never remap or remove `./server`; `src/plugin-entry-guard.test.ts` guards it (see `docs/solutions/integration-issues/opencode-plugin-reserved-subpath-loader-resolution-2026-07-11.md`).
 
 ## Dev loop
 

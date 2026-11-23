@@ -150,6 +150,8 @@ Experimental subpath exports expose the bus's internals directly — the functio
 - `@fro.bot/space-bus/attach` — browser-safe. `resolveManagedServer(workspaceDir, seams)` resolves a managed roster's running endpoint by reading the discovery file through injected filesystem/env/crypto seams — re-checking the localhost guard and probing liveness — so an external attacher such as a Tauri webview can attach without any `node:*` imports or reimplementing the discovery contract. Returns `{ baseUrl, credentials, alive }` or an actionable error.
 - `@fro.bot/space-bus/registry` — Node-only, experimental. The roster registry and roster-edit substrate behind `bus_registry` (`readRegistry`/`registerRoster`/`unregisterRoster`/`setDefaultRoster`/`resolveRosterByName`, plus roster creation and project add/remove/update), for consumers that want to manage rosters programmatically without the tool or MCP surfaces.
 
+`@fro.bot/space-bus/server` is not a library entry: OpenCode's plugin loader reserves that subpath for the plugin itself, so it resolves to the plugin entry. Use `/managed-server` for the lifecycle API.
+
 Node example (`/config` + `/core`):
 
 ```ts
