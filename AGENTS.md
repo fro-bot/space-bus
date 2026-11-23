@@ -14,6 +14,10 @@ This is the source repo for the `@fro.bot/space-bus` OpenCode plugin: six `bus_*
 - `src/discovery.ts` — Node-only: discovery-file read/write/validate, per-roster state-dir resolution, spawn lock primitives, pid identity verification. Imported by both `config.ts` and `server.ts`; must never be imported by core/contract/format.
 - `src/server.ts` — Node-only: managed-server lifecycle (`ensureServer`/`serverStatus`/`stopServer`) — spawn, readiness polling, identity-verified stop.
 - `src/cli.ts` — Node-only `space-bus` CLI (`serve|status|stop|service`, `--json`); thin wrapper over `server.ts`/`service.ts`. Package `bin` (`space-bus`) entry.
+- `src/format.ts` — pure output formatters shared by the tools and the `/format` subpath; browser-safe (in the CI-guarded lane with core/contract/attach).
+- `src/registry.ts` — Node-only: per-user roster registry (list/register/unregister/set-default/resolve-name). Joins config's Node-only lane.
+- `src/roster-edit.ts` — Node-only: programmatic `spacebus.json` creation and editing (create/add/remove/update project, edit server block). Joins config's Node-only lane.
+- `src/registry-entry.ts` — Node-only barrel for the `/registry` subpath export, re-exporting `registry.ts` and `roster-edit.ts`.
 - `src/launchd.ts` — Node-only: launchd plist generation, atomic plist writes, and a thin `launchctl` exec seam (`bootstrap`/`bootout`/`kickstart`/`printJob`). Joins the Node-only lane.
 - `src/service.ts` — Node-only: orchestrates the five `space-bus service` verbs (install/uninstall/status/stop/start) on top of `launchd.ts`. Joins the Node-only lane.
 
