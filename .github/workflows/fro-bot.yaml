@@ -308,5 +308,13 @@ jobs:
           github-token: ${{ secrets.FRO_BOT_PAT }}
           auth-json: ${{ secrets.OPENCODE_AUTH_JSON }}
           model: ${{ vars.FRO_BOT_MODEL }}
+          # The autoheal pass delivers fixes as branch + PR; the default (working-dir) discards them.
+          # Empty everywhere else, which the action treats as unset.
+          output-mode: >-
+            ${{
+              (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.prompt == ''))
+              && 'branch-pr'
+              || ''
+            }}
           opencode-config: ${{ secrets.OPENCODE_CONFIG }}
           prompt: ${{ env.TASK_PROMPT }}
