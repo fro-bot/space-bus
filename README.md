@@ -69,7 +69,7 @@ Set `SPACE_BUS_CONFIG` to override roster discovery — it must be an absolute p
 - `bus_wait` — Block until any of the given sessions needs attention (completes, blocks on a question, fails, or is not found) or a bounded timeout elapses. Returns each watched session's normalized state and which session(s) woke the wait; on timeout returns the current snapshot, not an error.
 - `bus_registry` — Manage the roster registry: list registered rosters, create/register/unregister rosters, set the default, select an active roster for this connector session (`use`, MCP only), and add/remove/update projects on a registered roster. `set-default` also becomes the MCP ambient-resolution fallback (see below) once `SPACE_BUS_CONFIG` is unset.
 
-All five `bus_*` tools accept an optional `roster` param (a registry name — see `bus_registry`) to target a roster other than the ambient one, and every tool result opens with a `roster: <name-or-path>` line naming the roster it resolved against, on both surfaces. Resolution precedence:
+All `bus_*` tools except `bus_registry` accept an optional `roster` param (a registry name — see `bus_registry`) to target a roster other than the ambient one, and every tool result opens with a `roster: <name-or-path>` line naming the roster it resolved against, on both surfaces. Resolution precedence:
 
 - **Plugin surface:** explicit `roster` param > workspace directory (`ctx.directory`).
 - **MCP surface:** explicit `roster` param > connector-session active roster (`bus_registry use`) > `SPACE_BUS_CONFIG` (ambient) > registry default (`bus_registry set-default`), consulted only when `SPACE_BUS_CONFIG` is unset > an actionable error listing the available rosters.
@@ -136,7 +136,7 @@ Semantics:
 
 ## Library surface
 
-Experimental subpath exports expose the bus's internals directly — the functions the four tools run on, plus the managed-server lifecycle and the attach resolver — for renderers and other consumers that want structured state instead of formatted strings. Subpaths are experimental: shapes may change in minor releases; pin the version if you adopt them.
+Experimental subpath exports expose the bus's internals directly — the functions the `bus_*` tools run on, plus the managed-server lifecycle and the attach resolver — for renderers and other consumers that want structured state instead of formatted strings. Subpaths are experimental: shapes may change in minor releases; pin the version if you adopt them.
 
 - `@fro.bot/space-bus/core` — browser-safe; no Node builtins, no ambient env reads. Every exported function takes a `context: BusContext` (`{ roster, credentials? }`) that you build yourself and pass in — core never resolves it for you. Includes `snapshot()`, a one-call composite of roster + per-project status + pending questions with bounded fan-out. Session-content primitives:
   - `messages(sessionId, { context, limit? })` — bounded full-message read. Resolves session ownership from the roster (never a caller-supplied directory), fetches `GET /session/:id/message?limit=N` (default 20, hard maximum 200 — `limit` must be a finite positive integer at or under the maximum; `0`, negative, fractional, `NaN`, `Infinity`, and over-maximum values are rejected before any fetch). Returns `{ sessionId, project, messages: [{ id?, role, createdAt?, parts: [{ type, text? }] }] }` in the order the server returns them — `id`/`createdAt` are the message's stable identity/ordering metadata (from the envelope's `info.id`/`info.time.created`), and only those explicit fields plus parsed `parts` cross the boundary; unknown envelope fields are dropped. No directory/credential fields in the result.
@@ -148,6 +148,7 @@ Experimental subpath exports expose the bus's internals directly — the functio
 - `@fro.bot/space-bus/format` — the pure formatters the tools use to render output, for tool-identical text.
 - `@fro.bot/space-bus/managed-server` — Node-only. The managed-server lifecycle (`ensureServer`/`serverStatus`/`stopServer`) for consumers driving spawn/attach/stop directly — see [Managed server](#managed-server).
 - `@fro.bot/space-bus/attach` — browser-safe. `resolveManagedServer(workspaceDir, seams)` resolves a managed roster's running endpoint by reading the discovery file through injected filesystem/env/crypto seams — re-checking the localhost guard and probing liveness — so an external attacher such as a Tauri webview can attach without any `node:*` imports or reimplementing the discovery contract. Returns `{ baseUrl, credentials, alive }` or an actionable error.
+- `@fro.bot/space-bus/registry` — Node-only, experimental. The roster registry and roster-edit substrate behind `bus_registry` (`readRegistry`/`registerRoster`/`unregisterRoster`/`setDefaultRoster`/`resolveRosterByName`, plus roster creation and project add/remove/update), for consumers that want to manage rosters programmatically without the tool or MCP surfaces.
 
 Node example (`/config` + `/core`):
 
