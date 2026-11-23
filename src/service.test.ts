@@ -1,9 +1,23 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
-import { rosterKey } from "./discovery";
+import { resolveRosterPath } from "./config";
+import { rosterKey, stateDirFor } from "./discovery";
 import type { ExecResult, ExecSeam } from "./launchd";
 import { plistPath, serviceLabel } from "./launchd";
 import type { ServerStatus } from "./server";
@@ -823,4 +837,443 @@ describe("two rosters", () => {
     expect(existsSync(plistPathFor(rosterA))).toBe(false);
     expect(existsSync(plistPathFor(rosterB))).toBe(true);
   });
+});
+
+// --- dangling roster alias (#81 item 2) -----------------------------------
+//
+// `resolveRosterPath` realpaths an EXISTING roster, so install keys the label,
+// state dir and plist roster path on the canonical target. Once the canonical
+// file is deleted, a symlink alias no longer resolves, and every verb used to
+// hash the alias itself: status said not-installed, uninstall removed nothing
+// and a re-install created a second job. The service verbs now follow the
+// alias's own link chain to the same canonical identity.
+
+/** Stateful fake launchctl: bootstrap/bootout actually (un)load a label. */
+function makeFakeLaunchctl() {
+  const loaded = new Set<string>();
+  const calls: string[][] = [];
+  const seam: ExecSeam = async (args) => {
+    calls.push(args);
+    const [verb, target, plist] = args;
+    const label = (target ?? "").split("/").pop() ?? "";
+    if (verb === "print") {
+      return loaded.has(label)
+        ? { code: 0, stdout: "\tpid = 4242\n", stderr: "" }
+        : { code: 3, stdout: "", stderr: "Could not find service" };
+    }
+    if (verb === "bootstrap") loaded.add(basename(plist ?? "", ".plist"));
+    if (verb === "bootout") loaded.delete(label);
+    return { code: 0, stdout: "", stderr: "" };
+  };
+  return { seam, loaded, calls };
+}
+
+function aliasDeps(fake: ReturnType<typeof makeFakeLaunchctl>) {
+  return {
+    exec: fake.seam,
+    platform: "darwin" as const,
+    launchAgentsDir,
+    uid: UID,
+    execPath: "/usr/local/bin/bun",
+    cliEntryPath: "/usr/local/lib/space-bus/dist/cli.js",
+    serverStatus: stubServerStatus(true, 4242),
+    sleep: instantSleep,
+  };
+}
+
+describe("service identity through a dangling roster alias", () => {
+  /** Canonical roster `real/spacebus.json` + `alias.json` -> it; installed
+   * the way the CLI does (resolveRosterPath realpaths an existing roster). */
+  async function installedViaAlias(makeAlias: (canonical: string) => string) {
+    mkdirSync(join(dir, "real"), { recursive: true });
+    const canonicalFile = join(dir, "real", "spacebus.json");
+    writeFileSync(canonicalFile, "{}");
+    const alias = makeAlias(canonicalFile);
+    const fake = makeFakeLaunchctl();
+    const canonical = resolveRosterPath(undefined, alias);
+    expect(canonical).toBe(realpathSync(canonicalFile));
+    const install = await installService(canonical, aliasDeps(fake));
+    expect(install.ok).toBe(true);
+    const label = serviceLabel(canonical);
+    return { alias, canonicalFile, canonical, fake, label };
+  }
+
+  function absoluteAlias(canonical: string): string {
+    const alias = join(dir, "alias.json");
+    symlinkSync(canonical, alias);
+    return alias;
+  }
+
+  test("status via the alias still finds the canonical install after the roster is deleted", async () => {
+    const t = await installedViaAlias(absoluteAlias);
+    unlinkSync(t.canonicalFile);
+
+    const viaAlias = resolveRosterPath(undefined, t.alias);
+    const status = await serviceStatus(viaAlias, aliasDeps(t.fake));
+    expect(status.ok).toBe(true);
+    if (!status.ok) return;
+    expect(status.label).toBe(t.label);
+    expect(status.installed).toBe(true);
+    expect(status.loaded).toBe(true);
+    expect(status.plistPath).toBe(plistPath(t.label, launchAgentsDir));
+  });
+
+  test("uninstall via the alias removes the canonical job and plist", async () => {
+    const t = await installedViaAlias(absoluteAlias);
+    unlinkSync(t.canonicalFile);
+
+    const result = await uninstallService(
+      resolveRosterPath(undefined, t.alias),
+      aliasDeps(t.fake),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.label).toBe(t.label);
+    expect(result.removed).toEqual({ job: true, plist: true });
+    expect(t.fake.loaded.size).toBe(0);
+    expect(existsSync(plistPath(t.label, launchAgentsDir))).toBe(false);
+  });
+
+  test("stop via the alias boots out the canonical job", async () => {
+    const t = await installedViaAlias(absoluteAlias);
+    unlinkSync(t.canonicalFile);
+
+    const result = await stopService(
+      resolveRosterPath(undefined, t.alias),
+      aliasDeps(t.fake),
+    );
+    expect(result).toEqual({ ok: true, label: t.label, wasLoaded: true });
+    expect(t.fake.loaded.size).toBe(0);
+  });
+
+  test("re-install via the alias refreshes the same job: one plist, one label, stable args", async () => {
+    const t = await installedViaAlias(absoluteAlias);
+    const plistFile = plistPath(t.label, launchAgentsDir);
+    const before = readFileSync(plistFile, "utf8");
+    unlinkSync(t.canonicalFile);
+
+    const again = await installService(
+      resolveRosterPath(undefined, t.alias),
+      aliasDeps(t.fake),
+    );
+    expect(again.ok).toBe(true);
+    if (!again.ok) return;
+    expect(again.label).toBe(t.label);
+    expect([...t.fake.loaded]).toEqual([t.label]);
+    expect(readdirSync(launchAgentsDir)).toEqual([`${t.label}.plist`]);
+    // Stable install args: the plist still pins the canonical roster path
+    // (never the alias) and is byte-identical to the first install.
+    const after = readFileSync(plistFile, "utf8");
+    expect(after).toContain(`<string>${t.canonical}</string>`);
+    expect(after).not.toContain(t.alias);
+    expect(after).toBe(before);
+    expect(stateDirFor(t.canonical)).toContain(rosterKey(t.canonical));
+  });
+
+  test("start via the alias re-renders the canonical roster into the plist", async () => {
+    const t = await installedViaAlias(absoluteAlias);
+    unlinkSync(t.canonicalFile);
+    await stopService(t.canonical, aliasDeps(t.fake));
+
+    const result = await startService(
+      resolveRosterPath(undefined, t.alias),
+      aliasDeps(t.fake),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.label).toBe(t.label);
+    const plist = readFileSync(plistPath(t.label, launchAgentsDir), "utf8");
+    expect(plist).toContain(`<string>${t.canonical}</string>`);
+    expect(plist).not.toContain(t.alias);
+  });
+
+  test("follows a relative link chain (alias -> mid -> canonical)", async () => {
+    const t = await installedViaAlias((canonical) => {
+      mkdirSync(join(dir, "ws"), { recursive: true });
+      symlinkSync(canonical, join(dir, "mid.json"));
+      const alias = join(dir, "ws", "alias.json");
+      symlinkSync("../mid.json", alias); // relative to the link's own directory
+      return alias;
+    });
+    unlinkSync(t.canonicalFile);
+
+    const status = await serviceStatus(
+      resolveRosterPath(undefined, t.alias),
+      aliasDeps(t.fake),
+    );
+    expect(status.ok && status.label).toBe(t.label);
+    expect(status.ok && status.installed).toBe(true);
+  });
+
+  test("canonicalizes existing ancestors of a link target that goes through a symlinked directory", async () => {
+    const t = await installedViaAlias((_canonical) => {
+      const linkdir = join(dir, "linkdir");
+      symlinkSync(join(dir, "real"), linkdir);
+      const alias = join(dir, "alias.json");
+      symlinkSync(join(linkdir, "spacebus.json"), alias); // lexical != canonical
+      return alias;
+    });
+    unlinkSync(t.canonicalFile);
+
+    const result = await uninstallService(
+      resolveRosterPath(undefined, t.alias),
+      aliasDeps(t.fake),
+    );
+    expect(result.ok && result.removed).toEqual({ job: true, plist: true });
+  });
+
+  test("a live symlink passed directly resolves to the canonical identity", async () => {
+    const t = await installedViaAlias(absoluteAlias);
+    const status = await serviceStatus(t.alias, aliasDeps(t.fake));
+    expect(status.ok && status.label).toBe(t.label);
+    expect(status.ok && status.installed).toBe(true);
+  });
+
+  test("does not guess past a changed link: a retargeted dangling alias is not the old install", async () => {
+    const t = await installedViaAlias(absoluteAlias);
+    unlinkSync(t.canonicalFile);
+    unlinkSync(t.alias);
+    const elsewhere = join(dir, "elsewhere", "spacebus.json"); // never existed
+    symlinkSync(elsewhere, t.alias);
+
+    const status = await serviceStatus(
+      resolveRosterPath(undefined, t.alias),
+      aliasDeps(t.fake),
+    );
+    expect(status.ok).toBe(true);
+    if (!status.ok) return;
+    // Followed to its current target, with existing ancestors canonicalized
+    // (the temp dir may itself sit behind a symlink, e.g. /var -> /private/var).
+    expect(status.label).toBe(
+      serviceLabel(join(realpathSync(dir), "elsewhere", "spacebus.json")),
+    );
+    expect(status.label).not.toBe(t.label);
+    expect(status.installed).toBe(false);
+    expect(status.loaded).toBe(false);
+    // The old install is untouched.
+    expect(t.fake.loaded.has(t.label)).toBe(true);
+  });
+
+  test("a plain missing path keeps its raw identity and normal no-install semantics", async () => {
+    const fake = makeFakeLaunchctl();
+    const missing = join(dir, "nowhere", "spacebus.json");
+    const status = await serviceStatus(missing, aliasDeps(fake));
+    expect(status.ok).toBe(true);
+    if (!status.ok) return;
+    expect(status.label).toBe(serviceLabel(missing));
+    expect(status.installed).toBe(false);
+    expect(status.loaded).toBe(false);
+
+    const un = await uninstallService(missing, aliasDeps(fake));
+    expect(un.ok && un.removed).toEqual({ job: false, plist: false });
+  });
+
+  test("a dangling alias that was never installed is a normal no-install", async () => {
+    const fake = makeFakeLaunchctl();
+    const alias = join(dir, "alias.json");
+    symlinkSync(join(dir, "gone", "spacebus.json"), alias);
+    const un = await uninstallService(alias, aliasDeps(fake));
+    expect(un.ok && un.removed).toEqual({ job: false, plist: false });
+  });
+
+  test("a symlink loop is an explicit error and never reaches launchctl", async () => {
+    const fake = makeFakeLaunchctl();
+    const a = join(dir, "a.json");
+    const b = join(dir, "b.json");
+    symlinkSync(b, a);
+    symlinkSync(a, b);
+    for (const verb of [
+      installService,
+      uninstallService,
+      serviceStatus,
+      stopService,
+      startService,
+    ]) {
+      const result = await verb(a, aliasDeps(fake));
+      expect(result.ok).toBe(false);
+      if (result.ok) continue;
+      expect(result.error).toContain("symlink");
+    }
+    expect(fake.calls).toEqual([]);
+  });
+
+  test("a roster deleted behind a symlinked parent directory keeps its canonical identity", async () => {
+    const t = await installedViaAlias(() => {
+      symlinkSync(join(dir, "real"), join(dir, "linkdir"));
+      return join(dir, "linkdir", "spacebus.json"); // leaf is a plain file
+    });
+    unlinkSync(t.canonicalFile);
+
+    const viaConfig = resolveRosterPath(undefined, t.alias);
+    expect(viaConfig).toBe(t.alias); // missing => resolveRosterPath keeps it raw
+    const status = await serviceStatus(viaConfig, aliasDeps(t.fake));
+    expect(status.ok && status.label).toBe(t.label);
+    expect(status.ok && status.installed).toBe(true);
+    const un = await uninstallService(viaConfig, aliasDeps(t.fake));
+    expect(un.ok && un.removed).toEqual({ job: true, plist: true });
+    expect(t.fake.loaded.size).toBe(0);
+  });
+
+  test("does not collapse `..` across a symlink before resolving", async () => {
+    // linkdir -> real/sub, so `<dir>/linkdir/../spacebus.json` is physically
+    // real/spacebus.json but lexically (collapsed) <dir>/spacebus.json.
+    // (Service-level on purpose: node's realpathSync, hence resolveRosterPath,
+    // collapses `..` lexically and cannot produce this input.)
+    mkdirSync(join(dir, "real", "sub"), { recursive: true });
+    symlinkSync(join(dir, "real", "sub"), join(dir, "linkdir"));
+    const fake = makeFakeLaunchctl();
+    const canonical = join(realpathSync(dir), "real", "spacebus.json");
+    await installService(canonical, aliasDeps(fake)); // file missing: given identity
+    const viaDotDot = `${dir}/linkdir/../spacebus.json`;
+
+    const status = await serviceStatus(viaDotDot, aliasDeps(fake));
+    expect(status.ok && status.label).toBe(serviceLabel(canonical));
+    expect(status.ok && status.installed).toBe(true);
+  });
+
+  describe("installs made before canonicalization (keyed on the path as given)", () => {
+    const given = () => join(dir, "linkdir", "spacebus.json");
+    beforeEach(() => {
+      mkdirSync(join(dir, "real"), { recursive: true });
+      symlinkSync(join(dir, "real"), join(dir, "linkdir"));
+    });
+
+    test("a raw-keyed install is still found and removed, never switched to a new label", async () => {
+      const fake = makeFakeLaunchctl();
+      const rawLabel = serviceLabel(given());
+      await installService(given(), aliasDeps(fake)); // roster file never existed
+      expect([...fake.loaded]).toEqual([rawLabel]);
+
+      const status = await serviceStatus(given(), aliasDeps(fake));
+      expect(status.ok && status.label).toBe(rawLabel);
+      expect(status.ok && status.installed).toBe(true);
+      const again = await installService(given(), aliasDeps(fake));
+      expect(again.ok && again.label).toBe(rawLabel);
+      expect(
+        readFileSync(plistPath(rawLabel, launchAgentsDir), "utf8"),
+      ).toContain(`<string>${given()}</string>`);
+      const un = await uninstallService(given(), aliasDeps(fake));
+      expect(un.ok && un.removed).toEqual({ job: true, plist: true });
+      expect(fake.loaded.size).toBe(0);
+    });
+
+    test("plists for both the canonical and the as-given identity are ambiguous: nothing is touched", async () => {
+      const fake = makeFakeLaunchctl();
+      const canonicalFile = join(dir, "real", "spacebus.json");
+      await installService(given(), aliasDeps(fake)); // old raw-keyed install
+      writeFileSync(canonicalFile, "{}");
+      await installService(realpathSync(canonicalFile), aliasDeps(fake));
+      unlinkSync(canonicalFile);
+      expect(fake.loaded.size).toBe(2);
+      const callsBefore = fake.calls.length;
+
+      for (const verb of [
+        installService,
+        uninstallService,
+        serviceStatus,
+        stopService,
+        startService,
+      ]) {
+        const result = await verb(given(), aliasDeps(fake));
+        expect(result.ok).toBe(false);
+        if (!result.ok) expect(result.error).toContain("ambiguous");
+      }
+      expect(fake.calls.length).toBe(callsBefore);
+      expect(fake.loaded.size).toBe(2);
+      expect(readdirSync(launchAgentsDir).length).toBe(2);
+    });
+  });
+
+  test("a plain missing path with no alias keeps its given identity", async () => {
+    const fake = makeFakeLaunchctl();
+    const missing = join(realpathSync(dir), "nowhere", "spacebus.json");
+    const status = await serviceStatus(missing, aliasDeps(fake));
+    expect(status.ok && status.label).toBe(serviceLabel(missing));
+    expect(status.ok && status.installed).toBe(false);
+  });
+
+  test("a symlink loop in a parent directory is an explicit error without launchctl", async () => {
+    const fake = makeFakeLaunchctl();
+    symlinkSync(join(dir, "loopb"), join(dir, "loopa"));
+    symlinkSync(join(dir, "loopa"), join(dir, "loopb"));
+    const roster = join(dir, "loopa", "spacebus.json");
+    for (const verb of [
+      installService,
+      uninstallService,
+      serviceStatus,
+      stopService,
+      startService,
+    ]) {
+      const result = await verb(roster, aliasDeps(fake));
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error).toContain("cannot resolve roster path");
+        expect(result.error).toContain("loops");
+      }
+    }
+    expect(fake.calls).toEqual([]);
+  });
+
+  test("a roster path below a regular file (ENOTDIR) is an explicit error, not a missing tail", async () => {
+    const fake = makeFakeLaunchctl();
+    writeFileSync(join(dir, "afile"), "x");
+    const result = await serviceStatus(
+      join(dir, "afile", "spacebus.json"),
+      aliasDeps(fake),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("ENOTDIR");
+    expect(fake.calls).toEqual([]);
+  });
+
+  test.skipIf(process.getuid?.() === 0)(
+    "an access-denied parent directory is an explicit error without launchctl",
+    async () => {
+      const fake = makeFakeLaunchctl();
+      const locked = join(dir, "locked");
+      mkdirSync(join(locked, "inner"), { recursive: true });
+      chmodSync(locked, 0o000);
+      try {
+        for (const verb of [
+          installService,
+          uninstallService,
+          serviceStatus,
+          stopService,
+          startService,
+        ]) {
+          const result = await verb(
+            join(locked, "inner", "spacebus.json"),
+            aliasDeps(fake),
+          );
+          expect(result.ok).toBe(false);
+          if (!result.ok) expect(result.error).toContain("EACCES");
+        }
+        expect(fake.calls).toEqual([]);
+      } finally {
+        chmodSync(locked, 0o755);
+      }
+    },
+  );
+
+  test.skipIf(process.getuid?.() === 0)(
+    "an unreadable link chain is an explicit error, not a guessed identity",
+    async () => {
+      const fake = makeFakeLaunchctl();
+      const locked = join(dir, "locked");
+      mkdirSync(locked);
+      const mid = join(locked, "mid.json");
+      symlinkSync(join(dir, "gone", "spacebus.json"), mid);
+      const alias = join(dir, "alias.json");
+      symlinkSync(mid, alias);
+      chmodSync(locked, 0o000);
+      try {
+        const result = await serviceStatus(alias, aliasDeps(fake));
+        expect(result.ok).toBe(false);
+        if (!result.ok) expect(result.error).toContain("roster");
+        expect(fake.calls).toEqual([]);
+      } finally {
+        chmodSync(locked, 0o755);
+      }
+    },
+  );
 });
