@@ -1,5 +1,11 @@
 # @fro.bot/space-bus
 
+## 0.15.1
+
+### Patch Changes
+
+- b325a99: Raise the `zod` floor to `^4.6.7` to pick up the fix for GHSA-mrhx-c7xc-m3w5 (memory exhaustion when validating oversized constrained collections, fixed in 4.6.6).
+
 ## 0.15.0
 
 ### Minor Changes
