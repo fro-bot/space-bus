@@ -94,7 +94,10 @@ env:
     its TODAY_UTC value is authoritative. Do not compute the date yourself or
     read it from the shell (the agent shell does not inherit workflow env).
     The checkout is the trusted default branch; run validation commands only
-    there. If this run was dispatched from another ref, inspect that ref's files
+    there, before making edits. On repair branches edit files without executing
+    branch code, including installs, tests and formatters. Use the PR's normal CI
+    to validate its exact head; report pending checks as pending, not passed.
+    If this run was dispatched from another ref, inspect that ref's files
     read-only (git show, gh api) and never execute anything from it.
 
     UNTRUSTED CONTENT
@@ -141,8 +144,7 @@ env:
        cause, apply a focused fix, push to that PR branch, and post a concise PR
        comment (root cause, fix applied, remaining risk). If the PR touches
        .github/workflows/, automation prompts, package.json, lockfiles, or
-       execution scripts, do NOT run project commands from that branch — skip
-       and log why.
+       execution scripts, skip the category 1 repair entirely and log why.
 
     2. SECURITY
        Apply the same trusted-author, same-repository, non-default writable-head
@@ -169,8 +171,8 @@ env:
        invocation, the version-changesets/publish-changesets scripts in
        package.json, and npm trusted-publishing (OIDC) setup must stay
        internally consistent. Treat any release.yaml/changesets misconfig as CI
-       health, not code quality. Apply safe mechanical fixes (lint/format
-       autofixes) on a PR branch — NEVER commit directly to main. If a check
+       health, not code quality. Make safe mechanical edits on a repair branch
+       without running project commands there; never commit directly to main. If a check
        fails and the fix is not minimal/reversible, open or update an issue and
        record a cold-start note.
 
@@ -194,9 +196,10 @@ env:
        and fro-bot/agent. First confirm each is public
        (`gh repo view <repo> --json visibility`); if that is not confirmed or
        the query fails, mark it "unavailable" and skip it. Use read-only `gh`
-       calls, at most 3 per repo: its default-branch
-       `.github/workflows/fro-bot.yaml` (for fro-bot/agent, the latest release
-       notes), recent merged PRs or releases (max 5), and one targeted lookup.
+       calls, at most 3 per repo including the visibility check:
+       - For systematic, gpt, and .github, read the default-branch Fro Bot workflow.
+       - For fro-bot/agent, read its latest published release notes instead.
+       - If relevant, use the remaining call to verify one finding at its source.
        Never clone or check out those repos, and never write to, comment on, or
        open artifacts in them. Compare with this repo's action pin, report
        rules, and CI/package/plugin contracts. Report only evidence-backed
