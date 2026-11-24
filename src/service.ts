@@ -97,6 +97,12 @@ export interface ServiceDeps {
    * exercise the default against the real filesystem.
    */
   launchAgentsDir?: string;
+  /**
+   * The uid the written plist must be owned by. Defaults to the process uid.
+   * Test seam only: lets a test exercise the foreign-owner refusal without
+   * privilege. Production callers leave it unset.
+   */
+  plistOwnerUid?: number;
 }
 
 interface ResolvedDeps {
@@ -111,6 +117,7 @@ interface ResolvedDeps {
   verifyBudgetMs: number;
   verifyPollMs: number;
   launchAgentsDir: string;
+  plistOwnerUid: number | undefined;
 }
 
 function defaultCliEntryPath(): string {
@@ -132,6 +139,7 @@ function resolveDeps(deps: ServiceDeps): ResolvedDeps {
     verifyPollMs: deps.verifyPollMs ?? DEFAULT_VERIFY_POLL_MS,
     launchAgentsDir:
       deps.launchAgentsDir ?? join(homedir(), "Library", "LaunchAgents"),
+    plistOwnerUid: deps.plistOwnerUid,
   };
 }
 
@@ -646,7 +654,7 @@ async function installLocked(
     return { ok: false, error: writeResult.error };
   }
 
-  const safety = verifyPlistSafe(plistFilePath);
+  const safety = verifyPlistSafe(plistFilePath, resolved.plistOwnerUid);
   if (!safety.safe) {
     return { ok: false, error: `refusing to install: ${safety.reason}` };
   }
@@ -926,7 +934,7 @@ async function startLocked(
   if (!writeResult.ok) {
     return { ok: false, error: writeResult.error };
   }
-  const safety = verifyPlistSafe(plistFilePath);
+  const safety = verifyPlistSafe(plistFilePath, resolved.plistOwnerUid);
   if (!safety.safe) {
     return { ok: false, error: `refusing to start: ${safety.reason}` };
   }

@@ -191,6 +191,20 @@ describe("verifyPlistSafe", () => {
     expect(verifyPlistSafe(target)).toEqual({ safe: true });
   });
 
+  test("rejects an otherwise-safe 0644 plist solely because its owner is not the expected uid", () => {
+    const target = join(dir, "test.plist");
+    writePlistAtomic(target, "<plist/>");
+    const { uid, mode } = statSync(target);
+    expect(mode & 0o777).toBe(0o644); // not group/world-writable: mode is fine
+    // Control: the very same file is safe when its real owner is the expected uid.
+    expect(verifyPlistSafe(target, uid)).toEqual({ safe: true });
+    // Only the expected uid differs (no chown, no privilege): owner is the sole reason.
+    expect(verifyPlistSafe(target, uid + 1)).toEqual({
+      safe: false,
+      reason: `plist is not owned by the current user (uid ${uid})`,
+    });
+  });
+
   test("rejects mode 0664 (group-writable)", () => {
     const target = join(dir, "test.plist");
     writePlistAtomic(target, "<plist/>");
