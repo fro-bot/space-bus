@@ -1,12 +1,14 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import {
+  closeSync,
   existsSync,
+  fstatSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
   rmSync,
-  statSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
@@ -75,8 +77,13 @@ describe("acquireServiceLock", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(lockPath).toBe(join(stateDir, "service.lock"));
-    expect(statSync(lockPath).mode & 0o777).toBe(0o600);
-    expect(JSON.parse(readFileSync(lockPath, "utf8")).pid).toBe(process.pid);
+    const fd = openSync(lockPath, "r");
+    try {
+      expect(fstatSync(fd).mode & 0o777).toBe(0o600);
+      expect(JSON.parse(readFileSync(fd, "utf8")).pid).toBe(process.pid);
+    } finally {
+      closeSync(fd);
+    }
     result.lock.release();
     expect(existsSync(lockPath)).toBe(false);
   });
