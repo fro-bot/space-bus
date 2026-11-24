@@ -1,5 +1,12 @@
 # @fro.bot/space-bus
 
+## 0.15.2
+
+### Patch Changes
+
+- 9a74ae8: `space-bus service install|start|stop|uninstall` now take a per-roster lock, so overlapping runs on the same roster no longer interleave their `launchctl` and plist steps. A second concurrent command fails immediately with an "operation in progress" error and changes nothing; `status` and other rosters are unaffected. If a previous command crashed and left its lock behind, the next command reclaims it; an incomplete or unreadable lock file is never removed automatically, and the error explains how to clear it.
+- e8002cf: `space-bus service` verbs now find an installed service after its roster file is deleted behind a symlinked alias or a symlinked parent directory. Previously the non-canonical path hashed to a different service label, so `status` reported not-installed, `uninstall` removed nothing while the canonical job stayed loaded, and a re-install through a dangling alias created a second job. The verbs now resolve the roster path component by component (following absolute and relative links, applying `..` physically, and canonicalizing existing ancestors) and key the label, state directory, plist `SPACE_BUS_CONFIG` and server status on the canonical path the install used. Installs made earlier under the path as given are still found and are never switched to a new label; if plists exist for both identities the verb refuses as ambiguous instead of acting on a possibly wrong job. A symlink loop, an unreadable or access-denied component, or a component that is not a directory is now an explicit error (no launchctl call) instead of silently using the given path. Roster resolution in `config.ts`/`attach.ts` is unchanged.
+
 ## 0.15.1
 
 ### Patch Changes
