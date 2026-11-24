@@ -1277,3 +1277,231 @@ describe("service identity through a dangling roster alias", () => {
     },
   );
 });
+
+// --- per-roster mutation lock (#81 item 1) ----------------------------------
+//
+// install/start/stop/uninstall are print -> bootout -> write -> bootstrap ->
+// verify sequences. Two of them on one roster used to interleave (a stale
+// installer could write its plist behind another's loaded job, or boot out the
+// other's fresh job). They now hold a cross-process, fail-fast
+// `<stateDir>/service.lock` (distinct from the daemon's spawn.lock) from before
+// the first shared operation until verification/cleanup finishes. `status` is
+// read-only and takes no lock.
+
+/** An exec seam whose FIRST call parks on a barrier, so a verb can be held mid-flight. */
+function gatedExec(fake: ReturnType<typeof makeFakeLaunchctl>) {
+  let reached!: () => void;
+  let release!: () => void;
+  const reachedP = new Promise<void>((r) => {
+    reached = r;
+  });
+  const releaseP = new Promise<void>((r) => {
+    release = r;
+  });
+  let first = true;
+  const seam: ExecSeam = async (args) => {
+    if (first) {
+      first = false;
+      reached();
+      await releaseP;
+    }
+    return fake.seam(args);
+  };
+  return { seam, reachedP, release };
+}
+
+function lockPathFor(roster: string): string {
+  return join(stateDirFor(roster), "service.lock");
+}
+
+describe("service mutation lock", () => {
+  async function heldInstall(roster: string, fake = makeFakeLaunchctl()) {
+    const gate = gatedExec(fake);
+    const held = installService(roster, {
+      ...aliasDeps(fake),
+      exec: gate.seam,
+    });
+    await gate.reachedP; // A is now mid-install, before its first launchctl call
+    return { held, release: gate.release, fake };
+  }
+
+  test("a second install of the same roster fails fast with no mutation; the first completes", async () => {
+    const a = await heldInstall(rosterPath);
+    const bFake = makeFakeLaunchctl();
+    const b = await installService(rosterPath, aliasDeps(bFake));
+    expect(b.ok).toBe(false);
+    if (!b.ok) expect(b.error).toContain("in progress");
+    expect(bFake.calls).toEqual([]); // not a single launchctl call
+    expect(bFake.loaded.size).toBe(0);
+    expect(existsSync(plistPathFor(rosterPath))).toBe(false); // nothing written
+
+    a.release();
+    const result = await a.held;
+    expect(result.ok).toBe(true);
+    expect([...a.fake.loaded]).toEqual([serviceLabel(rosterPath)]);
+    // plist on disk is exactly the one A loaded
+    expect(existsSync(plistPathFor(rosterPath))).toBe(true);
+  });
+
+  test("the lock is a 0600 file in a 0700 state dir, distinct from spawn.lock, released afterwards", async () => {
+    const a = await heldInstall(rosterPath);
+    const lock = lockPathFor(rosterPath);
+    expect(existsSync(lock)).toBe(true);
+    expect(statSync(lock).mode & 0o777).toBe(0o600);
+    expect(statSync(stateDirFor(rosterPath)).mode & 0o777).toBe(0o700);
+    expect(lock).not.toBe(join(stateDirFor(rosterPath), "spawn.lock"));
+    a.release();
+    await a.held;
+    expect(existsSync(lock)).toBe(false);
+  });
+
+  test("every mutating verb fails fast while another holds the lock; status stays independent", async () => {
+    const a = await heldInstall(rosterPath);
+    for (const verb of [
+      installService,
+      uninstallService,
+      stopService,
+      startService,
+    ]) {
+      const fake = makeFakeLaunchctl();
+      const result = await verb(rosterPath, aliasDeps(fake));
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error).toContain("in progress");
+      expect(fake.calls).toEqual([]);
+    }
+    const statusFake = makeFakeLaunchctl();
+    const status = await serviceStatus(rosterPath, aliasDeps(statusFake));
+    expect(status.ok).toBe(true); // read-only: no lock, no refusal
+    a.release();
+    await a.held;
+  });
+
+  test("different rosters do not block each other", async () => {
+    const rosterB = join(dir, "other", "spacebus.json");
+    const a = await heldInstall(rosterPath);
+    const fakeB = makeFakeLaunchctl();
+    const b = await installService(rosterB, aliasDeps(fakeB));
+    expect(b.ok).toBe(true);
+    expect([...fakeB.loaded]).toEqual([serviceLabel(rosterB)]);
+    a.release();
+    expect((await a.held).ok).toBe(true);
+  });
+
+  test("a failed verb releases the lock (error result and thrown exec)", async () => {
+    const failing = makeFakeLaunchctl();
+    const failSeam: ExecSeam = async (args) =>
+      args[0] === "bootstrap"
+        ? { code: 1, stdout: "", stderr: "boom" }
+        : failing.seam(args);
+    const failed = await installService(rosterPath, {
+      ...aliasDeps(failing),
+      exec: failSeam,
+    });
+    expect(failed.ok).toBe(false);
+    expect(existsSync(lockPathFor(rosterPath))).toBe(false);
+
+    const throwing: ExecSeam = async () => {
+      throw new Error("exec exploded");
+    };
+    await expect(
+      uninstallService(rosterPath, {
+        ...aliasDeps(makeFakeLaunchctl()),
+        exec: throwing,
+      }),
+    ).rejects.toThrow("exec exploded");
+    expect(existsSync(lockPathFor(rosterPath))).toBe(false);
+
+    const next = await installService(
+      rosterPath,
+      aliasDeps(makeFakeLaunchctl()),
+    );
+    expect(next.ok).toBe(true);
+  });
+
+  test("an alias, the canonical path and a dangling alias share one lock", async () => {
+    mkdirSync(join(dir, "real"), { recursive: true });
+    const canonicalFile = join(dir, "real", "spacebus.json");
+    writeFileSync(canonicalFile, "{}");
+    const alias = join(dir, "alias.json");
+    symlinkSync(canonicalFile, alias);
+    const canonical = resolveRosterPath(undefined, alias);
+    const fake = makeFakeLaunchctl();
+    expect((await installService(canonical, aliasDeps(fake))).ok).toBe(true);
+
+    // live alias vs canonical
+    const held = await heldInstall(canonical, fake);
+    const viaAlias = await stopService(alias, aliasDeps(makeFakeLaunchctl()));
+    expect(viaAlias.ok).toBe(false);
+    if (!viaAlias.ok) expect(viaAlias.error).toContain("in progress");
+    held.release();
+    await held.held;
+
+    // missing target: the alias dangles, the canonical path no longer exists
+    unlinkSync(canonicalFile);
+    const heldDangling = await (async () => {
+      const gate = gatedExec(fake);
+      const p = uninstallService(resolveRosterPath(undefined, alias), {
+        ...aliasDeps(fake),
+        exec: gate.seam,
+      });
+      await gate.reachedP;
+      return { p, release: gate.release };
+    })();
+    const viaCanonical = await startService(
+      canonical,
+      aliasDeps(makeFakeLaunchctl()),
+    );
+    expect(viaCanonical.ok).toBe(false);
+    if (!viaCanonical.ok) expect(viaCanonical.error).toContain("in progress");
+    heldDangling.release();
+    const un = await heldDangling.p;
+    expect(un.ok && un.removed).toEqual({ job: true, plist: true });
+  });
+
+  test("a verb takes the lock once: a nested status call neither deadlocks nor blocks", async () => {
+    const fake = makeFakeLaunchctl();
+    let nestedStatus: unknown;
+    const seam: ExecSeam = async (args) => {
+      if (args[0] === "kickstart" && nestedStatus === undefined) {
+        nestedStatus = await serviceStatus(
+          rosterPath,
+          aliasDeps(makeFakeLaunchctl()),
+        );
+      }
+      return fake.seam(args);
+    };
+    const result = await installService(rosterPath, {
+      ...aliasDeps(fake),
+      exec: seam,
+    });
+    expect(result.ok).toBe(true);
+    expect((nestedStatus as { ok: boolean }).ok).toBe(true);
+    expect(existsSync(lockPathFor(rosterPath))).toBe(false);
+  });
+
+  test("a lock I/O failure is an ok:false result with no launchctl call", async () => {
+    mkdirSync(lockPathFor(rosterPath), { recursive: true }); // dir squats the lock path
+    const fake = makeFakeLaunchctl();
+    for (const verb of [
+      installService,
+      uninstallService,
+      stopService,
+      startService,
+    ]) {
+      const result = await verb(rosterPath, aliasDeps(fake));
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error).toContain("service.lock");
+    }
+    expect(fake.calls).toEqual([]);
+  });
+
+  test("the platform gate runs before any lock or state-dir creation", async () => {
+    const fake = makeFakeLaunchctl();
+    const result = await installService(rosterPath, {
+      ...aliasDeps(fake),
+      platform: "linux",
+    });
+    expect(result.ok).toBe(false);
+    expect(existsSync(stateDirFor(rosterPath))).toBe(false);
+  });
+});

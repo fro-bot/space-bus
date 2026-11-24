@@ -43,6 +43,7 @@ import {
   serverStatus as defaultServerStatus,
   type ServerStatus,
 } from "./server";
+import { acquireServiceLock } from "./service-lock";
 
 const NOT_SUPPORTED_ERROR =
   "space-bus service is not supported on this platform (v1 supports macOS/launchd)";
@@ -178,6 +179,9 @@ function identityFor(
   };
 }
 
+/** A service identity plus the roster path it is keyed on. */
+type ResolvedIdentity = ServiceIdentity & { rosterPath: string };
+
 /** Bounds a symlink chain; a loop exhausts it. */
 const MAX_ROSTER_LINK_HOPS = 40;
 
@@ -275,7 +279,7 @@ function isSymlink(path: string): boolean {
 function resolveIdentity(
   rosterPath: string,
   launchAgentsDir: string,
-): ResolveResult<ServiceIdentity & { rosterPath: string }> {
+): ResolveResult<ResolvedIdentity> {
   const given = identityFor(rosterPath, launchAgentsDir);
   const walked = isAbsolute(rosterPath)
     ? realpathLoose(rosterPath)
@@ -300,6 +304,30 @@ function resolveIdentity(
 }
 
 export type PreCreateLogResult = { ok: true } | { ok: false; error: string };
+
+/**
+ * Runs a mutating verb under the roster's cross-process service lock (#81).
+ * Taken after identity resolution (alias, canonical and dangling-alias paths
+ * all reach the same state dir) and BEFORE the first shared operation, held
+ * through verification, and released on every exit path including a throw.
+ * Fails fast, without mutation, if another operation holds it. `status` never
+ * calls this. Public verbs call it exactly once; the `*Locked` bodies they
+ * delegate to never call a public verb, so the lock is never taken twice.
+ */
+async function withServiceLock<T>(
+  stateDir: string,
+  run: () => Promise<T>,
+): Promise<T | { ok: false; error: string }> {
+  const dir = ensureStateDir(stateDir);
+  if (!dir.ok) return dir;
+  const acquired = acquireServiceLock(stateDir);
+  if (!acquired.ok) return acquired;
+  try {
+    return await run();
+  } finally {
+    acquired.lock.release();
+  }
+}
 
 /**
  * Ensures a service log file exists and is 0600, refusing a symlink at
@@ -566,8 +594,17 @@ export async function installService(
 
   const identity = resolveIdentity(rosterPath, resolved.launchAgentsDir);
   if (!identity.ok) return { ok: false, error: identity.error };
-  const { label, plistFilePath, stateDir } = identity.value;
-  const roster = identity.value.rosterPath;
+  return withServiceLock(identity.value.stateDir, () =>
+    installLocked(resolved, identity.value),
+  );
+}
+
+async function installLocked(
+  resolved: ResolvedDeps,
+  identity: ResolvedIdentity,
+): Promise<InstallResult> {
+  const { label, plistFilePath, stateDir } = identity;
+  const roster = identity.rosterPath;
 
   const warning = ephemeralCacheWarning(resolved);
 
@@ -699,7 +736,16 @@ export async function uninstallService(
 
   const identity = resolveIdentity(rosterPath, resolved.launchAgentsDir);
   if (!identity.ok) return { ok: false, error: identity.error };
-  const { label, plistFilePath } = identity.value;
+  return withServiceLock(identity.value.stateDir, () =>
+    uninstallLocked(resolved, identity.value),
+  );
+}
+
+async function uninstallLocked(
+  resolved: ResolvedDeps,
+  identity: ResolvedIdentity,
+): Promise<UninstallResult> {
+  const { label, plistFilePath } = identity;
 
   const job = await probeJob(resolved, label);
   if (!job.ok) {
@@ -804,7 +850,16 @@ export async function stopService(
 
   const identity = resolveIdentity(rosterPath, resolved.launchAgentsDir);
   if (!identity.ok) return { ok: false, error: identity.error };
-  const { label } = identity.value;
+  return withServiceLock(identity.value.stateDir, () =>
+    stopLocked(resolved, identity.value),
+  );
+}
+
+async function stopLocked(
+  resolved: ResolvedDeps,
+  identity: ResolvedIdentity,
+): Promise<StopResult> {
+  const { label } = identity;
   const job = await probeJob(resolved, label);
   if (!job.ok) {
     return { ok: false, error: `failed to probe job: ${job.error}` };
@@ -834,8 +889,17 @@ export async function startService(
 
   const identity = resolveIdentity(rosterPath, resolved.launchAgentsDir);
   if (!identity.ok) return { ok: false, error: identity.error };
-  const { label, plistFilePath, stateDir } = identity.value;
-  const roster = identity.value.rosterPath;
+  return withServiceLock(identity.value.stateDir, () =>
+    startLocked(resolved, identity.value),
+  );
+}
+
+async function startLocked(
+  resolved: ResolvedDeps,
+  identity: ResolvedIdentity,
+): Promise<StartResult> {
+  const { label, plistFilePath, stateDir } = identity;
+  const roster = identity.rosterPath;
   if (!existsSync(plistFilePath)) {
     return {
       ok: false,
