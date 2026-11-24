@@ -121,11 +121,7 @@ describe("contract schemas", () => {
       "B",
     ]);
     // passthrough on option objects
-    expect(
-      (parsed.questions?.[0]?.options?.[1] as Record<string, unknown>)[
-        "weight"
-      ],
-    ).toBe(2);
+    expect(parsed.questions?.[0]?.options?.[1]).toHaveProperty("weight", 2);
   });
 
   test("vcsStatusEntrySchema parses a representative entry", () => {
