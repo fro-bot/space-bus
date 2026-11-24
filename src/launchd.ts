@@ -195,9 +195,16 @@ export type PlistSafety = { safe: true } | { safe: false; reason: string };
 /**
  * Refuses a plist that isn't owned by the current user or is
  * group/world-writable — a tampered plist must never become login-time
- * code execution (R15).
+ * code execution (R15). `expectedUid` defaults to `process.getuid()`; it is a
+ * test seam (a foreign-owned file cannot be made without privilege), and
+ * production callers leave it unset.
  */
-export function verifyPlistSafe(path: string): PlistSafety {
+export function verifyPlistSafe(
+  path: string,
+  expectedUid: number | undefined = typeof process.getuid === "function"
+    ? process.getuid()
+    : undefined,
+): PlistSafety {
   let mode: number;
   let uid: number;
   try {
@@ -215,7 +222,7 @@ export function verifyPlistSafe(path: string): PlistSafety {
   } catch (err) {
     return { safe: false, reason: `failed to stat plist: ${String(err)}` };
   }
-  if (typeof process.getuid === "function" && uid !== process.getuid()) {
+  if (expectedUid !== undefined && uid !== expectedUid) {
     return {
       safe: false,
       reason: `plist is not owned by the current user (uid ${uid})`,

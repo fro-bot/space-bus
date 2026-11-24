@@ -1505,3 +1505,70 @@ describe("service mutation lock", () => {
     expect(existsSync(stateDirFor(rosterPath))).toBe(false);
   });
 });
+
+// --- plist ownership boundary (#81 item 3) ---------------------------------------
+//
+// `verifyPlistSafe` is the R15 boundary between writing the plist and handing it
+// to launchd. A foreign-owned file cannot be created without privilege, so the
+// expected owner is injected (`plistOwnerUid`) instead of chown'ing anything.
+
+describe("plist ownership boundary", () => {
+  const ourUid = process.getuid?.() ?? 0;
+  const notOurUid = ourUid + 1;
+
+  test("install refuses an otherwise-safe 0644 plist on owner mismatch alone and never bootstraps", async () => {
+    const fake = makeFakeLaunchctl();
+    const result = await installService(rosterPath, {
+      ...aliasDeps(fake),
+      plistOwnerUid: notOurUid,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("refusing to install");
+      expect(result.error).toContain(
+        `plist is not owned by the current user (uid ${ourUid})`,
+      );
+      expect(result.error).not.toContain("writable");
+    }
+    // The file it refused is mode-safe: ownership is the only thing wrong.
+    const written = statSync(plistPathFor(rosterPath));
+    expect(written.mode & 0o777).toBe(0o644);
+    expect(written.uid).toBe(ourUid);
+    // Nothing was handed to launchd.
+    const verbs = fake.calls.map((call) => call[0]);
+    expect(verbs).not.toContain("bootstrap");
+    expect(verbs).not.toContain("kickstart");
+    expect(fake.loaded.size).toBe(0);
+    // The lock was released on this error path.
+    expect(existsSync(lockPathFor(rosterPath))).toBe(false);
+
+    // Control: the identical install with the real owner expected goes through.
+    const ok = await installService(rosterPath, {
+      ...aliasDeps(fake),
+      plistOwnerUid: ourUid,
+    });
+    expect(ok.ok).toBe(true);
+    expect(fake.loaded.size).toBe(1);
+  });
+
+  test("start applies the same ownership check before bootstrapping", async () => {
+    const installFake = makeFakeLaunchctl();
+    expect((await installService(rosterPath, aliasDeps(installFake))).ok).toBe(
+      true,
+    );
+    await stopService(rosterPath, aliasDeps(installFake));
+
+    const startFake = makeFakeLaunchctl();
+    const result = await startService(rosterPath, {
+      ...aliasDeps(startFake),
+      plistOwnerUid: notOurUid,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("refusing to start");
+      expect(result.error).toContain("not owned by the current user");
+    }
+    expect(startFake.calls).toEqual([]); // no bootstrap, kickstart or even print
+    expect(startFake.loaded.size).toBe(0);
+  });
+});
