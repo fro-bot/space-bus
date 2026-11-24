@@ -1,4 +1,5 @@
 ---
+
 date: 2026-07-09
 topic: managed-daemon-supervision
 ---
@@ -52,16 +53,19 @@ The lifecycle owner is `space-bus`. Attachers must not become watchdogs — push
 ## Requirements
 
 **Layer A — fail-closed stale-record cleanup (ships first, standalone)**
+
 - R1. When a Node-side resolver reads a discovery record whose recorded pid fails identity verification, it removes `discovery.json` before returning — but only via compare-and-delete: the record on disk at removal time must still match the stale record that was read (pid/identity), so a concurrent respawn's fresh record is never deleted.
 - R2. Both Node-side resolver surfaces perform this cleanup — the CLI `status` path (`serverStatus`) and the attach path (`attachServer`), so a dead daemon observed through either leaves no record behind. The browser `/attach` resolver is excluded (it fails closed on read but does not delete — see Scope Boundaries).
 - R3. Cleanup is best-effort and must never throw across the caller boundary; a resolver that can't remove the file still reports not-running.
 
 **Layer B — active foreground liveness monitoring (follow-on)**
+
 - R4. `--foreground` periodically checks the managed child's liveness (process identity, and reachability of the authenticated endpoint), not just its own signals, with a failure threshold or grace period so a briefly-slow-but-alive daemon is not declared dead.
 - R5. On confirmed child death, the supervisor removes `discovery.json` (compare-and-delete per R1) and exits non-zero, so an external process manager can restart `space-bus serve`.
 - R6. On a clean shutdown signal (SIGINT/SIGTERM) the supervisor stops the managed daemon and removes the record; a supervisor crash leaves state such that the next resolver fails closed and removes it (R1). Any lock/provisional artifact left by a killed supervisor is reclaimed or ignored by the next resolver/spawn before it can block a fresh start.
 
 **Testing**
+
 - R7. Behavior is covered by tests using an isolated `XDG_STATE_HOME`/state dir and a fake/test harness daemon: killing the child and asserting the next resolve removes the record; killing the foreground supervisor and asserting bounded-time cleanup or fail-closed removal; a compare-and-delete test proving a concurrent fresh record survives a stale-read cleanup.
 
 ---
@@ -99,7 +103,7 @@ The lifecycle owner is `space-bus`. Attachers must not become watchdogs — push
 ## Key Decisions
 
 - Layer A ships before Layer B: fail-closed cleanup is a small, low-risk change that satisfies the core user outcome on its own; active monitoring is a separate, larger surface.
-- Fail-closed-only over in-process restart: document review flagged that an in-process bounded-restart loop pulls `space-bus` toward being a process manager that launchd/systemd already are, and that Layer A already prevents the bad outcome (attachers dialing a dead port). `--foreground` therefore monitors liveness and exits non-zero on death, delegating restart to the external manager. This keeps `space-bus` a lifecycle *owner* (spawn, monitor, clean up) without becoming a restart *supervisor*.
+- Fail-closed-only over in-process restart: document review flagged that an in-process bounded-restart loop pulls `space-bus` toward being a process manager that launchd/systemd already are, and that Layer A already prevents the bad outcome (attachers dialing a dead port). `--foreground` therefore monitors liveness and exits non-zero on death, delegating restart to the external manager. This keeps `space-bus` a lifecycle _owner_ (spawn, monitor, clean up) without becoming a restart _supervisor_.
 - Compare-and-delete for stale cleanup: three reviewers independently flagged that unconditional removal on a dead-pid read can delete a fresh record written by a concurrent respawn. Removal is conditional on the on-disk record still matching the stale one read.
 - Cleanup lives on the Node-side resolver, not the browser attacher: `attach.ts` has no filesystem access, so it surfaces the failure while the next Node-side resolve does the actual removal — the acceptance criterion is met behaviorally.
 - A fresh spawn (via external-manager restart) mints a new password/identity/discovery record; attachers holding cached credentials must re-resolve rather than reuse them.

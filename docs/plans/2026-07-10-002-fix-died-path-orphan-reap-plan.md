@@ -1,4 +1,5 @@
 ---
+
 title: "fix: Reap the orphaned daemon child on the supervision died path"
 type: fix
 status: active
@@ -13,7 +14,7 @@ The `--foreground` supervisor's `died` path (Layer B, 0.8.0) exits fail-closed w
 
 ## Problem Frame
 
-Discovered during 0.8.0 live verification (scenario 3). `superviseTick` declares `died` when `serverStatus(rosterPath).running === false` — i.e. the recorded wrapper pid fails identity verification (gone or recycled). It returns `{reason:"died"}` and `runServe` exits non-zero without any group signal, on the assumption "the process is gone." That assumption holds for a clean crash (wrapper and child die together) but not for a wrapper-only death: the daemon is a detached process group (`spawnAndWaitReady` spawns `detached:true`, so the wrapper is group leader `pgid==pid` and the `opencode` child inherits the pgid). `stopServer` already relies on this — its live path group-signals via `signalGroup` — but its *dead-wrapper* branch just `removeDiscovery`s and returns, the same gap. So on `died`, a surviving child is orphaned. Low severity (resource leak, self-heals on next `ensure` which spawns fresh on a new port; nothing routes to the orphan), but real: an ~160MB `opencode` process lingers indefinitely.
+Discovered during 0.8.0 live verification (scenario 3). `superviseTick` declares `died` when `serverStatus(rosterPath).running === false` — i.e. the recorded wrapper pid fails identity verification (gone or recycled). It returns `{reason:"died"}` and `runServe` exits non-zero without any group signal, on the assumption "the process is gone." That assumption holds for a clean crash (wrapper and child die together) but not for a wrapper-only death: the daemon is a detached process group (`spawnAndWaitReady` spawns `detached:true`, so the wrapper is group leader `pgid==pid` and the `opencode` child inherits the pgid). `stopServer` already relies on this — its live path group-signals via `signalGroup` — but its _dead-wrapper_ branch just `removeDiscovery`s and returns, the same gap. So on `died`, a surviving child is orphaned. Low severity (resource leak, self-heals on next `ensure` which spawns fresh on a new port; nothing routes to the orphan), but real: an ~160MB `opencode` process lingers indefinitely.
 
 ## Requirements Trace
 
@@ -53,7 +54,7 @@ Discovered during 0.8.0 live verification (scenario 3). `superviseTick` declares
 
 ## Key Technical Decisions
 
-- **Guard = dead leader + live group, no child pid recorded.** Reap fires only when `!isAlive(discovery.pid)` (leader gone — excludes the recycled-pid case, where the pid is alive under a mismatched identity) AND `process.kill(-discovery.pid, 0)` succeeds (group still has members). A process group cannot outlive its leader *and* be recycled: while any member is alive the kernel won't reuse that pgid, so a live group under a dead leader pid is provably still ours. This gives the pid-recycle safety (R2) by construction — no discovery-schema change, no process-tree walking.
+- **Guard = dead leader + live group, no child pid recorded.** Reap fires only when `!isAlive(discovery.pid)` (leader gone — excludes the recycled-pid case, where the pid is alive under a mismatched identity) AND `process.kill(-discovery.pid, 0)` succeeds (group still has members). A process group cannot outlive its leader _and_ be recycled: while any member is alive the kernel won't reuse that pgid, so a live group under a dead leader pid is provably still ours. This gives the pid-recycle safety (R2) by construction — no discovery-schema change, no process-tree walking.
 - **Reuse `signalGroup` + `waitForGroupDeath`, mirror `stopServer`'s escalation.** SIGTERM the group, wait a bounded grace (`STOP_GRACE_MS`), SIGKILL if still alive. Do not reimplement group signaling.
 - **Best-effort, contract-preserving.** The reap is wrapped so it never throws into the loop; the outcome stays `{reason:"died"}` and `runServe` still removes the record (already done) and exits non-zero whether or not a child was found or the reap succeeded (R3). A leftover we couldn't kill (e.g. EPERM) still gets the fail-closed exit for the external manager.
 - **Supervisor-only.** Reaping lives on the `died` path in `server.ts`, reached only from the `--foreground` supervisor. Read-path resolvers do not reap.
@@ -81,10 +82,12 @@ Discovered during 0.8.0 live verification (scenario 3). `superviseTick` declares
 **Dependencies:** None (composes `signalGroup`, `waitForGroupDeath`, `isAlive`)
 
 **Files:**
+
 - Modify: `src/server.ts`
 - Test: `src/server.test.ts`
 
 **Approach:**
+
 - Add a best-effort `reapSurvivingGroup(pid)` (or inline equivalent) invoked on the `died` path: if `isAlive(pid)` is false AND `process.kill(-pid, 0)` succeeds (group still alive), `signalGroup(pid, "SIGTERM")`, `waitForGroupDeath(pid, STOP_GRACE_MS)`, escalate to `signalGroup(pid, "SIGKILL")` if needed. Swallow all errors — never throw into the loop.
 - If the leader is alive (recycled/identity-mismatch) or the group is already fully dead, do nothing (no-op).
 - Keep the `died` outcome and the existing record cleanup unchanged.
@@ -92,16 +95,19 @@ Discovered during 0.8.0 live verification (scenario 3). `superviseTick` declares
 **Execution note:** Test-first — the wrapper+child topology means a real (or realistic stub) process is required to prove the reap; a single-process stub can't reproduce the orphan.
 
 **Patterns to follow:**
+
 - `src/server.ts` `stopServer` group SIGTERM→SIGKILL→`waitForGroupDeath` escalation; `signalGroup`/`waitForGroupDeath` as-is.
 - `test/fixtures/wrapper-server.ts` (wrapper that spawns a child) as the managed daemon in the test.
 
 **Test scenarios:**
+
 - Integration (the bug): spawn a real wrapper+child managed daemon; kill only the wrapper pid; run the died path; assert the child is dead and its port freed, and no group members remain.
 - Edge (clean crash): whole group already dead → reap is a no-op, no throw, died still returned.
 - Edge (pid recycle safety): recorded pid is alive but identity-mismatched (simulated recycle) → the guard's `isAlive` check means the reap does NOT fire; assert no signal is sent to that pid. (Reuse the existing bystander-pid test pattern in `server.test.ts`.)
 - Error path: group signal raises EPERM → swallowed, died still returned, supervisor still exits fail-closed.
 
 **Verification:**
+
 - After a wrapper-only death, the died path leaves zero surviving group members and a freed port; a fully-dead group and a recycled pid are both untouched; nothing throws.
 
 - [ ] **Unit 2: Wire into supervision + fail-closed exit unchanged**
@@ -113,18 +119,22 @@ Discovered during 0.8.0 live verification (scenario 3). `superviseTick` declares
 **Dependencies:** Unit 1
 
 **Files:**
+
 - Modify: `src/server.ts` (superviseTick/superviseServer) and/or `src/cli.ts` (runServe died branch) per the factoring chosen in Unit 1
 - Test: `src/server.test.ts`, `src/cli.test.ts`
 
 **Approach:**
+
 - Ensure the reap runs exactly once on the died outcome, then `runServe` proceeds exactly as today (stderr line, `resolve(1)`), and `serverStatus`'s Layer A cleanup still removes the record.
 - No change to signal/hung paths or the exit code.
 
 **Test scenarios:**
+
 - Integration: injected/real died outcome → reap invoked once, `runServe` returns non-zero, discovery gone.
 - Regression: signal path still exits 0; hung path still calls `stopServer` once; non-foreground still returns 0 immediately.
 
 **Verification:**
+
 - `died` → child reaped + exit 1 + no stale record; all other supervision outcomes byte-for-byte unchanged.
 
 ## System-Wide Impact
@@ -137,11 +147,11 @@ Discovered during 0.8.0 live verification (scenario 3). `superviseTick` declares
 
 ## Risks & Dependencies
 
-| Risk | Mitigation |
-|------|------------|
-| Reap signals a process that recycled the wrapper pid | Fire only when `isAlive(pid)` is false AND the group is still alive; a live group's pgid can't be recycled. Dedicated recycle-safety test. |
-| Reap throws and breaks the fail-closed exit | Best-effort swallow; died outcome and non-zero exit are independent of reap success. |
-| Child re-`setpgid`s out of the group and escapes the reap | Same documented, not-expected-in-practice limitation as `waitForGroupDeath` already carries for harness/opencode; out of scope. |
+| Risk                                                       | Mitigation                                                                                                                                                             |
+| ---------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Reap signals a process that recycled the wrapper pid       | Fire only when `isAlive(pid)` is false AND the group is still alive; a live group's pgid can't be recycled. Dedicated recycle-safety test.                             |
+| Reap throws and breaks the fail-closed exit                | Best-effort swallow; died outcome and non-zero exit are independent of reap success.                                                                                   |
+| Child re-`setpgid`s out of the group and escapes the reap  | Same documented, not-expected-in-practice limitation as `waitForGroupDeath` already carries for harness/opencode; out of scope.                                        |
 | Test can't reproduce the orphan with a single-process stub | Use the real wrapper+child fixture (`test/fixtures/wrapper-server.ts`) / real harness; a single-process stub is insufficient (see the real-subprocess-tests learning). |
 
 ## Documentation / Operational Notes
