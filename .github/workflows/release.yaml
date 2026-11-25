@@ -54,8 +54,32 @@ jobs:
           node-version: 24
           registry-url: https://registry.npmjs.org
 
-      - name: Upgrade npm for OIDC trusted publishing
-        run: npm install -g npm@11.21.2
+      # npm trusted publishing (OIDC) needs npm >= 11.5.1; the npm bundled with
+      # setup-node's Node 24 must already meet that. Fail closed instead of
+      # installing a newer npm: anything that is not a plain MAJOR.MINOR.PATCH
+      # (failed probe, empty or malformed output, prerelease) is refused.
+      - name: Require npm >= 11.5.1 for trusted publishing
+        shell: bash
+        run: |
+          min=(11 5 1)
+          if ! version=$(npm --version); then
+            echo "::error::'npm --version' failed; cannot confirm npm >= ${min[0]}.${min[1]}.${min[2]}"
+            exit 1
+          fi
+          num='(0|[1-9][0-9]{0,8})'
+          if [[ ! $version =~ ^$num\.$num\.$num$ ]]; then
+            echo "::error::Unrecognized or prerelease npm version '${version}'; need a stable ${min[0]}.${min[1]}.${min[2]} or newer"
+            exit 1
+          fi
+          have=("${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}")
+          for i in 0 1 2; do
+            if ((have[i] > min[i])); then break; fi
+            if ((have[i] < min[i])); then
+              echo "::error::npm ${version} is too old for trusted publishing; need >= ${min[0]}.${min[1]}.${min[2]}"
+              exit 1
+            fi
+          done
+          echo "npm ${version} satisfies >= ${min[0]}.${min[1]}.${min[2]}"
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
