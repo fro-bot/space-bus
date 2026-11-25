@@ -174,6 +174,57 @@ describe("resolveManagedServer", () => {
     },
   );
 
+  test.each([
+    ["http://127.0.0.1:4096/", 4096, "http://127.0.0.1:4096/session?limit=1"],
+    ["http://[::1]:5000/", 5000, "http://[::1]:5000/session?limit=1"],
+  ] as const)(
+    "accepted terminal-slash %s requests exactly %s",
+    async (baseUrl, port, expected) => {
+      const seen: string[] = [];
+      stubFetch(async (url) => {
+        seen.push(String(url));
+        return new Response(null, { status: 200 });
+      });
+      const result = await resolveManagedServer(
+        "/home/marcus/proj",
+        makeSeams({ readTextFile: async () => discoveryWith(baseUrl, port) }),
+      );
+      expect(result.ok).toBe(true);
+      expect(seen).toEqual([expected]);
+      if (result.ok) expect(result.baseUrl).toBe(baseUrl); // record is not rewritten
+    },
+  );
+
+  // Parity with discovery.ts: Zod's url() trims these into a valid URL, but the
+  // RAW recorded spelling is what must be canonical (checked before Zod's
+  // normalization), so both readers refuse them identically.
+  test.each([
+    ["leading whitespace", " http://127.0.0.1:4096"],
+    ["trailing tab", "http://127.0.0.1:4096\t"],
+    ["embedded newline", "http://127.0.0.1:4096/\n"],
+  ] as const)(
+    "raw spelling with %s is refused before any request",
+    async (_name, rawBaseUrl) => {
+      let fetchCalls = 0;
+      stubFetch(async () => {
+        fetchCalls += 1;
+        return new Response(null, { status: 200 });
+      });
+      const result = await resolveManagedServer(
+        "/home/marcus/proj",
+        makeSeams({
+          readTextFile: async () => discoveryWith(rawBaseUrl, 4096),
+        }),
+      );
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error).toContain("refusing to send credentials");
+        expect(result.error).not.toContain("test-password");
+      }
+      expect(fetchCalls).toBe(0);
+    },
+  );
+
   test("the authenticated liveness probe does not follow redirects", async () => {
     const inits: RequestInit[] = [];
     globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {

@@ -1,5 +1,13 @@
 ---
-"@fro.bot/space-bus": patch
+"@fro.bot/space-bus": minor
 ---
 
-The managed-server readiness probe and the attach paths now check the recorded endpoint before sending any credentials. A discovery record whose `baseUrl` is not a plain `http://` loopback origin (`127.0.0.1`, `localhost` or `[::1]`, no userinfo, path or query) or whose port differs from the recorded `port` is refused, without a request, instead of being trusted. The authenticated probes no longer follow redirects. Records written by `space-bus` itself are unaffected. `probe()` gains an optional `expectedPort` argument.
+Managed-server endpoints are now checked before any credential is sent. This changes experimental behavior in `@fro.bot/space-bus/managed-server` and `@fro.bot/space-bus/attach`.
+
+**Accepted endpoint forms.** A managed `baseUrl` (discovery record, or the `baseUrl` passed to `probe()`) must be `http://127.0.0.1:<port>`, `http://localhost:<port>` or `http://[::1]:<port>`, with an optional single trailing `/` (host case is ignored, and `:80` may be omitted). It must not contain userinfo, a path, a query or a fragment, must not be `https`, and must be spelled canonically: alternate IP spellings (`127.1`, `0x7f.1`, decimal, expanded IPv6), leading-zero ports and port 0 are refused. The port must equal the record's `port`. The check applies to the raw spelling in the file, before schema normalization (which would otherwise trim whitespace into a valid URL). Records written by `space-bus` itself (`http://127.0.0.1:<port>`) are unaffected.
+
+**`probe(baseUrl, password, expectedPort?)`** (exported from `@fro.bot/space-bus/managed-server`) takes an optional `expectedPort`. A `baseUrl` outside the forms above, or whose port differs from `expectedPort`, returns `"retry"` without making a request, so no `Authorization` header is sent. Requests use `redirect: "manual"` and go to exactly `<origin>/session?limit=1`; a redirect is never followed and is not reported as ready (`"retry"`). The liveness probe used by `resolveManagedServer` (`/attach`) applies the same rules: it refuses a non-conforming record with an error and treats a redirect as "not answering".
+
+**Lifecycle.** For a schema-readable discovery record with a matching live owner but a refused endpoint, `ensureServer()` now throws instead of starting a replacement daemon. It makes no request, sends no signal and leaves the record untouched, including when waiting on another process's spawn lock. The error gives the roster path and pid and asks you to run `space-bus stop` and retry. Missing, unreadable or schema-invalid records do not establish a live owner; dead-owner records still allow a new daemon to start. For a refused live endpoint, `attachServer()` returns `null`, managed `loadContext()` reports "refusing to attach", and `editServer()` refuses to edit the running daemon's roster.
+
+**Migration.** If you hand-edited a discovery file or something else wrote a non-conforming `baseUrl`, run `space-bus stop` (or end the process) and start the server again so a conforming record is written.

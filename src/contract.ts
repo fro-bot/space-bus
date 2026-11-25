@@ -250,6 +250,36 @@ export function managedBaseUrlOk(
   return forms.some((form) => spelled === form || spelled === `${form}/`);
 }
 
+/**
+ * `managedBaseUrlOk` applied to the RAW recorded `baseUrl` of a parsed-JSON
+ * discovery record, i.e. before the schema's `z.url()` has normalized it (it
+ * trims whitespace and control characters into a "valid" URL). Both readers
+ * (`discovery.ts`, `attach.ts`) use this so the spelling that is validated is
+ * the spelling that was written, and the two cannot drift. Never throws.
+ */
+export function discoveryEndpointOk(
+  rawRecord: unknown,
+  recordedPort: number,
+): boolean {
+  if (typeof rawRecord !== "object" || rawRecord === null) return false;
+  const raw = (rawRecord as { baseUrl?: unknown }).baseUrl;
+  return typeof raw === "string" && managedBaseUrlOk(raw, recordedPort);
+}
+
+/**
+ * The authenticated liveness-probe URL for a baseUrl that already passed
+ * `managedBaseUrlOk`: the validated origin (its one optional terminal slash
+ * dropped) plus exactly `/session?limit=1`. Shared by both probes so an
+ * accepted `http://host:port/` can never request `//session`. Callers must
+ * validate first; this does not widen what `managedBaseUrlOk` accepts.
+ */
+export function managedProbeUrl(validatedBaseUrl: string): string {
+  const origin = validatedBaseUrl.endsWith("/")
+    ? validatedBaseUrl.slice(0, -1)
+    : validatedBaseUrl;
+  return `${origin}/session?limit=1`;
+}
+
 // --- Bus context (injected roster + credentials boundary) ------------------
 //
 // These schemas back core's single validation gate: consumer-supplied

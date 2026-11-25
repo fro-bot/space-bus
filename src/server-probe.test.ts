@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
-import { probe } from "./server";
+import type { ServerStatus } from "./server";
+import { probe, superviseServer } from "./server";
 
 // Synthetic URLs and a recording fetch stub only: nothing here connects to a
 // network or authenticates against a real server.
@@ -87,5 +88,88 @@ describe("probe (authenticated managed-server readiness probe)", () => {
     expect(await probe("http://u:p@127.0.0.1:4096", "pw")).toBe("retry");
     expect(await probe("http://example.com:4096", "pw")).toBe("retry");
     expect(calls).toEqual([]);
+  });
+});
+
+describe("probe request URL for accepted terminal-slash forms", () => {
+  test.each([
+    ["http://127.0.0.1:4096/", 4096, "http://127.0.0.1:4096/session?limit=1"],
+    ["http://[::1]:5000/", 5000, "http://[::1]:5000/session?limit=1"],
+    ["http://localhost:6001/", 6001, "http://localhost:6001/session?limit=1"],
+    ["http://127.0.0.1:4096", 4096, "http://127.0.0.1:4096/session?limit=1"],
+  ] as const)("%s requests exactly %s", async (baseUrl, port, expected) => {
+    stubFetch(() => new Response(null, { status: 200 }));
+    expect(await probe(baseUrl, "pw", port)).toBe("ready");
+    expect(calls.map((c) => c.url)).toEqual([expected]);
+    expect(calls[0]?.url).not.toContain("//session");
+  });
+
+  test("a doubled terminal slash is still refused, not trimmed into acceptance", async () => {
+    stubFetch(() => new Response(null, { status: 200 }));
+    expect(await probe("http://127.0.0.1:4096//", "pw", 4096)).toBe("retry");
+    expect(calls).toEqual([]);
+  });
+});
+
+describe("superviseServer forwards the recorded port to the real probe", () => {
+  const handle = (baseUrl: string, port: number) => ({
+    baseUrl,
+    credentials: { username: "opencode", password: "pw" },
+    pid: 12345, // synthetic: no signal is ever sent (status is injected, stop is injected)
+    port,
+  });
+  const alive = (): ServerStatus => ({ running: true, pid: 12345 });
+
+  test("a handle whose URL port differs from its recorded port never reaches the network and ends as hung", async () => {
+    stubFetch(() => new Response(null, { status: 200 }));
+    let stopCalls = 0;
+    let checks = 0;
+    const outcome = await superviseServer(
+      "/synthetic/spacebus.json",
+      handle("http://127.0.0.1:4096", 4097), // mismatched on purpose
+      {
+        sleep: async () => {},
+        status: alive,
+        threshold: 2,
+        // Safety net: if the port were not forwarded the probe would succeed
+        // forever; bound the loop so that regression fails instead of hanging.
+        shouldStop: () => {
+          checks += 1;
+          return checks > 10;
+        },
+        stop: async () => {
+          stopCalls += 1;
+          return { stopped: true };
+        },
+        // no `probe` override: the real probe runs
+      },
+    );
+    expect(outcome).toEqual({ reason: "hung" });
+    expect(calls).toEqual([]); // the credential was never attached to a request
+    expect(stopCalls).toBe(1);
+  });
+
+  test("a consistent handle is probed once per tick at the exact session URL, even with a terminal slash", async () => {
+    stubFetch(() => new Response(null, { status: 200 }));
+    let checks = 0;
+    const outcome = await superviseServer(
+      "/synthetic/spacebus.json",
+      handle("http://127.0.0.1:4096/", 4096),
+      {
+        sleep: async () => {},
+        status: alive,
+        stop: async () => ({ stopped: true }),
+        // lets exactly one tick run: top-of-loop check, then post-tick check
+        shouldStop: () => {
+          checks += 1;
+          return checks > 1;
+        },
+      },
+    );
+    expect(outcome).toEqual({ reason: "signal" });
+    expect(calls.map((c) => c.url)).toEqual([
+      "http://127.0.0.1:4096/session?limit=1",
+    ]);
+    expect(calls[0]?.init.redirect).toBe("manual");
   });
 });
