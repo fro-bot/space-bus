@@ -18,6 +18,7 @@ import { existsSync, openSync, readFileSync, realpathSync } from "node:fs";
 import { dirname } from "node:path";
 
 import { type ManagedServerConfig, manifestSchema } from "./config";
+import { managedBaseUrlOk } from "./contract";
 import {
   acquireLock,
   attachLive,
@@ -307,13 +308,23 @@ async function waitForDiscoveryOrFail(
 
 export type ProbeOutcome = "ready" | "auth-failure" | "retry";
 
+/**
+ * Authenticated readiness/liveness probe of a managed server. Fails closed
+ * BEFORE attaching the Authorization header: a baseUrl that is not a plain
+ * loopback http origin (or whose port differs from `expectedPort`, when given)
+ * yields "retry" without any request. Redirects are never followed, so a 3xx
+ * can neither carry the credential elsewhere nor count as ready.
+ */
 export async function probe(
   baseUrl: string,
   password: string,
+  expectedPort?: number,
 ): Promise<ProbeOutcome> {
+  if (!managedBaseUrlOk(baseUrl, expectedPort)) return "retry";
   try {
     const res = await fetch(`${baseUrl}/session?limit=1`, {
       headers: { authorization: `Basic ${basicAuthToken(password)}` },
+      redirect: "manual",
       signal: AbortSignal.timeout(PROBE_FETCH_TIMEOUT_MS),
     });
     if (res.status === 200) return "ready";
@@ -359,6 +370,7 @@ async function waitForReadinessLine(
 
 async function pollAuthedEndpoint(
   baseUrl: string,
+  port: number,
   password: string,
   child: ChildProcess,
   pid: number,
@@ -366,7 +378,7 @@ async function pollAuthedEndpoint(
 ): Promise<"ready" | "died" | "auth-failure" | "timeout"> {
   while (Date.now() < deadline) {
     if (childDied(child, pid)) return "died";
-    const outcome = await probe(baseUrl, password);
+    const outcome = await probe(baseUrl, password, port);
     if (outcome === "ready") return "ready";
     if (outcome === "auth-failure") return "auth-failure";
     await sleep(POLL_INTERVAL_MS);
@@ -420,6 +432,7 @@ async function waitForReadiness(
   const phase2Deadline = Math.max(deadline, Date.now() + phase2Reserve);
   const outcome = await pollAuthedEndpoint(
     baseUrl,
+    port,
     password,
     child,
     pid,
@@ -988,7 +1001,11 @@ async function superviseTick(
     return { kind: "outcome", outcome: { reason: "died" } };
   }
 
-  const probeOutcome = await tick.probe(tick.handle.baseUrl, tick.password);
+  const probeOutcome = await tick.probe(
+    tick.handle.baseUrl,
+    tick.password,
+    tick.handle.port,
+  );
   const failures = probeOutcome === "retry" ? state.failures + 1 : 0;
   const lastReadyAt = probeOutcome === "ready" ? tick.now() : state.lastReadyAt;
 

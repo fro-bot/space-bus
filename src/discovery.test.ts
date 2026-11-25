@@ -97,6 +97,54 @@ describe("discovery", () => {
     expect(parsed?.rosterPath).toBeUndefined();
   });
 
+  describe("attachLive refuses non-managed endpoints before returning credentials", () => {
+    function seed(overrides: Partial<DiscoveryFile>): void {
+      writeDiscovery(rosterPath, makeDiscovery(overrides));
+    }
+
+    test.each([
+      ["http://127.0.0.1:4096", 4096],
+      ["http://[::1]:5000", 5000],
+      ["http://localhost:6001", 6001],
+    ] as const)(
+      "keeps attaching to %s and returns the recorded URL unchanged",
+      (baseUrl, port) => {
+        seed({ baseUrl, port });
+        const live = attachLive(rosterPath);
+        expect(live?.baseUrl).toBe(baseUrl);
+        expect(live?.port).toBe(port);
+        expect(live?.credentials.password).toBe("test-password");
+      },
+    );
+
+    test.each([
+      [
+        "URL port differs from the recorded port",
+        { baseUrl: "http://127.0.0.1:4097", port: 4096 },
+      ],
+      [
+        "userinfo in the URL",
+        { baseUrl: "http://u:p@127.0.0.1:4096", port: 4096 },
+      ],
+      ["https scheme", { baseUrl: "https://127.0.0.1:4096", port: 4096 }],
+      [
+        "path component",
+        { baseUrl: "http://127.0.0.1:4096/other", port: 4096 },
+      ],
+      ["query component", { baseUrl: "http://127.0.0.1:4096?x=1", port: 4096 }],
+      [
+        "non-canonical host spelling",
+        { baseUrl: "http://2130706433:4096", port: 4096 },
+      ],
+      ["non-loopback host", { baseUrl: "http://example.com:4096", port: 4096 }],
+    ] as const)("returns null for %s", (_name, overrides) => {
+      seed(overrides);
+      expect(attachLive(rosterPath)).toBeNull();
+      // A refused record is left alone (not deleted): only the pid check reaps.
+      expect(readDiscovery(rosterPath)).not.toBeNull();
+    });
+  });
+
   test("attachLive still attaches against a pre-field discovery file — regression", () => {
     const { rosterPath: _omit, ...preFieldData } = makeDiscovery({
       baseUrl: "http://127.0.0.1:4096",

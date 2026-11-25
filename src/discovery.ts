@@ -27,6 +27,7 @@ import { z } from "zod";
 import {
   discoveryFileSchema,
   loopbackOk,
+  managedBaseUrlOk,
   managedSpawnConfigSchema,
 } from "./contract";
 
@@ -188,7 +189,9 @@ export interface LiveEndpoint {
 export function attachLive(rosterPath: string): LiveEndpoint | null {
   const discovery = readDiscovery(rosterPath);
   if (!discovery) return null;
-  if (!loopbackOk(discovery.baseUrl)) return null;
+  // Fail closed before handing out credentials: the recorded URL must be a
+  // canonical loopback origin whose port is the recorded port.
+  if (!managedBaseUrlOk(discovery.baseUrl, discovery.port)) return null;
   if (!verifyIdentity(discovery.pid, discovery.identity)) {
     removeDiscoveryIfMatches(rosterPath, {
       pid: discovery.pid,

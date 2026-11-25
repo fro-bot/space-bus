@@ -215,6 +215,41 @@ export function loopbackOk(baseUrl: string): boolean {
   }
 }
 
+/**
+ * Strict shape check for a MANAGED endpoint (a discovery record), applied
+ * before any credential is attached to a request. Stricter than `loopbackOk`,
+ * which also guards externally configured roster URLs and so stays unchanged.
+ * A managed baseUrl must be exactly the origin the spawn recorded:
+ * `http:` only, a loopback host, no userinfo, no path/query/fragment, an
+ * in-range port, and the string must be the canonical spelling of that origin
+ * (case aside) so that what is validated is byte-for-byte what is requested —
+ * nothing is normalized or substituted. When `recordedPort` is given, the URL's
+ * effective port must equal it. Pure (no Node deps), shared by the Node
+ * (`discovery.ts`, `server.ts`) and browser-safe (`attach.ts`) readers.
+ */
+export function managedBaseUrlOk(
+  baseUrl: string,
+  recordedPort?: number,
+): boolean {
+  let url: URL;
+  try {
+    url = new URL(baseUrl);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== "http:" || !LOOPBACK_HOSTS.has(url.hostname)) {
+    return false;
+  }
+  if (url.username !== "" || url.password !== "") return false;
+  const port = url.port === "" ? 80 : Number(url.port);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return false;
+  if (recordedPort !== undefined && port !== recordedPort) return false;
+  const origin = `http://${url.hostname}`;
+  const spelled = baseUrl.toLowerCase();
+  const forms = [`${origin}:${port}`, ...(port === 80 ? [origin] : [])];
+  return forms.some((form) => spelled === form || spelled === `${form}/`);
+}
+
 // --- Bus context (injected roster + credentials boundary) ------------------
 //
 // These schemas back core's single validation gate: consumer-supplied

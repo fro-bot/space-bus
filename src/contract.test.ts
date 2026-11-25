@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  managedBaseUrlOk,
   pendingQuestionEntrySchema,
   sessionSchema,
   sessionStateInfoSchema,
@@ -160,5 +161,63 @@ describe("contract module purity", () => {
     for (const line of importLines) {
       expect(line).toMatch(/from\s+["']zod["']/);
     }
+  });
+});
+
+// Synthetic strings only: this validates the shape of a recorded endpoint, it
+// never connects anywhere.
+describe("managedBaseUrlOk", () => {
+  test.each([
+    ["http://127.0.0.1:4096", 4096],
+    ["http://127.0.0.1:4096/", 4096],
+    ["http://localhost:4096", 4096],
+    ["http://LOCALHOST:4096", 4096],
+    ["http://[::1]:4096", 4096],
+    ["http://[::1]:4096/", 4096],
+    ["http://127.0.0.1:80", 80],
+    ["http://127.0.0.1", 80],
+    ["http://127.0.0.1:65535", 65535],
+  ] as const)(
+    "accepts the legitimate loopback form %s (recorded port %d)",
+    (url, port) => {
+      expect(managedBaseUrlOk(url, port)).toBe(true);
+      expect(managedBaseUrlOk(url)).toBe(true); // no recorded port: shape only
+    },
+  );
+
+  test.each([
+    ["not a url", 4096],
+    ["", 4096],
+    ["https://127.0.0.1:4096", 4096],
+    ["ftp://127.0.0.1:4096", 4096],
+    ["http://example.com:4096", 4096],
+    ["http://127.0.0.1.example.com:4096", 4096],
+    ["http://user:pass@127.0.0.1:4096", 4096],
+    ["http://user@127.0.0.1:4096", 4096],
+    ["http://127.0.0.1:4096@example.com", 4096],
+    ["http://127.0.0.1:4096/session", 4096],
+    ["http://127.0.0.1:4096/?x=1", 4096],
+    ["http://127.0.0.1:4096?x=1", 4096],
+    ["http://127.0.0.1:4096?", 4096],
+    ["http://127.0.0.1:4096#frag", 4096],
+    ["http://127.0.0.1:4096//", 4096],
+    ["http://127.0.0.1:04096", 4096],
+    ["http://127.1:4096", 4096],
+    ["http://0x7f.1:4096", 4096],
+    ["http://2130706433:4096", 4096],
+    ["http://[0:0:0:0:0:0:0:1]:4096", 4096],
+    ["http://127.0.0.1:0", 0],
+  ] as const)(
+    "rejects %p (recorded port %d): not a canonical managed origin",
+    (url, port) => {
+      expect(managedBaseUrlOk(url, port)).toBe(false);
+    },
+  );
+
+  test("rejects a URL port that differs from the recorded port, in every form", () => {
+    expect(managedBaseUrlOk("http://127.0.0.1:4096", 4097)).toBe(false);
+    expect(managedBaseUrlOk("http://[::1]:4096", 1)).toBe(false);
+    expect(managedBaseUrlOk("http://127.0.0.1", 4096)).toBe(false); // implicit :80
+    expect(managedBaseUrlOk("http://127.0.0.1:80", 4096)).toBe(false);
   });
 });

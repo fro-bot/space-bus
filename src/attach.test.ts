@@ -112,6 +112,83 @@ describe("resolveManagedServer", () => {
     }
   });
 
+  function discoveryWith(baseUrl: string, port: number): string {
+    return JSON.stringify({
+      port,
+      pid: 1234,
+      identity: "test-identity",
+      password: "test-password",
+      spawnConfig: { command: ["harness", "serve"] },
+      baseUrl,
+    });
+  }
+
+  test.each([
+    ["http://[::1]:5000", 5000],
+    ["http://localhost:6001", 6001],
+    ["http://127.0.0.1:4096", 4096],
+  ] as const)(
+    "attaches to the legitimate loopback form %s with the URL unchanged",
+    async (baseUrl, port) => {
+      const seen: string[] = [];
+      stubFetch(async (url) => {
+        seen.push(String(url));
+        return new Response(null, { status: 200 });
+      });
+      const result = await resolveManagedServer(
+        "/home/marcus/proj",
+        makeSeams({ readTextFile: async () => discoveryWith(baseUrl, port) }),
+      );
+      expect(result.ok).toBe(true);
+      if (result.ok) expect(result.baseUrl).toBe(baseUrl);
+      expect(seen).toEqual([`${baseUrl}/session?limit=1`]);
+    },
+  );
+
+  test.each([
+    ["URL port differs from the recorded port", "http://127.0.0.1:4097", 4096],
+    ["userinfo in the URL", "http://u:p@127.0.0.1:4096", 4096],
+    ["https scheme", "https://127.0.0.1:4096", 4096],
+    ["path component", "http://127.0.0.1:4096/other", 4096],
+    ["query component", "http://127.0.0.1:4096?x=1", 4096],
+    ["non-canonical host spelling", "http://0x7f.1:4096", 4096],
+  ] as const)(
+    "fails closed with NO request when %s",
+    async (_name, baseUrl, port) => {
+      let fetchCalls = 0;
+      stubFetch(async () => {
+        fetchCalls += 1;
+        return new Response(null, { status: 200 });
+      });
+      const result = await resolveManagedServer(
+        "/home/marcus/proj",
+        makeSeams({ readTextFile: async () => discoveryWith(baseUrl, port) }),
+      );
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error).toContain("refusing to send credentials");
+        expect(result.error).not.toContain("test-password");
+        expect(result.error).not.toContain("u:p"); // never echo URL userinfo
+      }
+      expect(fetchCalls).toBe(0);
+    },
+  );
+
+  test("the authenticated liveness probe does not follow redirects", async () => {
+    const inits: RequestInit[] = [];
+    globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+      inits.push(init ?? {});
+      return new Response(null, {
+        status: 302,
+        headers: { location: "http://203.0.113.9/steal" }, // TEST-NET-3, synthetic
+      });
+    }) as unknown as typeof fetch;
+    const result = await resolveManagedServer("/home/marcus/proj", makeSeams());
+    expect(inits).toHaveLength(1);
+    expect(inits[0]?.redirect).toBe("manual");
+    expect(result.ok).toBe(false); // a redirect is not "alive"
+  });
+
   test("stale/mismatched creds: fetch->401 -> ok:false, rejected credentials", async () => {
     stubFetch(async () => new Response(null, { status: 401 }));
     const seams = makeSeams();

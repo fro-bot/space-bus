@@ -40,7 +40,7 @@
  *   of an opaque status. This is what replaces the generic core.ts `599`
  *   for this one call site.
  */
-import { discoveryFileSchema, loopbackOk } from "./contract";
+import { discoveryFileSchema, loopbackOk, managedBaseUrlOk } from "./contract";
 
 type Ok<T> = { ok: true } & T;
 type Err = { ok: false; error: string };
@@ -203,6 +203,14 @@ export async function resolveManagedServer(
     );
   }
 
+  // Same strict managed-origin rule as discovery.ts's attachLive (Node/browser
+  // parity). Nothing is echoed: the URL may carry userinfo.
+  if (!managedBaseUrlOk(discovery.baseUrl, discovery.port)) {
+    return err(
+      "space-bus: refusing to send credentials: the discovery record's baseUrl is not a plain loopback http origin matching its recorded port",
+    );
+  }
+
   const probe = await probeLiveness(discovery.baseUrl, discovery.password);
   if (!probe.ok) return probe;
 
@@ -224,6 +232,8 @@ async function probeLiveness(
   try {
     res = await fetch(`${baseUrl}/session?limit=1`, {
       headers: authHeader(password),
+      // Never follow a redirect with credentials attached.
+      redirect: "manual",
       signal: AbortSignal.timeout(3_000),
     });
   } catch {
