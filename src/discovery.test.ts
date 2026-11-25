@@ -3,6 +3,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   statSync,
   utimesSync,
@@ -17,6 +18,7 @@ import {
   captureIdentity,
   type DiscoveryFile,
   discoveryFilePath,
+  inspectLive,
   isAlive,
   lockFilePath,
   readDiscovery,
@@ -114,6 +116,27 @@ describe("discovery", () => {
         expect(live?.baseUrl).toBe(baseUrl);
         expect(live?.port).toBe(port);
         expect(live?.credentials.password).toBe("test-password");
+      },
+    );
+
+    test.each([
+      ["http://127.0.0.1:4096/", 4096, "http://127.0.0.1:4096"],
+      ["http://LOCALHOST:6001/", 6001, "http://localhost:6001"],
+      ["http://[::1]:5000/", 5000, "http://[::1]:5000"],
+    ] as const)(
+      "returns the CANONICAL origin for the accepted spelling %s",
+      (baseUrl, port, canonical) => {
+        seed({ baseUrl, port });
+        expect(attachLive(rosterPath)?.baseUrl).toBe(canonical);
+        expect(inspectLive(rosterPath)).toMatchObject({
+          state: "live",
+          endpoint: { baseUrl: canonical },
+        });
+        // the record on disk is not rewritten
+        expect(
+          JSON.parse(readFileSync(discoveryFilePath(rosterPath), "utf8"))
+            .baseUrl,
+        ).toBe(baseUrl);
       },
     );
 

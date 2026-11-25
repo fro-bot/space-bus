@@ -191,7 +191,11 @@ describe("resolveManagedServer", () => {
       );
       expect(result.ok).toBe(true);
       expect(seen).toEqual([expected]);
-      if (result.ok) expect(result.baseUrl).toBe(baseUrl); // record is not rewritten
+      // The returned (and requested) endpoint is the canonical origin, not the
+      // recorded spelling; the record itself is not rewritten.
+      if (result.ok) {
+        expect(result.baseUrl).toBe(expected.replace("/session?limit=1", ""));
+      }
     },
   );
 
@@ -224,6 +228,22 @@ describe("resolveManagedServer", () => {
       expect(fetchCalls).toBe(0);
     },
   );
+
+  test("a differently-spelled but accepted record resolves to the canonical origin in the result and the request", async () => {
+    const seen: string[] = [];
+    stubFetch(async (url) => {
+      seen.push(String(url));
+      return new Response(null, { status: 200 });
+    });
+    const result = await resolveManagedServer(
+      "/home/marcus/proj",
+      makeSeams({
+        readTextFile: async () => discoveryWith("http://LOCALHOST:6001/", 6001),
+      }),
+    );
+    expect(result.ok && result.baseUrl).toBe("http://localhost:6001");
+    expect(seen).toEqual(["http://localhost:6001/session?limit=1"]);
+  });
 
   test("the authenticated liveness probe does not follow redirects", async () => {
     const inits: RequestInit[] = [];

@@ -104,6 +104,16 @@ describe("probe request URL for accepted terminal-slash forms", () => {
     expect(calls[0]?.url).not.toContain("//session");
   });
 
+  test("the request destination is the canonical origin, not the caller's spelling", async () => {
+    stubFetch(() => new Response(null, { status: 200 }));
+    expect(await probe("http://LOCALHOST:6001/", "pw", 6001)).toBe("ready");
+    expect(await probe("http://127.0.0.1", "pw", 80)).toBe("ready");
+    expect(calls.map((c) => c.url)).toEqual([
+      "http://localhost:6001/session?limit=1",
+      "http://127.0.0.1:80/session?limit=1",
+    ]);
+  });
+
   test("a doubled terminal slash is still refused, not trimmed into acceptance", async () => {
     stubFetch(() => new Response(null, { status: 200 }));
     expect(await probe("http://127.0.0.1:4096//", "pw", 4096)).toBe("retry");

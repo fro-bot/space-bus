@@ -25,8 +25,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import {
-  discoveryEndpointOk,
   discoveryFileSchema,
+  discoveryManagedOrigin,
   loopbackOk,
   managedSpawnConfigSchema,
 } from "./contract";
@@ -107,15 +107,16 @@ export function writeDiscovery(rosterPath: string, data: DiscoveryFile): void {
 }
 
 /**
- * Reads the discovery file once and returns the schema-parsed record plus
- * whether its RAW `baseUrl` spelling passes the strict managed-endpoint check
- * (done on the parsed JSON, before the schema's `z.url()` normalizes it). A
+ * Reads the discovery file once and returns the schema-parsed record plus its
+ * CANONICAL managed origin: derived from the RAW `baseUrl` spelling on the
+ * parsed JSON, before the schema's `z.url()` normalizes it, or null when that
+ * spelling fails the strict managed-endpoint check. A
  * record with a refused endpoint is still returned: its pid/identity are what
  * let callers refuse safely instead of mistaking a live daemon for a dead one.
  */
 function readDiscoveryRecord(
   rosterPath: string,
-): { record: DiscoveryFile; endpointOk: boolean } | null {
+): { record: DiscoveryFile; origin: string | null } | null {
   const target = discoveryFilePath(rosterPath);
   let raw: string;
   try {
@@ -133,7 +134,7 @@ function readDiscoveryRecord(
   if (!parsed.success) return null;
   return {
     record: parsed.data,
-    endpointOk: discoveryEndpointOk(json, parsed.data.port),
+    origin: discoveryManagedOrigin(json, parsed.data.port),
   };
 }
 
@@ -218,7 +219,7 @@ export type LiveInspection =
 export function inspectLive(rosterPath: string): LiveInspection {
   const read = readDiscoveryRecord(rosterPath);
   if (!read) return { state: "none" };
-  const { record: discovery, endpointOk } = read;
+  const { record: discovery, origin } = read;
   if (!verifyIdentity(discovery.pid, discovery.identity)) {
     removeDiscoveryIfMatches(rosterPath, {
       pid: discovery.pid,
@@ -227,12 +228,13 @@ export function inspectLive(rosterPath: string): LiveInspection {
     return { state: "none" };
   }
   // Fail closed before handing out credentials: the RAW recorded URL must be a
-  // canonical loopback origin whose port is the recorded port.
-  if (!endpointOk) return { state: "invalid-endpoint", pid: discovery.pid };
+  // canonical loopback origin whose port is the recorded port. The endpoint we
+  // hand out is that canonical origin, never the recorded string.
+  if (origin === null) return { state: "invalid-endpoint", pid: discovery.pid };
   return {
     state: "live",
     endpoint: {
-      baseUrl: discovery.baseUrl,
+      baseUrl: origin,
       credentials: { username: "opencode", password: discovery.password },
       pid: discovery.pid,
       port: discovery.port,

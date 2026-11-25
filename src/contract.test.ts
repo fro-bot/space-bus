@@ -2,7 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  discoveryManagedOrigin,
   managedBaseUrlOk,
+  parseManagedOrigin,
   pendingQuestionEntrySchema,
   sessionSchema,
   sessionStateInfoSchema,
@@ -219,5 +221,81 @@ describe("managedBaseUrlOk", () => {
     expect(managedBaseUrlOk("http://[::1]:4096", 1)).toBe(false);
     expect(managedBaseUrlOk("http://127.0.0.1", 4096)).toBe(false); // implicit :80
     expect(managedBaseUrlOk("http://127.0.0.1:80", 4096)).toBe(false);
+  });
+});
+
+describe("parseManagedOrigin (canonical managed origin)", () => {
+  test.each([
+    ["http://127.0.0.1:4096", 4096, "http://127.0.0.1:4096"],
+    ["http://127.0.0.1:4096/", 4096, "http://127.0.0.1:4096"],
+    ["http://LOCALHOST:4096/", 4096, "http://localhost:4096"],
+    ["http://localhost:6001", 6001, "http://localhost:6001"],
+    ["http://[::1]:5000/", 5000, "http://[::1]:5000"],
+    ["http://127.0.0.1", 80, "http://127.0.0.1:80"],
+    ["http://127.0.0.1:80/", 80, "http://127.0.0.1:80"],
+    ["http://127.0.0.1:65535", 65535, "http://127.0.0.1:65535"],
+  ] as const)(
+    "%s (port %d) => %s, built from the host literal and port, never the input",
+    (input, port, canonical) => {
+      expect(parseManagedOrigin(input, port)).toBe(canonical);
+      expect(parseManagedOrigin(input)).toBe(canonical); // shape only
+    },
+  );
+
+  test("the returned origin is always http://<allowed literal>:<numeric port>", () => {
+    for (const url of [
+      "http://127.0.0.1:4096/",
+      "HTTP://LocalHost:4096",
+      "http://[::1]:4096/",
+    ]) {
+      expect(parseManagedOrigin(url)).toMatch(
+        /^http:\/\/(127\.0\.0\.1|localhost|\[::1\]):[1-9][0-9]{0,4}$/,
+      );
+    }
+  });
+
+  test.each([
+    "not a url",
+    "https://127.0.0.1:4096",
+    "http://user:pw@127.0.0.1:4096",
+    "http://127.0.0.1:4096/session",
+    "http://127.0.0.1:4096?x=1",
+    "http://127.0.0.1:4096//",
+    "http://127.0.0.1:04096",
+    "http://0x7f.1:4096",
+    "http://[0:0:0:0:0:0:0:1]:4096",
+    "http://example.com:4096",
+    "http://127.0.0.1:0",
+  ])("%p => null", (input) => {
+    expect(parseManagedOrigin(input)).toBeNull();
+  });
+
+  test("a recorded-port mismatch is null", () => {
+    expect(parseManagedOrigin("http://127.0.0.1:4096", 4097)).toBeNull();
+    expect(parseManagedOrigin("http://127.0.0.1", 4096)).toBeNull();
+  });
+
+  test("managedBaseUrlOk stays the boolean view of the same parser", () => {
+    for (const [url, port] of [
+      ["http://127.0.0.1:4096/", 4096],
+      ["http://[::1]:5000", 5000],
+      ["http://127.0.0.1:4096/x", 4096],
+      ["http://127.0.0.1:4097", 4096],
+    ] as const) {
+      expect(managedBaseUrlOk(url, port)).toBe(
+        parseManagedOrigin(url, port) !== null,
+      );
+    }
+  });
+
+  test("discoveryManagedOrigin checks the RAW spelling before schema normalization", () => {
+    expect(
+      discoveryManagedOrigin({ baseUrl: "http://LOCALHOST:4096/" }, 4096),
+    ).toBe("http://localhost:4096");
+    for (const raw of [" http://127.0.0.1:4096", "http://127.0.0.1:4096\t"]) {
+      expect(discoveryManagedOrigin({ baseUrl: raw }, 4096)).toBeNull();
+    }
+    expect(discoveryManagedOrigin(null, 4096)).toBeNull();
+    expect(discoveryManagedOrigin({ baseUrl: 4096 }, 4096)).toBeNull();
   });
 });

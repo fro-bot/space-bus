@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { loadContext } from "./config";
+import { roster } from "./core";
 import {
   acquireLock,
   attachLive,
@@ -295,5 +296,51 @@ describe("other consumers of the attach decision", () => {
 
   test("loadContext keeps its 'not running' error for an absent record", () => {
     expect(() => loadContext(dir)).toThrow(/managed server not running/);
+  });
+});
+
+describe("the canonical origin propagates to every managed request path", () => {
+  const SLASHED = recordWith({ baseUrl: "http://LOCALHOST:4096/" });
+
+  function writeRosterWithProject(): void {
+    writeFileSync(
+      rosterPath,
+      JSON.stringify({
+        server: { managed: { command: ["bun", "unused"], cwd: dir } },
+        projects: [{ name: "p", path: dir, description: "synthetic project" }],
+      }),
+    );
+  }
+
+  test("ensureServer's fast path returns the canonical origin and the record is untouched", async () => {
+    const text = writeRawRecord(SLASHED);
+    const handle = await ensureServer(rosterPath, { readinessBudgetMs: 500 });
+    expect(handle.baseUrl).toBe("http://localhost:4096");
+    expect(readFileSync(discoveryFilePath(rosterPath), "utf8")).toBe(text);
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  test("loadContext hands core the canonical origin, and core's ordinary requests never double the slash or use the recorded spelling", async () => {
+    writeRosterWithProject();
+    writeRawRecord(SLASHED);
+    const context = loadContext(dir);
+    expect(context.roster.server.baseUrl).toBe("http://localhost:4096");
+    expect(context.credentials?.password).toBe("synthetic-password");
+
+    globalThis.fetch = (async (url: unknown, init?: RequestInit) => {
+      fetchCalls.push(String(url));
+      expect(init?.redirect).toBe("error");
+      expect(new Headers(init?.headers).get("authorization")).toMatch(
+        /^Basic /,
+      );
+      return new Response("[]", { status: 200 });
+    }) as unknown as typeof fetch;
+
+    await roster({ context });
+    expect(fetchCalls.length).toBeGreaterThan(0);
+    for (const url of fetchCalls) {
+      expect(url.startsWith("http://localhost:4096/")).toBe(true);
+      expect(url.replace("http://", "")).not.toContain("//");
+    }
   });
 });

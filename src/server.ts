@@ -18,7 +18,7 @@ import { existsSync, openSync, readFileSync, realpathSync } from "node:fs";
 import { dirname } from "node:path";
 
 import { type ManagedServerConfig, manifestSchema } from "./config";
-import { managedBaseUrlOk, managedProbeUrl } from "./contract";
+import { managedProbeUrl, parseManagedOrigin } from "./contract";
 import {
   acquireLock,
   attachLive,
@@ -338,9 +338,10 @@ export async function probe(
   password: string,
   expectedPort?: number,
 ): Promise<ProbeOutcome> {
-  if (!managedBaseUrlOk(baseUrl, expectedPort)) return "retry";
+  const origin = parseManagedOrigin(baseUrl, expectedPort);
+  if (origin === null) return "retry";
   try {
-    const res = await fetch(managedProbeUrl(baseUrl), {
+    const res = await fetch(managedProbeUrl(origin), {
       headers: { authorization: `Basic ${basicAuthToken(password)}` },
       redirect: "manual",
       signal: AbortSignal.timeout(PROBE_FETCH_TIMEOUT_MS),

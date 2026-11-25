@@ -41,8 +41,8 @@
  *   for this one call site.
  */
 import {
-  discoveryEndpointOk,
   discoveryFileSchema,
+  discoveryManagedOrigin,
   loopbackOk,
   managedProbeUrl,
 } from "./contract";
@@ -210,18 +210,19 @@ export async function resolveManagedServer(
 
   // Same strict managed-origin rule as discovery.ts's attachLive (Node/browser
   // parity). Nothing is echoed: the URL may carry userinfo.
-  if (!discoveryEndpointOk(json, discovery.port)) {
+  const origin = discoveryManagedOrigin(json, discovery.port);
+  if (origin === null) {
     return err(
       "space-bus: refusing to send credentials: the discovery record's baseUrl is not a plain loopback http origin matching its recorded port",
     );
   }
 
-  const probe = await probeLiveness(discovery.baseUrl, discovery.password);
+  const probe = await probeLiveness(origin, discovery.password);
   if (!probe.ok) return probe;
 
   return {
     ok: true,
-    baseUrl: discovery.baseUrl,
+    baseUrl: origin,
     credentials: { username: "opencode", password: discovery.password },
     alive: true,
   };
