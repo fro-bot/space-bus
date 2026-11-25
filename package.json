@@ -68,7 +68,7 @@
     "smoke": "bun run scripts/smoke.ts",
     "mcp": "bun run src/mcp.ts",
     "fixture": "bun run scripts/make-fixture.ts",
-    "version-changesets": "changeset version && bun install --lockfile-only",
+    "version-changesets": "changeset version && biome format --write CHANGELOG.md && bun install --lockfile-only",
     "publish-changesets": "bun run build && changeset publish",
     "prepublishOnly": "bun run typecheck && bun test && bun run build"
   },
