@@ -215,6 +215,110 @@ export function loopbackOk(baseUrl: string): boolean {
   }
 }
 
+/**
+ * The loopback host literal for a parsed hostname, chosen from an explicit
+ * allow-list of constants (never echoing the input string), or null.
+ */
+function managedHostLiteral(hostname: string): string | null {
+  switch (hostname) {
+    case "127.0.0.1":
+      return "127.0.0.1";
+    case "localhost":
+      return "localhost";
+    case "[::1]":
+      return "[::1]";
+    default:
+      return null;
+  }
+}
+
+/**
+ * Parses a MANAGED endpoint (a discovery record) and returns its CANONICAL
+ * origin, `http://<allowed host literal>:<numeric port>`, or null. The origin
+ * is assembled from an allow-listed host constant and the validated numeric
+ * port — never from the input string — and is what every managed request must
+ * use as its destination. Stricter than `loopbackOk`, which also guards
+ * externally configured roster URLs and so stays unchanged.
+ *
+ * Accepted: `http:` only, host `127.0.0.1` / `localhost` / `[::1]` (case
+ * ignored), no userinfo, no path/query/fragment, port 1-65535 (80 may be
+ * omitted), one optional trailing `/`. The raw spelling must be canonical, so
+ * alternate IP spellings, leading-zero ports and the like are refused. When
+ * `recordedPort` is given, the URL's effective port must equal it. Pure (no
+ * Node deps), shared by the Node (`discovery.ts`, `server.ts`) and browser-safe
+ * (`attach.ts`) readers.
+ */
+export function parseManagedOrigin(
+  baseUrl: string,
+  recordedPort?: number,
+): string | null {
+  let url: URL;
+  try {
+    url = new URL(baseUrl);
+  } catch {
+    return null;
+  }
+  const host = managedHostLiteral(url.hostname);
+  if (url.protocol !== "http:" || host === null) return null;
+  if (url.username !== "" || url.password !== "") return null;
+  const port = url.port === "" ? 80 : Number(url.port);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
+  if (recordedPort !== undefined && port !== recordedPort) return null;
+  const origin = `http://${host}:${port}`;
+  const spelled = baseUrl.toLowerCase();
+  const forms = [origin, ...(port === 80 ? [`http://${host}`] : [])];
+  const canonical = forms.some(
+    (form) => spelled === form || spelled === `${form}/`,
+  );
+  return canonical ? origin : null;
+}
+
+/** Boolean view of `parseManagedOrigin` (kept for existing callers). */
+export function managedBaseUrlOk(
+  baseUrl: string,
+  recordedPort?: number,
+): boolean {
+  return parseManagedOrigin(baseUrl, recordedPort) !== null;
+}
+
+/**
+ * `parseManagedOrigin` applied to the RAW recorded `baseUrl` of a parsed-JSON
+ * discovery record, i.e. before the schema's `z.url()` has normalized it (it
+ * trims whitespace and control characters into a "valid" URL). Both readers
+ * (`discovery.ts`, `attach.ts`) use this so the spelling that is validated is
+ * the spelling that was written, and the two cannot drift. Never throws.
+ */
+export function discoveryManagedOrigin(
+  rawRecord: unknown,
+  recordedPort: number,
+): string | null {
+  if (typeof rawRecord !== "object" || rawRecord === null) return null;
+  const raw = (rawRecord as { baseUrl?: unknown }).baseUrl;
+  return typeof raw === "string" ? parseManagedOrigin(raw, recordedPort) : null;
+}
+
+/** Boolean view of `discoveryManagedOrigin` (kept for existing callers). */
+export function discoveryEndpointOk(
+  rawRecord: unknown,
+  recordedPort: number,
+): boolean {
+  return discoveryManagedOrigin(rawRecord, recordedPort) !== null;
+}
+
+/**
+ * The authenticated liveness-probe URL for a managed origin: `<origin>` (a
+ * canonical origin from `parseManagedOrigin`, or any baseUrl that already
+ * passed `managedBaseUrlOk`, whose one optional terminal slash is dropped) plus
+ * exactly `/session?limit=1`. Shared by both probes so an accepted
+ * `http://host:port/` can never request `//session`.
+ */
+export function managedProbeUrl(validatedBaseUrl: string): string {
+  const origin = validatedBaseUrl.endsWith("/")
+    ? validatedBaseUrl.slice(0, -1)
+    : validatedBaseUrl;
+  return `${origin}/session?limit=1`;
+}
+
 // --- Bus context (injected roster + credentials boundary) ------------------
 //
 // These schemas back core's single validation gate: consumer-supplied

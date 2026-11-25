@@ -26,6 +26,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import {
   discoveryFileSchema,
+  discoveryManagedOrigin,
   loopbackOk,
   managedSpawnConfigSchema,
 } from "./contract";
@@ -105,8 +106,17 @@ export function writeDiscovery(rosterPath: string, data: DiscoveryFile): void {
   chmodSync(target, 0o600);
 }
 
-/** Reads and validates the discovery file; returns null if absent or corrupt. */
-export function readDiscovery(rosterPath: string): DiscoveryFile | null {
+/**
+ * Reads the discovery file once and returns the schema-parsed record plus its
+ * CANONICAL managed origin: derived from the RAW `baseUrl` spelling on the
+ * parsed JSON, before the schema's `z.url()` normalizes it, or null when that
+ * spelling fails the strict managed-endpoint check. A
+ * record with a refused endpoint is still returned: its pid/identity are what
+ * let callers refuse safely instead of mistaking a live daemon for a dead one.
+ */
+function readDiscoveryRecord(
+  rosterPath: string,
+): { record: DiscoveryFile; origin: string | null } | null {
   const target = discoveryFilePath(rosterPath);
   let raw: string;
   try {
@@ -121,7 +131,16 @@ export function readDiscovery(rosterPath: string): DiscoveryFile | null {
     return null;
   }
   const parsed = discoveryFileSchema.safeParse(json);
-  return parsed.success ? parsed.data : null;
+  if (!parsed.success) return null;
+  return {
+    record: parsed.data,
+    origin: discoveryManagedOrigin(json, parsed.data.port),
+  };
+}
+
+/** Reads and validates the discovery file; returns null if absent or corrupt. */
+export function readDiscovery(rosterPath: string): DiscoveryFile | null {
+  return readDiscoveryRecord(rosterPath)?.record ?? null;
 }
 
 export function removeDiscovery(rosterPath: string): void {
@@ -178,30 +197,59 @@ export interface LiveEndpoint {
 }
 
 /**
- * Attach-only: reads the discovery file, verifies the recorded pid is alive
- * with a matching identity, and that the discovered baseUrl passes the
- * loopback guard. Never spawns. Lives here (not server.ts) so `config.ts`
- * can attach to a managed roster without importing `server.ts` — server.ts
- * already imports config.ts (for manifestSchema), so config->server would
- * be a cycle. `config.ts` and `server.ts` both import this instead.
+ * What a roster's discovery record says about its daemon:
+ * - `none`: no usable record, or its owner is dead (stale record reaped).
+ * - `live`: the owner is alive with a matching identity and the recorded
+ *   endpoint passed the strict managed-origin check.
+ * - `invalid-endpoint`: the owner IS alive with a matching identity, but the
+ *   recorded endpoint failed the check. The daemon exists and must not be
+ *   mistaken for a dead one (that would let a caller spawn a replacement and
+ *   overwrite its record), and no credential is released. Carries only the pid.
  */
-export function attachLive(rosterPath: string): LiveEndpoint | null {
-  const discovery = readDiscovery(rosterPath);
-  if (!discovery) return null;
-  if (!loopbackOk(discovery.baseUrl)) return null;
+export type LiveInspection =
+  | { state: "none" }
+  | { state: "live"; endpoint: LiveEndpoint }
+  | { state: "invalid-endpoint"; pid: number };
+
+/**
+ * Reads discovery and classifies it (see `LiveInspection`). Pure read path
+ * apart from reaping a dead owner's record, exactly as before. Lives here
+ * (not server.ts) so `config.ts` can use it without a config->server cycle.
+ */
+export function inspectLive(rosterPath: string): LiveInspection {
+  const read = readDiscoveryRecord(rosterPath);
+  if (!read) return { state: "none" };
+  const { record: discovery, origin } = read;
   if (!verifyIdentity(discovery.pid, discovery.identity)) {
     removeDiscoveryIfMatches(rosterPath, {
       pid: discovery.pid,
       identity: discovery.identity,
     });
-    return null;
+    return { state: "none" };
   }
+  // Fail closed before handing out credentials: the RAW recorded URL must be a
+  // canonical loopback origin whose port is the recorded port. The endpoint we
+  // hand out is that canonical origin, never the recorded string.
+  if (origin === null) return { state: "invalid-endpoint", pid: discovery.pid };
   return {
-    baseUrl: discovery.baseUrl,
-    credentials: { username: "opencode", password: discovery.password },
-    pid: discovery.pid,
-    port: discovery.port,
+    state: "live",
+    endpoint: {
+      baseUrl: origin,
+      credentials: { username: "opencode", password: discovery.password },
+      pid: discovery.pid,
+      port: discovery.port,
+    },
   };
+}
+
+/**
+ * Attach-only: the live endpoint, or null (absent, dead, or refused endpoint
+ * alike — callers that must tell a refused live daemon apart use
+ * `inspectLive`). Never spawns.
+ */
+export function attachLive(rosterPath: string): LiveEndpoint | null {
+  const inspected = inspectLive(rosterPath);
+  return inspected.state === "live" ? inspected.endpoint : null;
 }
 
 // --- PID identity --------------------------------------------------------

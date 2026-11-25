@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import type { BusContext } from "./contract";
 import { LOOPBACK_HOSTS } from "./contract";
-import { attachLive } from "./discovery";
+import { inspectLive } from "./discovery";
 import { resolveRosterByName } from "./registry";
 
 export const managedServerConfigSchema = z.object({
@@ -218,12 +218,18 @@ function loadContextAtPath(rosterPath: string): BusContext {
     // Managed roster: attach-only, never spawn. Spawning is ensureServer()'s
     // job, called by adapters (plugin tools / MCP with opt-in) before
     // loadContext when the roster is managed.
-    const live = attachLive(rosterPath);
-    if (!live) {
+    const inspected = inspectLive(rosterPath);
+    if (inspected.state === "invalid-endpoint") {
+      throw new Error(
+        `space-bus: refusing to attach to the managed server for ${rosterPath} (pid ${inspected.pid}): its discovery record's endpoint is not a plain loopback http origin matching its recorded port — run \`space-bus stop\` and retry`,
+      );
+    }
+    if (inspected.state !== "live") {
       throw new Error(
         `space-bus: managed server not running for ${rosterPath} — call ensureServer() or run \`space-bus serve\``,
       );
     }
+    const live = inspected.endpoint;
     return {
       roster: { server: { baseUrl: live.baseUrl }, projects },
       credentials: live.credentials,

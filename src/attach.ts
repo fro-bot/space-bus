@@ -40,7 +40,12 @@
  *   of an opaque status. This is what replaces the generic core.ts `599`
  *   for this one call site.
  */
-import { discoveryFileSchema, loopbackOk } from "./contract";
+import {
+  discoveryFileSchema,
+  discoveryManagedOrigin,
+  loopbackOk,
+  managedProbeUrl,
+} from "./contract";
 
 type Ok<T> = { ok: true } & T;
 type Err = { ok: false; error: string };
@@ -203,12 +208,21 @@ export async function resolveManagedServer(
     );
   }
 
-  const probe = await probeLiveness(discovery.baseUrl, discovery.password);
+  // Same strict managed-origin rule as discovery.ts's attachLive (Node/browser
+  // parity). Nothing is echoed: the URL may carry userinfo.
+  const origin = discoveryManagedOrigin(json, discovery.port);
+  if (origin === null) {
+    return err(
+      "space-bus: refusing to send credentials: the discovery record's baseUrl is not a plain loopback http origin matching its recorded port",
+    );
+  }
+
+  const probe = await probeLiveness(origin, discovery.password);
   if (!probe.ok) return probe;
 
   return {
     ok: true,
-    baseUrl: discovery.baseUrl,
+    baseUrl: origin,
     credentials: { username: "opencode", password: discovery.password },
     alive: true,
   };
@@ -222,8 +236,10 @@ async function probeLiveness(
 ): Promise<{ ok: true } | Err> {
   let res: Response;
   try {
-    res = await fetch(`${baseUrl}/session?limit=1`, {
+    res = await fetch(managedProbeUrl(baseUrl), {
       headers: authHeader(password),
+      // Never follow a redirect with credentials attached.
+      redirect: "manual",
       signal: AbortSignal.timeout(3_000),
     });
   } catch {

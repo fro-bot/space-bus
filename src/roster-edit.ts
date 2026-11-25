@@ -42,7 +42,7 @@ import { join } from "node:path";
 
 import { type Manifest, manifestSchema, type ServerConfig } from "./config";
 import { loopbackOk } from "./contract";
-import { attachLive } from "./discovery";
+import { inspectLive } from "./discovery";
 import { readRegistry, registerRoster } from "./registry";
 
 export type Result =
@@ -448,14 +448,16 @@ export function updateProject(
  * file is left byte-identical (AE4).
  *
  * Live-daemon guard: if a managed daemon is currently live for this
- * roster (per `discovery.ts`'s `attachLive`), server-block edits are
+ * roster (per `discovery.ts`'s `inspectLive`), server-block edits are
  * rejected — changing `server` out from under a running daemon would
  * leave the on-disk roster and the live discovery record pointing at
  * different worlds (split-brain). Project edits are unaffected; only
  * `editServer` carries this guard.
  */
 export function editServer(rosterPath: string, server: ServerConfig): Result {
-  if (attachLive(rosterPath) !== null) {
+  // Any live daemon blocks the edit, including one whose recorded endpoint is
+  // refused for attaching (it still exists; editing under it is split-brain).
+  if (inspectLive(rosterPath).state !== "none") {
     return {
       ok: false,
       error: `space-bus: a managed daemon is running for roster ${rosterPath} — run \`space-bus stop\` first before editing its server block`,

@@ -18,11 +18,13 @@ import { existsSync, openSync, readFileSync, realpathSync } from "node:fs";
 import { dirname } from "node:path";
 
 import { type ManagedServerConfig, manifestSchema } from "./config";
+import { managedProbeUrl, parseManagedOrigin } from "./contract";
 import {
   acquireLock,
   attachLive,
   captureIdentity,
   closeQuietly,
+  inspectLive,
   isAlive,
   type LockHandle,
   lockFilePath,
@@ -270,6 +272,23 @@ export function attachServer(rosterPath: string): ServerHandle | null {
   return attachLive(rosterPath);
 }
 
+/**
+ * `attachServer`, except that a live daemon whose recorded endpoint is refused
+ * is an error rather than "nothing running". Every spawn decision in
+ * `ensureServer` (fast path, locked recheck, waiter poll) goes through this so
+ * a live daemon is never replaced, its record never rewritten, and no
+ * credential or request is made on its behalf. The message carries only the
+ * roster path and pid — never the URL (it may hold userinfo) or the password.
+ */
+function attachOrRefuse(rosterPath: string): ServerHandle | null {
+  const inspected = inspectLive(rosterPath);
+  if (inspected.state === "live") return inspected.endpoint;
+  if (inspected.state === "none") return null;
+  throw new Error(
+    `space-bus: refusing to attach to or replace the managed server for roster ${rosterPath} (pid ${inspected.pid}): it is still running, but its discovery record's endpoint is not a plain loopback http origin matching its recorded port. Nothing was sent to it and its record was left unchanged. Stop it with \`space-bus stop\` (or end pid ${inspected.pid}), then retry.`,
+  );
+}
+
 async function waitForDiscoveryOrFail(
   rosterPath: string,
   budgetMs: number,
@@ -281,7 +300,7 @@ async function waitForDiscoveryOrFail(
     // the lock on the success path (see spawnAndWaitReady/ensureServer), so
     // checking discovery ahead of the lock-liveness check below can't
     // false-fast-fail a winner that just succeeded.
-    const handle = attachServer(rosterPath);
+    const handle = attachOrRefuse(rosterPath);
     if (handle) return handle;
 
     const lockInfo = readLockFile(lockPath);
@@ -307,13 +326,24 @@ async function waitForDiscoveryOrFail(
 
 export type ProbeOutcome = "ready" | "auth-failure" | "retry";
 
+/**
+ * Authenticated readiness/liveness probe of a managed server. Fails closed
+ * BEFORE attaching the Authorization header: a baseUrl that is not a plain
+ * loopback http origin (or whose port differs from `expectedPort`, when given)
+ * yields "retry" without any request. Redirects are never followed, so a 3xx
+ * can neither carry the credential elsewhere nor count as ready.
+ */
 export async function probe(
   baseUrl: string,
   password: string,
+  expectedPort?: number,
 ): Promise<ProbeOutcome> {
+  const origin = parseManagedOrigin(baseUrl, expectedPort);
+  if (origin === null) return "retry";
   try {
-    const res = await fetch(`${baseUrl}/session?limit=1`, {
+    const res = await fetch(managedProbeUrl(origin), {
       headers: { authorization: `Basic ${basicAuthToken(password)}` },
+      redirect: "manual",
       signal: AbortSignal.timeout(PROBE_FETCH_TIMEOUT_MS),
     });
     if (res.status === 200) return "ready";
@@ -359,6 +389,7 @@ async function waitForReadinessLine(
 
 async function pollAuthedEndpoint(
   baseUrl: string,
+  port: number,
   password: string,
   child: ChildProcess,
   pid: number,
@@ -366,7 +397,7 @@ async function pollAuthedEndpoint(
 ): Promise<"ready" | "died" | "auth-failure" | "timeout"> {
   while (Date.now() < deadline) {
     if (childDied(child, pid)) return "died";
-    const outcome = await probe(baseUrl, password);
+    const outcome = await probe(baseUrl, password, port);
     if (outcome === "ready") return "ready";
     if (outcome === "auth-failure") return "auth-failure";
     await sleep(POLL_INTERVAL_MS);
@@ -420,6 +451,7 @@ async function waitForReadiness(
   const phase2Deadline = Math.max(deadline, Date.now() + phase2Reserve);
   const outcome = await pollAuthedEndpoint(
     baseUrl,
+    port,
     password,
     child,
     pid,
@@ -652,7 +684,7 @@ export async function ensureServer(
   const lockWaitBudgetMs =
     options.lockWaitBudgetMs ?? DEFAULT_LOCK_WAIT_BUDGET_MS;
 
-  const fastPath = attachServer(rosterPath);
+  const fastPath = attachOrRefuse(rosterPath);
   if (fastPath) return fastPath;
 
   const manifest = readManifest(rosterPath);
@@ -670,7 +702,7 @@ export async function ensureServer(
   try {
     // Re-check under the lock: another process may have finished spawning
     // between our fast-path miss and acquiring the lock.
-    const attached = attachServer(rosterPath);
+    const attached = attachOrRefuse(rosterPath);
     if (attached) return attached;
     return await spawnAndWaitReady(
       rosterPath,
@@ -988,7 +1020,11 @@ async function superviseTick(
     return { kind: "outcome", outcome: { reason: "died" } };
   }
 
-  const probeOutcome = await tick.probe(tick.handle.baseUrl, tick.password);
+  const probeOutcome = await tick.probe(
+    tick.handle.baseUrl,
+    tick.password,
+    tick.handle.port,
+  );
   const failures = probeOutcome === "retry" ? state.failures + 1 : 0;
   const lastReadyAt = probeOutcome === "ready" ? tick.now() : state.lastReadyAt;
 
