@@ -1,4 +1,5 @@
 ---
+
 title: "feat: Support OpenCode v1 and v2 from one Space Bus package"
 type: feat
 status: active
@@ -13,11 +14,11 @@ origin: docs/brainstorms/2026-11-25-opencode-v2-coexistence-requirements.md
 
 Move the controller first. Install one tarball in either OpenCode generation; let a v2 controller and the MCP connector select either kind of roster. For v2 targets, Space Bus is a guest of a designated, independently running local service, never its supervisor.
 
-| Caller | v1 target | v2 target |
-| --- | --- | --- |
-| v1 plugin | Preserve current managed and external modes | Refuse before discovery, spawn or delegation |
-| v2 plugin | Same behavior as v1 plugin | Read-only discovery; delegate to selected project |
-| MCP | Preserve active-roster precedence and v1 spawn opt-in | Same designated service as plugin; never spawn |
+| Caller    | v1 target                                             | v2 target                                         |
+| --------- | ----------------------------------------------------- | ------------------------------------------------- |
+| v1 plugin | Preserve current managed and external modes           | Refuse before discovery, spawn or delegation      |
+| v2 plugin | Same behavior as v1 plugin                            | Read-only discovery; delegate to selected project |
+| MCP       | Preserve active-roster precedence and v1 spawn opt-in | Same designated service as plugin; never spawn    |
 
 ## Problem frame
 
@@ -57,31 +58,74 @@ Space Bus-owned v2 service creation, persistence, supervision and stop belong to
   "schema_version": 2,
   "verdict": "extend",
   "scope": "fro-bot/space-bus single-package repository: src, package.json, loader and multi-roster planning records; bounded survey, not an exhaustive dependency audit",
-  "freshness": { "vcs_reference": "118385f168cef0a2e8a9169a5683da329a8c469b", "scope_baseline": "tree c51bd6d9bbd20dfaa2f5b67d154eac8f39a1482d" },
-  "budget": { "max_search_passes": 4, "max_candidate_inspections": 12, "exhausted": false },
+  "freshness": {
+    "vcs_reference": "118385f168cef0a2e8a9169a5683da329a8c469b",
+    "scope_baseline": "tree c51bd6d9bbd20dfaa2f5b67d154eac8f39a1482d"
+  },
+  "budget": {
+    "max_search_passes": 4,
+    "max_candidate_inspections": 12,
+    "exhausted": false
+  },
   "candidates": [
-    { "path_or_symbol": "package.json", "description": "Reserved plugin entry, distinct lifecycle exports and peer range", "disposition": "extend" },
-    { "path_or_symbol": "src/index.ts", "description": "Controller adapter and six-tool registration", "disposition": "extend" },
-    { "path_or_symbol": "src/config.ts", "description": "Manifest and per-roster context loading", "disposition": "extend" },
-    { "path_or_symbol": "src/mcp.ts", "description": "MCP selection and session-local roster precedence", "disposition": "extend" },
-    { "path_or_symbol": "src/contract.ts", "description": "Browser-safe target and discovery validation", "disposition": "extend" },
-    { "path_or_symbol": "validateContext", "description": "Per-call validation on a copy before request I/O", "disposition": "reuse" },
-    { "path_or_symbol": "findSessionDirectory", "description": "v1 session ownership and project lookup", "disposition": "extend" },
-    { "path_or_symbol": "src/discovery.ts", "description": "v1 managed discovery; retain as separate from externally owned registration", "disposition": "reuse" },
-    { "path_or_symbol": "src/server.ts", "description": "Managed lifecycle must exclude shared targets", "disposition": "extend" }
+    {
+      "path_or_symbol": "package.json",
+      "description": "Reserved plugin entry, distinct lifecycle exports and peer range",
+      "disposition": "extend"
+    },
+    {
+      "path_or_symbol": "src/index.ts",
+      "description": "Controller adapter and six-tool registration",
+      "disposition": "extend"
+    },
+    {
+      "path_or_symbol": "src/config.ts",
+      "description": "Manifest and per-roster context loading",
+      "disposition": "extend"
+    },
+    {
+      "path_or_symbol": "src/mcp.ts",
+      "description": "MCP selection and session-local roster precedence",
+      "disposition": "extend"
+    },
+    {
+      "path_or_symbol": "src/contract.ts",
+      "description": "Browser-safe target and discovery validation",
+      "disposition": "extend"
+    },
+    {
+      "path_or_symbol": "validateContext",
+      "description": "Per-call validation on a copy before request I/O",
+      "disposition": "reuse"
+    },
+    {
+      "path_or_symbol": "findSessionDirectory",
+      "description": "v1 session ownership and project lookup",
+      "disposition": "extend"
+    },
+    {
+      "path_or_symbol": "src/discovery.ts",
+      "description": "v1 managed discovery; retain as separate from externally owned registration",
+      "disposition": "reuse"
+    },
+    {
+      "path_or_symbol": "src/server.ts",
+      "description": "Managed lifecycle must exclude shared targets",
+      "disposition": "extend"
+    }
   ]
 }
 ```
 
 ## Key technical decisions
 
-| Decision | Why / rejected alternative |
-| --- | --- |
-| Separate controller adapter from target protocol. | A v2 controller must run against v1 before v2 service discovery works. Never infer target generation from the loading SDK. |
-| Retain one default entry with native v1 and v2 adapters, subject to the real-loader gate. | [Systematic](https://github.com/marcusrbrown/systematic/blob/bb8daab3e1232b663a6efaaed4c669e62446d5ae/docs/plans/2026-10-27-001-feat-opencode-v2-support-plan.md) and [Copilot Delegate](https://github.com/marcusrbrown/opencode-copilot-delegate/blob/b8f05d1048cbe688fcb26d53396d57e581c508a0/docs/plans/2026-11-20-002-feat-opencode-v2-dual-host-plan.md) provide precedents, not proof at our floor. Prefer the object with separate setup/server entry points; do not assume a decorated function is accepted. |
-| Add a mutually exclusive shared-v2 roster variant identifying a registration by explicit absolute file location. | A stable designation is not an endpoint, secret, or claim of ownership. No ambient profile, port scanning, default service or CLI `ensure` fallback. Keep registry metadata operations offline. |
-| Resolve the designation once per tool call. Validate one registration snapshot for each connection; do not combine credentials from one snapshot with an endpoint from another. | In [v2.3.2 discovery](https://github.com/anomalyco/opencode/blob/c0ad18b402eb2827fc1ee71c171b1177b3fc02d1/packages/client/src/service-probe.ts#L48-L97), the password is sent before PID/version confirmation. A reconnected wait must refuse a changed instance rather than silently retarget. |
-| Keep bare IDs for v1 only. Expose a reusable, non-secret Space Bus reference for v2 sessions. | A new v2 operation must not reinterpret a bare v1 ID, a caller-provided project name, or a prompt correlation ID as proof of origin. Require fresh references across restarts unless history continuity is verified. |
+| Decision                                                                                                                                                                        | Why / rejected alternative                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Separate controller adapter from target protocol.                                                                                                                               | A v2 controller must run against v1 before v2 service discovery works. Never infer target generation from the loading SDK.                                                                                                                                                                                                                                                                                                                                                                                            |
+| Retain one default entry with native v1 and v2 adapters, subject to the real-loader gate.                                                                                       | [Systematic](https://github.com/marcusrbrown/systematic/blob/bb8daab3e1232b663a6efaaed4c669e62446d5ae/docs/plans/2026-10-27-001-feat-opencode-v2-support-plan.md) and [Copilot Delegate](https://github.com/marcusrbrown/opencode-copilot-delegate/blob/b8f05d1048cbe688fcb26d53396d57e581c508a0/docs/plans/2026-11-20-002-feat-opencode-v2-dual-host-plan.md) provide precedents, not proof at our floor. Prefer the object with separate setup/server entry points; do not assume a decorated function is accepted. |
+| Add a mutually exclusive shared-v2 roster variant identifying a registration by explicit absolute file location.                                                                | A stable designation is not an endpoint, secret, or claim of ownership. No ambient profile, port scanning, default service or CLI `ensure` fallback. Keep registry metadata operations offline.                                                                                                                                                                                                                                                                                                                       |
+| Resolve the designation once per tool call. Validate one registration snapshot for each connection; do not combine credentials from one snapshot with an endpoint from another. | In [v2.3.2 discovery](https://github.com/anomalyco/opencode/blob/c0ad18b402eb2827fc1ee71c171b1177b3fc02d1/packages/client/src/service-probe.ts#L48-L97), the password is sent before PID/version confirmation. A reconnected wait must refuse a changed instance rather than silently retarget.                                                                                                                                                                                                                       |
+| Keep bare IDs for v1 only. Expose a reusable, non-secret Space Bus reference for v2 sessions.                                                                                   | A new v2 operation must not reinterpret a bare v1 ID, a caller-provided project name, or a prompt correlation ID as proof of origin. Require fresh references across restarts unless history continuity is verified.                                                                                                                                                                                                                                                                                                  |
 
 ## Implementation units
 
@@ -160,13 +204,13 @@ Record controller version, target service version, OS, ownership mode and tarbal
 
 The v2 plugin adapter and MCP select a roster before transport selection. Node owns discovery; browser-safe core receives validated context and still rechecks loopback at its own boundary. V1 lifecycle helpers remain isolated behind the v1 target mode. MCP session state and per-call directory routing remain independent of target service state.
 
-| Risk | Gate / failure policy |
-| --- | --- |
-| Loader differences or optional peer accidentally imported | Verify tarball at floor, current v1 and pilot v2 without the other generation's peer. No silent floor change. |
-| Credentials sent during upstream discovery or redirect | Validate the explicit registration and current listener evidence under the local-user boundary; refuse detected mismatch before authenticated I/O. Document the remaining check-to-connect race. |
-| Stale handle looks valid on another host | Cross-host ID collision fixture and fresh-reference recovery; same directory alone is never origin proof. |
-| Queued, blocked or errored task reported complete | Native evidence by state; contract fixtures plus live controlled delegation; no idle-only success heuristic. |
-| Partial implementation accidentally claims support | Controller→v1 demonstration is an intermediate checkpoint only. Release milestone 1 only after the shared-v2 matrix passes. |
+| Risk                                                      | Gate / failure policy                                                                                                                                                                            |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Loader differences or optional peer accidentally imported | Verify tarball at floor, current v1 and pilot v2 without the other generation's peer. No silent floor change.                                                                                    |
+| Credentials sent during upstream discovery or redirect    | Validate the explicit registration and current listener evidence under the local-user boundary; refuse detected mismatch before authenticated I/O. Document the remaining check-to-connect race. |
+| Stale handle looks valid on another host                  | Cross-host ID collision fixture and fresh-reference recovery; same directory alone is never origin proof.                                                                                        |
+| Queued, blocked or errored task reported complete         | Native evidence by state; contract fixtures plus live controlled delegation; no idle-only success heuristic.                                                                                     |
+| Partial implementation accidentally claims support        | Controller→v1 demonstration is an intermediate checkpoint only. Release milestone 1 only after the shared-v2 matrix passes.                                                                      |
 
 ## Sources and handoff
 

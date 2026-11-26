@@ -1,4 +1,5 @@
 ---
+
 date: 2026-11-25
 topic: opencode-v2-coexistence
 ---
@@ -17,11 +18,11 @@ The control workspace is moving to v2 before all its target projects. Loading th
 
 The operator selects a roster. The controller or MCP client delegates on the operator's behalf. The target service owns its sessions; a roster pointing at it does not confer ownership of its process.
 
-| Caller | v1 roster | v2 roster, milestone 1 |
-| --- | --- | --- |
-| OpenCode v1 plugin | Existing behavior | Actionable unsupported result before session creation or host startup |
-| OpenCode v2 plugin | Existing attach-only and managed modes | Attach to the designated service |
-| Stdio MCP (including Claude Desktop) | Existing behavior | Attach to the same designated service as the plugin |
+| Caller                               | v1 roster                              | v2 roster, milestone 1                                                |
+| ------------------------------------ | -------------------------------------- | --------------------------------------------------------------------- |
+| OpenCode v1 plugin                   | Existing behavior                      | Actionable unsupported result before session creation or host startup |
+| OpenCode v2 plugin                   | Existing attach-only and managed modes | Attach to the designated service                                      |
+| Stdio MCP (including Claude Desktop) | Existing behavior                      | Attach to the same designated service as the plugin                   |
 
 ## Requirements
 
