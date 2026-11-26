@@ -416,6 +416,8 @@ jobs:
             }}
         with:
           isolate-agent: "true"
+          trace-endpoint: https://traces.fro.bot/fro-bot/v1/traces
+          trace-headers: "Authorization: Bearer ${{ secrets.FRO_BOT_TRACE_TOKEN }}"
           github-token: ${{ secrets.FRO_BOT_PAT }}
           auth-json: ${{ secrets.OPENCODE_AUTH_JSON }}
           model: ${{ vars.FRO_BOT_MODEL }}
