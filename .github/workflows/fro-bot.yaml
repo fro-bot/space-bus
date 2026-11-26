@@ -404,7 +404,7 @@ jobs:
 
       - name: Run Fro Bot
         id: fro-bot-agent
-        uses: fro-bot/agent@7eb26710477db26fa756029283abfe33c1e60362 # v0.149.0
+        uses: fro-bot/agent@1336cdbc1ff68944cf5121d0e4cfadc6c1eb0d95 # v0.149.2
         env:
           OPENCODE_PROMPT_ARTIFACT: "true"
           TASK_PROMPT: >-
@@ -416,6 +416,8 @@ jobs:
             }}
         with:
           isolate-agent: "true"
+          trace-endpoint: https://traces.fro.bot/fro-bot/v1/traces
+          trace-headers: "Authorization: Bearer ${{ secrets.FRO_BOT_TRACE_TOKEN }}"
           github-token: ${{ secrets.FRO_BOT_PAT }}
           auth-json: ${{ secrets.OPENCODE_AUTH_JSON }}
           model: ${{ vars.FRO_BOT_MODEL }}
