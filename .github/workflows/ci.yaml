@@ -7,6 +7,11 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      listener_probe:
+        description: Run only the unprivileged Linux listener probe
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -18,6 +23,7 @@ concurrency:
 jobs:
   check:
     name: Check
+    if: github.event_name != 'workflow_dispatch' || !inputs.listener_probe
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -51,3 +57,37 @@ jobs:
 
       - name: Unit tests
         run: bun test
+
+  listener-probe:
+    name: Linux listener ownership
+    if: github.event_name == 'workflow_dispatch' && inputs.listener_probe
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.5
+
+      - name: Verify live Linux listener ownership
+        shell: bash
+        run: |
+          test "$(uname -s)" = Linux
+          test "$(id -u)" -ne 0
+          git rev-parse HEAD
+          printf 'Runner image: %s %s\n' "$ImageOS" "$ImageVersion"
+          node --version
+          bun --version
+          findmnt --noheadings --output OPTIONS --target /proc
+          if [[ -r /proc/sys/kernel/yama/ptrace_scope ]]; then
+            printf 'ptrace_scope: %s\n' "$(</proc/sys/kernel/yama/ptrace_scope)"
+          fi
+          log="$RUNNER_TEMP/listener-probe.log"
+          bun test/fixtures/dual-host/listener/probe.ts | tee "$log"
+          grep -Fq '== live on linux:' "$log"
+          grep -Fq 'two live processes hold one listener' "$log"
