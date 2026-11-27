@@ -353,8 +353,7 @@ jobs:
         ) ||
         (
           github.event_name == 'pull_request' &&
-          !endsWith(github.event.pull_request.user.login || '', '[bot]') &&
-          (github.event.pull_request.user.login || '') != 'fro-bot'
+          !endsWith(github.event.pull_request.user.login || '', '[bot]')
         ) ||
         github.event_name == 'schedule' ||
         github.event_name == 'workflow_dispatch' ||
@@ -420,7 +419,12 @@ jobs:
           trace-headers: "Authorization: Bearer ${{ secrets.FRO_BOT_TRACE_TOKEN }}"
           github-token: ${{ secrets.FRO_BOT_PAT }}
           auth-json: ${{ secrets.OPENCODE_AUTH_JSON }}
-          model: ${{ vars.FRO_BOT_MODEL }}
+          model: >-
+            ${{
+              (github.event_name == 'pull_request' && vars.FRO_BOT_MODEL_REVIEW)
+              || (github.event_name != 'pull_request' && vars.FRO_BOT_MODEL_ACT)
+              || vars.FRO_BOT_MODEL
+            }}
           # The autoheal pass and dispatched prompts deliver fixes as branch + PR; the default (working-dir) discards them.
           # Empty everywhere else, which the action treats as unset.
           output-mode: >-
