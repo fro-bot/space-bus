@@ -45,7 +45,7 @@ A checklist for a shared local-server supervisor. Each item was a real hole caug
 1. **Spawn race → `O_EXCL` lock.** Concurrent first-callers resolve to exactly one spawn; losers wait for the winner's discovery file. **Age never preempts a live owner** (no steal → no double-spawn). A **dead** owner's lock is reclaimed immediately (identity-checked); a **corrupt/empty** lock is reclaimed only after a grace window (protects a live writer mid-write). Losers **fast-fail** when the lock is released without a discovery file appearing — the winner's spawn failed, so don't wait out the full budget.
 2. **Verify pid identity before any signal.** Capture start-time + `comm` at spawn (`ps -o lstart=,comm=`, locale-pinned `LC_ALL=C`); verify before every kill. A bare pid is reusable garbage — signaling on pid alone can kill an innocent recycled process. Applies to staleness reaping, `stop`, and orphan reaping.
 3. **Two-phase readiness.** Parse the resolved ephemeral port from the server's stdout line, then poll an **authenticated** endpoint. Classify: `401/403` → fail immediately (auth regression, never retry), connection-refused/timeout → retry to budget, child-process-died → fast-fail. Per-request `AbortSignal` timeout on the probe; split the overall budget so the log-read phase can't starve the HTTP-probe phase.
-4. **Escalated, confirmed stop.** SIGTERM → bounded poll for death → SIGKILL → confirm dead → **then** remove the discovery file. Never report `stopped: true` on a still-alive process; leave discovery intact if it somehow survives SIGKILL. **Signal the process _group_, not the recorded pid** — the harness binary is a wrapper that spawns the real server as a child holding the port; killing only the wrapper leaks the child. See the [wrapper/child stop-leak bug](../integration-issues/managed-stop-leaked-wrapper-child-2026-07-05.md) for the full failure and the `process.kill(-pid, sig)` fix.
+4. **Escalated, confirmed stop.** SIGTERM → bounded poll for death → SIGKILL → confirm dead → **then** remove the discovery file. Never report `stopped: true` on a still-alive process; leave discovery intact if it somehow survives SIGKILL. Two other paths also remove discovery without a confirmed death: an identity mismatch (after a best-effort reap of a surviving group; returns `stopped: false`) and an unexpected non-EPERM error from `signalGroup` (treated as already gone). **Signal the process _group_, not the recorded pid** — the harness binary is a wrapper that spawns the real server as a child holding the port; killing only the wrapper leaks the child. See the [wrapper/child stop-leak bug](../integration-issues/managed-stop-leaked-wrapper-child-2026-07-05.md) for the full failure and the `process.kill(-pid, sig)` fix.
 5. **Keep credentials out of argv and logs.** Generate a per-spawn password, pass it in the child **env** (never argv, never logged). Redact **both** the raw password **and** its base64 Basic-auth token from any surfaced log tail — the encoded form leaks just as badly.
 6. **Write provisional state before the readiness wait.** Record `{pid, identity, password}` immediately after spawn, before waiting for readiness, so a parent death in that window leaves a reapable trace. The next `ensure` identity-verifies and reaps the orphan before respawning.
 7. **Prove the detached spawn.** `node:child_process` `spawn(..., { detached: true }).unref()` is not a vibe — verify the child outlives the parent with a spike test before building the rest on it (Bun's process semantics in particular warrant the check).
@@ -86,7 +86,7 @@ if (existing) {
 // dead owner or aged-out corrupt lock — unlink and retry the O_EXCL create
 ```
 
-**Identity capture / verify** — a recycled pid never matches both start-time and comm:
+**Identity capture / verify** — a best-effort check: a recycled pid must match both start-time and comm to pass. `lstart` has one-second granularity, so a recycled pid running the same command within the same second can still match:
 
 ```ts
 export function captureIdentity(pid: number): string | null {
@@ -128,13 +128,16 @@ try {
 }
 ```
 
-**Stop escalation** — signal the process group, poll the same target the signal reached, remove discovery only after confirmed death. `signalGroup` calls `process.kill(-pid, sig)` and returns `true`; on ESRCH (the pid is not a group leader, or the group is gone) it falls back to a bare `process.kill(pid, sig)` and returns `false`; EPERM is rethrown:
+**Stop escalation** — signal the process group and poll the same target the signal reached; on the normal escalation path discovery is removed only after confirmed death. Two exceptions also clear it without that confirmation: an identity mismatch (the recorded wrapper pid is gone or recycled, so there is nothing to signal; a surviving group is reaped best-effort first, and the result is `{ stopped: false }`) and an unexpected non-EPERM error from `signalGroup` (treated as already gone, `{ stopped: true }`, with no polling). `signalGroup` calls `process.kill(-pid, sig)` and returns `true`; on ESRCH (the pid is not a group leader, or the group is gone) it falls back to a bare `process.kill(pid, sig)` and returns `false`; EPERM is rethrown, and stop keeps discovery and returns `{ stopped: false }`:
 
 ```ts
-// stopServer, trimmed: the branches for an unexpected non-EPERM throw from signalGroup are omitted
+// stopServer, trimmed: the source comments are omitted
+const discovery = readDiscovery(rosterPath);
+if (!discovery) return { stopped: false };
+
 if (!verifyIdentity(discovery.pid, discovery.identity)) {
   await reapSurvivingGroup(discovery.pid); // wrapper dead/recycled: reap a surviving group, never signal a live pid
-  removeDiscovery(rosterPath);
+  removeDiscovery(rosterPath); // exception: cleared without a confirmed death
   return { stopped: false };
 }
 
@@ -146,11 +149,17 @@ const waitForCompletion = (budgetMs: number) =>
   groupSignaled ? waitForGroupDeath(pid, budgetMs) : waitForDeath(pid, budgetMs);
 
 try { groupSignaled = signalGroup(pid, "SIGTERM"); }
-catch (err) { if (isEpermError(err)) return { stopped: false }; /* alive, can't signal — discovery intact */ }
+catch (err) {
+  if (isEpermError(err)) return { stopped: false }; // alive, can't signal — discovery intact
+  removeDiscovery(rosterPath); return { stopped: true }; // exception: unexpected throw, treated as already gone
+}
 if (await waitForCompletion(STOP_GRACE_MS)) { removeDiscovery(rosterPath); return { stopped: true }; }
 
 try { groupSignaled = signalGroup(pid, "SIGKILL"); }
-catch (err) { if (isEpermError(err)) return { stopped: false }; }
+catch (err) {
+  if (isEpermError(err)) return { stopped: false };
+  removeDiscovery(rosterPath); return { stopped: true }; // exception: same unexpected-throw path
+}
 if (await waitForCompletion(STOP_GRACE_MS)) { removeDiscovery(rosterPath); return { stopped: true }; }
 return { stopped: false }; // survived SIGKILL — leave discovery intact, don't lie
 ```
@@ -169,7 +178,7 @@ Naive → hardened, at a glance:
 
 - pid-only kill → identity-gated kill (`pid + lstart + comm`)
 - retry `/session` forever on a bad password → `401/403` fails immediately
-- remove discovery on SIGTERM _send_ → remove only after confirmed death
+- remove discovery on SIGTERM _send_ → on the normal escalation path, remove only after confirmed death
 - log the raw readiness tail → redact raw secret **and** its Basic token
 
 ## Related
