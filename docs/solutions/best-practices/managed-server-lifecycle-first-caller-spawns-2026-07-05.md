@@ -90,11 +90,13 @@ if (existing) {
 ```ts
 export function captureIdentity(pid: number): string | null {
   try {
+    // `lstart=,comm=` carries empty headers, so ps prints no header row — only the identity line
     const out = execFileSync("ps", ["-p", String(pid), "-o", "lstart=,comm="], {
       env: { ...process.env, LC_ALL: "C" }, // locale-pinned so the string compares stably
       encoding: "utf8",
     });
-    return out.split("\n")[1]?.trim() || null;
+    const trimmed = out.trim();
+    return trimmed.length > 0 ? trimmed : null;
   } catch {
     return null;
   }
@@ -117,12 +119,12 @@ if (res.status === 401 || res.status === 403) return "auth-failure"; // stop now
 return "retry";
 ```
 
-**Stop escalation** — discovery removed only after confirmed death:
+**Stop escalation** — signal the process group (`signalGroup` calls `process.kill(-pid, sig)`); discovery removed only after confirmed death:
 
 ```ts
-process.kill(pid, "SIGTERM");
+signalGroup(pid, "SIGTERM");
 if (await waitForDeath(pid, STOP_GRACE_MS)) { removeDiscovery(rosterPath); return { stopped: true }; }
-process.kill(pid, "SIGKILL");
+signalGroup(pid, "SIGKILL");
 if (await waitForDeath(pid, STOP_GRACE_MS)) { removeDiscovery(rosterPath); return { stopped: true }; }
 return { stopped: false }; // survived SIGKILL — leave discovery intact, don't lie
 ```
