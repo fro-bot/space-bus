@@ -1,22 +1,17 @@
-import type { Plugin } from "@opencode-ai/plugin";
-import { makeBusRegistry } from "./tools/bus_registry";
-import { makeBusResult } from "./tools/bus_result";
-import { makeBusRoster } from "./tools/bus_roster";
-import { makeBusStatus } from "./tools/bus_status";
-import { makeBusTask } from "./tools/bus_task";
-import { makeBusWait } from "./tools/bus_wait";
+/**
+ * Plugin entry. One default export — a host-free definition both OpenCode
+ * generations accept: v1 hosts (>= 1.17.13) call `server`, v2 hosts (2.3.2)
+ * call `setup`. It must stay the module's ONLY export: a v1 host handed a
+ * legacy function default runs every named export as a plugin factory, and
+ * `./server` in package.json resolves here (plugin-entry-guard.test.ts).
+ *
+ * Neither adapter imports a host SDK or runs at module load time.
+ */
+import { serverV1 } from "./plugin-v1";
+import { setupV2 } from "./plugin-v2";
 
-const SpaceBusPlugin: Plugin = async (input) => ({
-  tool: {
-    bus_roster: makeBusRoster(input.directory),
-    bus_task: makeBusTask(input.directory),
-    bus_status: makeBusStatus(input.directory),
-    bus_result: makeBusResult(input.directory),
-    bus_wait: makeBusWait(input.directory),
-    // No session seam: the plugin surface is directory-first (R10), so
-    // `use` returns an actionable error rather than silently no-op'ing.
-    bus_registry: makeBusRegistry(),
-  },
-});
-
-export default SpaceBusPlugin;
+export default {
+  id: "space-bus",
+  server: serverV1,
+  setup: setupV2,
+};

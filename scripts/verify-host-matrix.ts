@@ -17,9 +17,13 @@
  * events (U1_LIFECYCLE_FILE) so "six unique names" cannot hide a double run.
  *
  * Isolation (mandatory, no override): macOS sandbox-exec denies read+write of
- * the real home and invoking $HOME, allows writes only to this run's work
- * dir, and denies non-loopback network; a self-test proves each denial and
- * refuses to start any host otherwise. Each cell has its own env -i, HOME,
+ * the real home and invoking $HOME, denies ALL writes except to this run's
+ * work dir (and null/tty devices), and denies non-loopback network; a
+ * self-test with canaries outside the work dir (in /private/tmp and
+ * /private/var/tmp), DNS-name and raw-IP egress probes, and positive controls
+ * outside the sandbox proves each denial and refuses to start any host
+ * otherwise. This applies to HOST EXECUTION only: the build, pack and npm
+ * install steps run unsandboxed, with network access, before any host starts. Each cell has its own env -i, HOME,
  * XDG_*, TMPDIR and OPENCODE_CONFIG_DIR; no credentials, no model/provider
  * call. Only the child this script spawned is ever signalled, after its
  * command line is checked. Cleanup removes only this run's marker-checked work
@@ -51,6 +55,7 @@ import {
   writeFileSync,
   writeSync,
 } from "node:fs";
+import { createServer as createHttpServer } from "node:http";
 import { createServer, Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -254,14 +259,20 @@ function makeIso(): Iso {
     [
       "(version 1)",
       "(allow default)",
-      `(deny file-write* ${sub(homes)})`,
+      // writes: denied everywhere, then re-allowed ONLY in this run's work dir
+      // and the standard null/tty devices (so a host cannot write to /tmp,
+      // /private/var/tmp, the real home or anywhere else).
+      "(deny file-write*)",
+      `(allow file-write* ${sub([work])} (literal "/dev/null") (literal "/dev/tty") (literal "/dev/dtracehelper") (regex #"^/dev/(fd/[0-9]+|ttys[0-9]+)$"))`,
+      // home: no reads at all (writes are already denied above).
       `(deny file-read-data ${sub(homes)})`,
-      `(allow file-write* ${sub([work])})`,
       `(allow file-read-data ${sub([work, dirname(dirname(node))])})`,
+      // network: loopback and unix sockets only.
       "(deny network*)",
       '(allow network-outbound (remote ip "localhost:*") (remote unix-socket))',
       '(allow network-bind (local ip "localhost:*"))',
       '(allow network-inbound (local ip "localhost:*"))',
+      "",
     ].join("\n"),
   );
   return { work, node, realHome, profile };
@@ -272,52 +283,134 @@ const inSandbox = (iso: Iso, cmd: string, args: string[]) => ({
   args: ["-f", iso.profile, cmd, ...args],
 });
 
+// One probe, run inside the sandbox and again outside it as a positive
+// control, so every denial is attributable to the sandbox. The loopback target
+// is a server this process starts. Canaries are exact-name entries in two
+// private directories this self-test creates (and always removes) outside the
+// work dir; the control never touches the real home.
 const PROBE = `
-import { readdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
+import net from "node:net";
 import { join } from "node:path";
-const [home, name] = process.argv.slice(2);
+const cfg = JSON.parse(process.argv[2]);
+const t = (fn) => { try { fn(); return "allowed"; } catch (e) { return "denied:" + (e.code ?? "err"); } };
 const out = {};
-try { readdirSync(home); out.readHome = "allowed"; } catch (e) { out.readHome = "denied:" + e.code; }
-try { writeFileSync(join(home, name), "x", { flag: "wx" }); unlinkSync(join(home, name)); out.writeHome = "allowed"; }
-catch (e) { out.writeHome = "denied:" + e.code; }
-try { await fetch("https://registry.npmjs.org/", { method: "HEAD", signal: AbortSignal.timeout(8000) }); out.network = "allowed"; }
-catch { out.network = "denied"; }
+out.readHome = t(() => readdirSync(cfg.home));
+out.writeHome = cfg.control ? "skipped (control never touches the real home)" : t(() => { writeFileSync(join(cfg.home, cfg.name), "x", { flag: "wx" }); unlinkSync(join(cfg.home, cfg.name)); });
+out.writeOutside1 = t(() => writeFileSync(join(cfg.out1, cfg.name), "x", { flag: "wx" }));
+out.writeOutside2 = t(() => writeFileSync(join(cfg.out2, cfg.name), "x", { flag: "wx" }));
+out.mkdirOutside = t(() => mkdirSync(join(cfg.out1, cfg.name + "-d")));
+out.writeWork = t(() => writeFileSync(join(cfg.work, cfg.name), "x", { flag: "wx" }));
+out.loopback = await fetch(cfg.loopback).then((r) => "allowed:" + r.status).catch(() => "denied");
+out.external = await fetch("https://registry.npmjs.org/", { method: "HEAD", signal: AbortSignal.timeout(8000) }).then(() => "allowed").catch(() => "denied");
+out.externalIp = await new Promise((res) => { const s = net.connect({ host: "1.1.1.1", port: 443, timeout: 4000 }); s.once("connect", () => { s.destroy(); res("allowed"); }); s.once("error", () => res("denied")); s.once("timeout", () => { s.destroy(); res("denied"); }); });
 console.log(JSON.stringify(out));
 `;
 
-/** Same probe inside and outside the sandbox: only the sandbox may deny. */
-function sandboxSelfTest(iso: Iso): {
+type SelfTest = {
   sandboxed: Json;
   control: Json;
+  leaked: { out1: number; out2: number; homeCanary: boolean };
+  checks: Record<string, boolean>;
   ok: boolean;
-} {
-  const script = join(iso.work, "selftest.mjs");
+};
+
+/**
+ * Mandatory before any host starts. Async because the loopback probe talks to
+ * a server in this process. Bounded: each probe child is killed after 60s, and
+ * the two canary directories are removed in `finally` whatever happens.
+ */
+async function sandboxSelfTest(iso: Iso): Promise<SelfTest> {
+  const dir = join(iso.work, "selftest");
+  mkdirSync(dir, { recursive: true });
+  const script = join(dir, "probe.mjs");
   writeFileSync(script, PROBE);
-  const name = `.u1-selftest-${randomBytes(6).toString("hex")}`;
-  const probe = (wrap: boolean) => {
-    const args = [script, iso.realHome, name];
-    const c = wrap ? inSandbox(iso, iso.node, args) : { cmd: iso.node, args };
-    const r = spawnSync(c.cmd, c.args, {
-      cwd: iso.work,
-      env: { PATH: BASE_PATH },
-    });
-    try {
-      return JSON.parse(
-        r.stdout.toString().trim().split("\n").pop() ?? "",
-      ) as Json;
-    } catch {
-      return { error: `no output (exit ${r.status})` };
-    }
+  const suffix = randomBytes(5).toString("hex");
+  const out1 = `/private/tmp/hm-selftest-${suffix}`;
+  const out2 = `/private/var/tmp/hm-selftest-${suffix}`;
+  const name = `.hm-canary-${suffix}`;
+  const server = createHttpServer((_req, res) => res.end("ok"));
+  await new Promise<void>((ok) => server.listen(0, "127.0.0.1", ok));
+  const loopback = `http://127.0.0.1:${(server.address() as { port: number }).port}/`;
+  const cfg = {
+    home: iso.realHome,
+    name,
+    out1,
+    out2,
+    work: dir,
+    loopback,
   };
-  const sandboxed = probe(true);
-  const control = probe(false);
-  const ok =
-    String(sandboxed["readHome"]).startsWith("denied") &&
-    String(sandboxed["writeHome"]).startsWith("denied") &&
-    sandboxed["network"] === "denied" &&
-    control["readHome"] === "allowed" &&
-    control["network"] === "allowed";
-  return { sandboxed, control, ok };
+  const run = (wrap: boolean) =>
+    new Promise<Json>((done) => {
+      const args = [script, JSON.stringify({ ...cfg, control: !wrap })];
+      const c = wrap ? inSandbox(iso, iso.node, args) : { cmd: iso.node, args };
+      const child = spawn(c.cmd, c.args, {
+        cwd: dir,
+        env: { PATH: BASE_PATH },
+      });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (d) => (stdout += d));
+      child.stderr.on("data", (d) => (stderr += d));
+      const timer = setTimeout(() => child.kill("SIGKILL"), 60_000);
+      child.once("close", (code) => {
+        clearTimeout(timer);
+        try {
+          done(JSON.parse(stdout.trim().split("\n").pop() ?? "") as Json);
+        } catch {
+          done({ error: `no output (exit ${code}) ${stderr.slice(0, 200)}` });
+        }
+      });
+    });
+  try {
+    mkdirSync(out1, { mode: 0o700 });
+    mkdirSync(out2, { mode: 0o700 });
+    const sandboxed = await run(true);
+    // Filesystem truth, independent of what the probe reported:
+    const leaked = {
+      out1: readdirSync(out1).length,
+      out2: readdirSync(out2).length,
+      homeCanary: existsSync(join(iso.realHome, name)),
+    };
+    if (leaked.homeCanary) rmSync(join(iso.realHome, name), { force: true });
+    const control = await run(false);
+    const controlWrote = {
+      out1: readdirSync(out1).includes(name),
+      out2: readdirSync(out2).includes(name),
+    };
+    const denied = (v: unknown) => String(v).startsWith("denied");
+    const checks = {
+      readHomeDenied: denied(sandboxed["readHome"]),
+      writeHomeDenied: denied(sandboxed["writeHome"]),
+      writeOutsideTmpDenied: denied(sandboxed["writeOutside1"]),
+      writeOutsideVarTmpDenied: denied(sandboxed["writeOutside2"]),
+      mkdirOutsideDenied: denied(sandboxed["mkdirOutside"]),
+      noCanaryLandedOutsideWork:
+        leaked.out1 === 0 && leaked.out2 === 0 && !leaked.homeCanary,
+      writeWorkAllowed: sandboxed["writeWork"] === "allowed",
+      loopbackAllowed: String(sandboxed["loopback"]).startsWith("allowed"),
+      externalDnsNameDenied: sandboxed["external"] === "denied",
+      externalIpDenied: sandboxed["externalIp"] === "denied",
+      controlCanWriteOutside:
+        control["writeOutside1"] === "allowed" &&
+        control["writeOutside2"] === "allowed" &&
+        controlWrote.out1 &&
+        controlWrote.out2,
+      controlCanReadHome: control["readHome"] === "allowed",
+      controlLoopback: String(control["loopback"]).startsWith("allowed"),
+      controlExternalAllowed: control["external"] === "allowed",
+    };
+    return {
+      sandboxed,
+      control,
+      leaked,
+      checks,
+      ok: Object.values(checks).every(Boolean),
+    };
+  } finally {
+    for (const d of [out1, out2]) rmSync(d, { recursive: true, force: true });
+    await new Promise<void>((done) => server.close(() => done()));
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1194,7 +1287,7 @@ async function main(): Promise<number> {
   log(`run ${runId} -> .context/u1-loader/${runId}/`);
   let exit = 1;
   try {
-    const selfTest = sandboxSelfTest(iso);
+    const selfTest = await sandboxSelfTest(iso);
     log(`sandbox self-test: ${JSON.stringify(selfTest)}`);
     if (!selfTest.ok) throw new Error("OS sandbox self-test failed");
 
@@ -1332,4 +1425,25 @@ async function main(): Promise<number> {
   return exit;
 }
 
-process.exit(await main());
+export type { Host, Iso, Json, Tarball };
+// Pure, side-effect-free-at-import helpers reused by
+// scripts/verify-controller-delegation.ts (U2). Importing this module must not
+// run the U1 matrix: main() only runs when this file is the entry point.
+export {
+  BASE_PATH,
+  freePort,
+  getJson,
+  HOSTS,
+  identify,
+  inSandbox,
+  makeIso,
+  PINS,
+  portOpen,
+  sandboxSelfTest,
+  sh,
+  sleep,
+  WORK_MARKER,
+  waitFor,
+};
+
+if (import.meta.main) process.exit(await main());

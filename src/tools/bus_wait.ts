@@ -1,7 +1,7 @@
-import { type ToolDefinition, tool } from "@opencode-ai/plugin";
 import { wait } from "../core";
 import { formatRosterHeader, formatWait } from "../format";
 import { ensureAndLoadContext, withRosterHeader } from "./shared";
+import { type BusTool, defineBusTool } from "./spec";
 
 export const BUS_WAIT_DESCRIPTION =
   "Block until any of the given space-bus sessions needs attention (completes, blocks on a question, fails, or is not found) or a timeout elapses. Returns every watched session's normalized state and which session(s) woke the wait. A bounded, level-triggered long-poll — an already-done session wakes immediately; on timeout it returns the current snapshot, not an error.";
@@ -13,37 +13,35 @@ export const BUS_WAIT_DESCRIPTION =
 // still returns a normal (not error) snapshot either way.
 export const MAX_WAIT_TIMEOUT_MS = 5 * 60_000; // 5 minutes
 
-export function makeBusWait(defaultDirectory?: string): ToolDefinition {
-  return tool({
+export function makeBusWait(defaultDirectory?: string): BusTool {
+  return defineBusTool({
+    name: "bus_wait",
     description: BUS_WAIT_DESCRIPTION,
-    args: {
-      sessionIds: tool.schema
-        .array(tool.schema.string())
+    defaultDirectory,
+    args: (z) => ({
+      sessionIds: z
+        .array(z.string())
         .min(1, "bus_wait requires at least one sessionId")
         .max(100, "bus_wait accepts at most 100 sessionIds")
         .describe("Session IDs to watch (returned by bus_task)"),
-      timeoutMs: tool.schema
+      timeoutMs: z
         .number()
         .positive()
         .optional()
         .describe(
           `Max time to wait in milliseconds before returning a timeout snapshot (default 60s, capped at ${MAX_WAIT_TIMEOUT_MS}ms; soft deadline, may overshoot by up to ~30s if a request is slow)`,
         ),
-      roster: tool.schema
+      roster: z
         .string()
         .optional()
         .describe(
           "Registry roster name to target. Resolution precedence: this param > workspace directory (see bus_registry to list)",
         ),
-    },
-    async execute(args, ctx) {
-      // Explicit runtime guard: schema .min(1) may not be enforced ahead of
-      // execute() by every tool-calling surface, and wait([]) would
-      // otherwise just block for the full timeout doing nothing useful.
-      if (!args.sessionIds || args.sessionIds.length === 0) {
-        throw new Error("bus_wait requires at least one sessionId");
-      }
-      const directory = ctx.directory ?? defaultDirectory;
+    }),
+    async run(args, directory) {
+      // `defineBusTool` enforces the .min(1)/.max(100) bounds on every
+      // call (a wait([]) would otherwise just block for the full timeout
+      // doing nothing useful), whether or not the host validated first.
       let resolved: Awaited<ReturnType<typeof ensureAndLoadContext>>;
       try {
         resolved = await ensureAndLoadContext(directory, args.roster);

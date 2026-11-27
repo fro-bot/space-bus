@@ -79,6 +79,11 @@
   "peerDependencies": {
     "@opencode-ai/plugin": ">=1.17.13 <2"
   },
+  "peerDependenciesMeta": {
+    "@opencode-ai/plugin": {
+      "optional": true
+    }
+  },
   "devDependencies": {
     "@biomejs/biome": "2.6.8",
     "@changesets/cli": "2.31.1",

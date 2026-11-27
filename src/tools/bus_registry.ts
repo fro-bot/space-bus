@@ -17,7 +17,6 @@
  */
 
 import { isAbsolute } from "node:path";
-import { type ToolDefinition, tool } from "@opencode-ai/plugin";
 import { z } from "zod";
 
 import { type ServerConfig, serverConfigSchema } from "../config";
@@ -37,6 +36,7 @@ import {
   removeProject,
   updateProject,
 } from "../roster-edit";
+import { type BusTool, defineBusTool, type ZodNamespace } from "./spec";
 
 export const BUS_REGISTRY_DESCRIPTION =
   "Manage the roster registry: list registered rosters, create/register/unregister rosters, set the default, select an active roster for this connector session (MCP only), and add/remove/update projects on a registered roster.";
@@ -70,7 +70,7 @@ const projectPatchSchema = z
   });
 
 // Field descriptions shared between the two independently-built schema
-// sources below (plugin tool.schema vs. ACTION_SCHEMA's top-level z), so
+// sources below (plugin argument fields and ACTION_SCHEMA), so
 // the surfaces can't drift on wording even though they no longer share
 // schema objects.
 const ROSTER_FIELD_DESCRIPTION =
@@ -88,96 +88,90 @@ const PROJECT_NAME_FIELD_DESCRIPTION =
 const PATCH_FIELD_DESCRIPTION =
   "Partial project fields to apply — required by update-project";
 
-// Plugin-facing schema fragments, built with `tool.schema` — the zod
-// namespace bundled inside @opencode-ai/plugin. `tool()`'s args type
-// requires a ZodRawShape built from THAT nested zod copy (not the
-// top-level `zod` package this file otherwise uses for ACTION_SCHEMA /
-// MCP), so every field and every embedded object schema below is built
-// from `tool.schema`, mirroring bus_task.ts/bus_wait.ts/etc. These
-// duplicate (rather than share) serverConfigSchema/projectInputSchema/
-// projectPatchSchema above, which stay on the top-level `zod` for
-// ACTION_SCHEMA and MCP's inputSchema — MCP's SDK resolves the top-level
-// zod, so mixing zod copies there would reintroduce the same mismatch.
-const pluginManagedServerConfigSchema = tool.schema.object({
-  command: tool.schema.array(tool.schema.string()).optional(),
-  cwd: tool.schema.string().optional(),
-  port: tool.schema.number().int().nonnegative().optional(),
-});
-
-const pluginServerConfigSchema = tool.schema
-  .object({
-    baseUrl: tool.schema.url().optional(),
-    managed: pluginManagedServerConfigSchema.optional(),
-  })
-  .superRefine((val, ctx) => {
-    const hasBaseUrl = val.baseUrl !== undefined;
-    const hasManaged = val.managed !== undefined;
-    if (hasBaseUrl && hasManaged) {
-      ctx.addIssue({
-        code: "custom",
-        message:
-          "space-bus: roster's server block must specify exactly one of `baseUrl` or `managed`, not both",
-      });
-    } else if (!hasBaseUrl && !hasManaged) {
-      ctx.addIssue({
-        code: "custom",
-        message:
-          "space-bus: roster's server block must specify one of `baseUrl` (externally-managed) or `managed` (plugin-spawned) — neither was present",
-      });
-    }
+// Each plugin adapter gets fresh argument fields. The v1-only serializer
+// must not touch the schemas used by v2, ACTION_SCHEMA or MCP.
+//
+// The `superRefine`/`refine` checks below are runtime-only: JSON Schema (the
+// v2 `input`) cannot express them, so `defineBusTool` re-validates every
+// call against this same shape before `execute` runs.
+function busRegistryArgs(zod: ZodNamespace) {
+  const managedServerConfig = zod.object({
+    command: zod.array(zod.string()).optional(),
+    cwd: zod.string().optional(),
+    port: zod.number().int().nonnegative().optional(),
   });
 
-const pluginProjectInputSchema = tool.schema.object({
-  name: tool.schema.string().min(1),
-  path: tool.schema.string().min(1),
-  description: tool.schema.string(),
-});
+  const serverConfig = zod
+    .object({
+      baseUrl: zod.url().optional(),
+      managed: managedServerConfig.optional(),
+    })
+    .superRefine((val, ctx) => {
+      const hasBaseUrl = val.baseUrl !== undefined;
+      const hasManaged = val.managed !== undefined;
+      if (hasBaseUrl && hasManaged) {
+        ctx.addIssue({
+          code: "custom",
+          message:
+            "space-bus: roster's server block must specify exactly one of `baseUrl` or `managed`, not both",
+        });
+      } else if (!hasBaseUrl && !hasManaged) {
+        ctx.addIssue({
+          code: "custom",
+          message:
+            "space-bus: roster's server block must specify one of `baseUrl` (externally-managed) or `managed` (plugin-spawned) — neither was present",
+        });
+      }
+    });
 
-const pluginProjectPatchSchema = tool.schema
-  .object({
-    name: tool.schema.string().min(1).optional(),
-    path: tool.schema.string().min(1).optional(),
-    description: tool.schema.string().optional(),
-  })
-  .refine((patch) => Object.keys(patch).length > 0, {
-    message: PATCH_NONEMPTY_MESSAGE,
+  const projectInput = zod.object({
+    name: zod.string().min(1),
+    path: zod.string().min(1),
+    description: zod.string(),
   });
 
-// Flat, top-level argument shape for the PLUGIN surface only — `tool()`'s
-// args requires a ZodRawShape (flat key/value map), not a nested
-// discriminated union. The MCP surface instead registers ACTION_SCHEMA
-// (below) directly as its inputSchema, so MCP connectors can discover the
-// precise per-action required-field combinations; the plugin surface
-// re-validates every call against ACTION_SCHEMA internally
-// (runBusRegistryAction) regardless of which raw shape it was called
-// with, so both surfaces get the same actionable, action-named errors.
-const BUS_REGISTRY_ARGS = {
-  action: tool.schema.enum([
-    "list",
-    "use",
-    "create",
-    "register",
-    "unregister",
-    "set-default",
-    "add-project",
-    "remove-project",
-    "update-project",
-  ]),
-  roster: tool.schema.string().optional().describe(ROSTER_FIELD_DESCRIPTION),
-  name: tool.schema.string().optional().describe(NAME_FIELD_DESCRIPTION),
-  path: tool.schema.string().optional().describe(PATH_FIELD_DESCRIPTION),
-  server: pluginServerConfigSchema
-    .optional()
-    .describe(SERVER_FIELD_DESCRIPTION),
-  project: pluginProjectInputSchema
-    .optional()
-    .describe(PROJECT_FIELD_DESCRIPTION),
-  projectName: tool.schema
-    .string()
-    .optional()
-    .describe(PROJECT_NAME_FIELD_DESCRIPTION),
-  patch: pluginProjectPatchSchema.optional().describe(PATCH_FIELD_DESCRIPTION),
-};
+  const projectPatch = zod
+    .object({
+      name: zod.string().min(1).optional(),
+      path: zod.string().min(1).optional(),
+      description: zod.string().optional(),
+    })
+    .refine((patch) => Object.keys(patch).length > 0, {
+      message: PATCH_NONEMPTY_MESSAGE,
+    });
+
+  // Flat, top-level argument shape for the PLUGIN surfaces only — both
+  // hosts want a flat key/value map, not a nested discriminated union. The
+  // MCP surface instead registers ACTION_SCHEMA (below) directly as its
+  // inputSchema, so MCP connectors can discover the precise per-action
+  // required-field combinations; the plugin surfaces re-validate every call
+  // against ACTION_SCHEMA internally (runBusRegistryAction) regardless of
+  // which raw shape it was called with, so all surfaces get the same
+  // actionable, action-named errors.
+  return {
+    action: zod.enum([
+      "list",
+      "use",
+      "create",
+      "register",
+      "unregister",
+      "set-default",
+      "add-project",
+      "remove-project",
+      "update-project",
+    ]),
+    roster: zod.string().optional().describe(ROSTER_FIELD_DESCRIPTION),
+    name: zod.string().optional().describe(NAME_FIELD_DESCRIPTION),
+    path: zod.string().optional().describe(PATH_FIELD_DESCRIPTION),
+    server: serverConfig.optional().describe(SERVER_FIELD_DESCRIPTION),
+    project: projectInput.optional().describe(PROJECT_FIELD_DESCRIPTION),
+    projectName: zod
+      .string()
+      .optional()
+      .describe(PROJECT_NAME_FIELD_DESCRIPTION),
+    patch: projectPatch.optional().describe(PATCH_FIELD_DESCRIPTION),
+  };
+}
 
 export type BusRegistryAction =
   | "list"
@@ -411,6 +405,13 @@ function runUpdateProject(
   };
 }
 
+function actionLabel(rawArgs: unknown): string {
+  if (typeof rawArgs === "object" && rawArgs !== null && "action" in rawArgs) {
+    return String(rawArgs.action);
+  }
+  return "(no action)";
+}
+
 /**
  * Runs one bus_registry action and returns its formatted text result.
  * Throws on any invalid input or `ok:false` underneath — every message
@@ -421,7 +422,7 @@ function runUpdateProject(
  * lint complexity ceiling).
  */
 export async function runBusRegistryAction(
-  rawArgs: BusRegistryArgs,
+  rawArgs: unknown,
   session?: RegistrySession,
 ): Promise<ActionResult> {
   const parsed = ACTION_SCHEMA.safeParse(rawArgs);
@@ -431,7 +432,7 @@ export async function runBusRegistryAction(
       ? `${issue.path.length > 0 ? `${issue.path.join(".")}: ` : ""}${issue.message}`
       : parsed.error.message;
     throw new Error(
-      `bus_registry ${rawArgs.action}: invalid input — ${detail}`,
+      `bus_registry ${actionLabel(rawArgs)}: invalid input — ${detail}`,
     );
   }
   const args = parsed.data;
@@ -458,15 +459,18 @@ export async function runBusRegistryAction(
   }
 }
 
-export function makeBusRegistry(session?: RegistrySession): ToolDefinition {
-  return tool({
+export function makeBusRegistry(session?: RegistrySession): BusTool {
+  return defineBusTool({
+    name: "bus_registry",
     description: BUS_REGISTRY_DESCRIPTION,
-    args: BUS_REGISTRY_ARGS,
-    async execute(args) {
-      const { text, listMetadata } = await runBusRegistryAction(
-        args as BusRegistryArgs,
-        session,
-      );
+    strictInput: true,
+    args: busRegistryArgs,
+    async run(_args, _directory, input) {
+      // The flat shape above is what hosts see, and parsing it strips keys it
+      // does not declare. ACTION_SCHEMA is strict per action, so it must parse
+      // the caller's ORIGINAL input — otherwise an unknown field would be
+      // silently dropped instead of refused before the mutation.
+      const { text, listMetadata } = await runBusRegistryAction(input, session);
       if (listMetadata)
         return { output: text, metadata: { rosters: listMetadata } };
       return text;

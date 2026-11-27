@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import SpaceBusPlugin from "./index";
+import { tool } from "@opencode-ai/plugin";
+import plugin from "./index";
+import { setupV2, type V2SetupContext } from "./plugin-v2";
 import { BUS_REGISTRY_DESCRIPTION } from "./tools/bus_registry";
 import { BUS_RESULT_DESCRIPTION } from "./tools/bus_result";
 import { BUS_ROSTER_DESCRIPTION } from "./tools/bus_roster";
@@ -17,6 +19,50 @@ const DESCRIPTIONS: Record<string, string> = {
   bus_wait: BUS_WAIT_DESCRIPTION,
   bus_registry: BUS_REGISTRY_DESCRIPTION,
 };
+
+const SpaceBusPlugin = plugin.server;
+
+describe("v1 <-> v2 registration parity", () => {
+  type V2Tool = { name: string; description: string; input: unknown };
+
+  async function v2Tools(): Promise<Map<string, V2Tool>> {
+    const callbacks: Array<(editor: { add(t: V2Tool): void }) => void> = [];
+    const ctx = {
+      location: { directory: "/tmp" },
+      tool: {
+        async transform(cb: (editor: { add(t: V2Tool): void }) => void) {
+          callbacks.push(cb);
+          return { dispose: async () => {} };
+        },
+      },
+    } as unknown as V2SetupContext;
+    await setupV2(ctx);
+    const tools = new Map<string, V2Tool>();
+    for (const cb of callbacks) cb({ add: (t) => tools.set(t.name, t) });
+    return tools;
+  }
+
+  test("both adapters expose the same names, descriptions and JSON Schema (incl. field descriptions)", async () => {
+    const hooks = await SpaceBusPlugin(
+      // biome-ignore lint: minimal stub, only `directory` is consumed
+      { directory: "/tmp" } as any,
+    );
+    const v1 = hooks.tool ?? {};
+    const v2 = await v2Tools();
+    expect([...v2.keys()].sort()).toEqual(Object.keys(v1).sort());
+    // Convert v1 args the way a v1 host does: with ITS zod (tool.schema, the
+    // copy bundled in the host SDK). The adapter's args are built by this
+    // package's newer zod, so a precise result relies on the per-field JSON
+    // Schema hook the adapter installs (plugin-v1.test.ts covers it in depth);
+    // equality with the v2 conversion proves nothing is dropped.
+    const z = tool.schema;
+    for (const [name, def] of Object.entries(v1)) {
+      const expected = z.toJSONSchema(z.object(def.args), { io: "input" });
+      expect(v2.get(name)?.description).toBe(def.description);
+      expect(v2.get(name)?.input).toEqual(expected);
+    }
+  });
+});
 
 describe("plugin factory <-> description constant parity", () => {
   test("factory produces exactly the six tools, each matching its description constant", async () => {
