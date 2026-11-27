@@ -76,13 +76,14 @@ Any library, plugin, or CLI that spawns and supervises a **shared long-lived loc
 **Lock reclaim guard** — live owner is untouchable; dead owner reclaimed now; corrupt lock only after grace:
 
 ```ts
-const existing = readLockFile(lockPath);
+// acquireLock, trimmed: runs after the first O_EXCL create attempt fails
+const existing = readLockFile(target);
 if (existing) {
-  if (verifyIdentity(existing.pid, existing.identity)) return null; // live owner — never steal
-} else if (!olderThan(lockPath, CORRUPT_LOCK_GRACE_MS)) {
+  if (verifyIdentity(existing.pid, existing.startTime)) return null; // live owner — never steal
+} else if (!isOlderThan(target, CORRUPT_LOCK_GRACE_MS)) {
   return null; // empty/corrupt but fresh — a writer may be mid-write
 }
-// dead owner or aged-out corrupt lock — reclaim
+// dead owner or aged-out corrupt lock — unlink and retry the O_EXCL create
 ```
 
 **Identity capture / verify** — a recycled pid never matches both start-time and comm:
@@ -110,22 +111,47 @@ export function verifyIdentity(pid: number, storedIdentity: string): boolean {
 **Readiness classification** — auth failure is terminal, not retryable:
 
 ```ts
-const res = await fetch(`${baseUrl}/session?limit=1`, {
-  headers: { authorization: `Basic ${basicAuthToken(password)}` },
-  signal: AbortSignal.timeout(PROBE_FETCH_TIMEOUT_MS),
-});
-if (res.status === 200) return "ready";
-if (res.status === 401 || res.status === 403) return "auth-failure"; // stop now, don't burn the budget
-return "retry";
+// probe, trimmed: ProbeOutcome is "ready" | "auth-failure" | "retry"
+const origin = parseManagedOrigin(baseUrl, expectedPort);
+if (origin === null) return "retry"; // not a plain loopback http origin — no request, no credential sent
+try {
+  const res = await fetch(managedProbeUrl(origin), {
+    headers: { authorization: `Basic ${basicAuthToken(password)}` },
+    redirect: "manual", // a 3xx can neither carry the credential elsewhere nor count as ready
+    signal: AbortSignal.timeout(PROBE_FETCH_TIMEOUT_MS),
+  });
+  if (res.status === 200) return "ready";
+  if (res.status === 401 || res.status === 403) return "auth-failure"; // stop now, don't burn the budget
+  return "retry";
+} catch {
+  return "retry"; // connection refused / timeout
+}
 ```
 
-**Stop escalation** — signal the process group (`signalGroup` calls `process.kill(-pid, sig)`); discovery removed only after confirmed death:
+**Stop escalation** — signal the process group, poll the same target the signal reached, remove discovery only after confirmed death. `signalGroup` calls `process.kill(-pid, sig)` and returns `true`; on ESRCH (the pid is not a group leader, or the group is gone) it falls back to a bare `process.kill(pid, sig)` and returns `false`; EPERM is rethrown:
 
 ```ts
-signalGroup(pid, "SIGTERM");
-if (await waitForDeath(pid, STOP_GRACE_MS)) { removeDiscovery(rosterPath); return { stopped: true }; }
-signalGroup(pid, "SIGKILL");
-if (await waitForDeath(pid, STOP_GRACE_MS)) { removeDiscovery(rosterPath); return { stopped: true }; }
+// stopServer, trimmed: the branches for an unexpected non-EPERM throw from signalGroup are omitted
+if (!verifyIdentity(discovery.pid, discovery.identity)) {
+  await reapSurvivingGroup(discovery.pid); // wrapper dead/recycled: reap a surviving group, never signal a live pid
+  removeDiscovery(rosterPath);
+  return { stopped: false };
+}
+
+const { pid } = discovery;
+let groupSignaled: boolean;
+// group form applied -> poll group liveness; bare-pid fallback -> poll the pid
+// (kill(-pid, 0) would throw ESRCH at once for a non-leader and falsely report death)
+const waitForCompletion = (budgetMs: number) =>
+  groupSignaled ? waitForGroupDeath(pid, budgetMs) : waitForDeath(pid, budgetMs);
+
+try { groupSignaled = signalGroup(pid, "SIGTERM"); }
+catch (err) { if (isEpermError(err)) return { stopped: false }; /* alive, can't signal — discovery intact */ }
+if (await waitForCompletion(STOP_GRACE_MS)) { removeDiscovery(rosterPath); return { stopped: true }; }
+
+try { groupSignaled = signalGroup(pid, "SIGKILL"); }
+catch (err) { if (isEpermError(err)) return { stopped: false }; }
+if (await waitForCompletion(STOP_GRACE_MS)) { removeDiscovery(rosterPath); return { stopped: true }; }
 return { stopped: false }; // survived SIGKILL — leave discovery intact, don't lie
 ```
 
