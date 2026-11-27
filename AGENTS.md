@@ -37,6 +37,17 @@ This is the source repo for the `@fro.bot/space-bus` OpenCode plugin: six `bus_*
 - **MCP attach-only by default:** `mcp.ts` never calls `ensureServer` unless `SPACE_BUS_MCP_SPAWN` is set.
 - **`./server` is a reserved subpath:** OpenCode's plugin loader resolves `exports["./server"]` before `main`, so `package.json` must keep `./server` mapped to the plugin entry (`dist/index.js`). The managed-server lifecycle API lives at `./managed-server`. Never remap or remove `./server`; `src/plugin-entry-guard.test.ts` guards it (see `docs/solutions/integration-issues/opencode-plugin-reserved-subpath-loader-resolution-2026-07-11.md`).
 
+## Agent rules
+
+The Fro Bot agent (`.github/workflows/fro-bot.yaml`) works under these rules, in addition to the invariants above:
+
+- Every ask, including program briefs dispatched from `fro-bot/.github`, is held against this file. The agent may accept, decline or counter, and answers before changing anything. It never overrides these rules to fit an ask.
+- Pull requests are reviewed read-only against the base checkout; PR-head code is never executed. This includes pull requests opened by the `fro-bot` user.
+- Dispatched prompts and the daily pass deliver changes as a branch and a pull request (`output-mode: branch-pr`), never as a direct push to `main`.
+- Dependency and version bumps belong to Renovate; the agent changes them only to remediate a confirmed critical/high advisory.
+- The agent's model comes from a repository variable chosen by the kind of work (`FRO_BOT_MODEL_REVIEW`, `FRO_BOT_MODEL_ACT`), falling back to `FRO_BOT_MODEL`.
+- Checkouts in workflows that run on pull requests, issues or comments set `persist-credentials: false`, and agent steps run with `isolate-agent`.
+
 ## Dev loop
 
 ```sh
