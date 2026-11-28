@@ -8,30 +8,16 @@ import {
   loadContextForRosterPath,
   resolveRosterPath,
 } from "./config";
-import { dispatch, result, roster, status, toDispatchArgs, wait } from "./core";
-import {
-  dispatchMetadata,
-  formatDispatch,
-  formatResult,
-  formatRoster,
-  formatRosterHeader,
-  formatStatus,
-  formatWait,
-} from "./format";
 import { readRegistry, resolveRosterByName } from "./registry";
 import { ensureServer } from "./server";
+import { makeBusContextTools } from "./tools";
 import {
   ACTION_SCHEMA,
   BUS_REGISTRY_DESCRIPTION,
   type BusRegistryArgs,
   runBusRegistryAction,
 } from "./tools/bus_registry";
-import { BUS_RESULT_DESCRIPTION } from "./tools/bus_result";
-import { BUS_ROSTER_DESCRIPTION } from "./tools/bus_roster";
-import { BUS_STATUS_DESCRIPTION } from "./tools/bus_status";
-import { BUS_TASK_DESCRIPTION } from "./tools/bus_task";
-import { BUS_WAIT_DESCRIPTION, MAX_WAIT_TIMEOUT_MS } from "./tools/bus_wait";
-import { withRosterHeader } from "./tools/shared";
+import type { ResolvedContext } from "./tools/shared";
 
 // Ephemeral, connector-session-scoped active-roster default (R10): one
 // stdio process = one connector connection, so a single module-level
@@ -60,12 +46,6 @@ const ROSTER_PARAM_SCHEMA = z
       "(see bus_registry to list)",
   );
 
-type McpLoadedContext = {
-  context: Awaited<ReturnType<typeof loadContext>>;
-  rosterName?: string;
-  rosterPath: string;
-};
-
 /**
  * MCP is attach-only by default (never spawns) — set SPACE_BUS_MCP_SPAWN
  * (any truthy value) to opt in to ensure-on-demand, matching the plugin
@@ -83,7 +63,7 @@ type McpLoadedContext = {
 async function resolveByName(
   name: string,
   ensure: (rosterPath: string) => Promise<unknown>,
-): Promise<McpLoadedContext> {
+): Promise<ResolvedContext> {
   // Resolve the name to a path ONCE — the managed check, ensureServer, and
   // context load all use this same resolved path, never re-resolving the
   // (mutable) registry name a second time (Fix 2 — closes a TOCTOU window
@@ -101,7 +81,7 @@ async function resolveByName(
 async function mcpLoadContext(
   rosterName?: string,
   ensure: (rosterPath: string) => Promise<unknown> = ensureServer,
-): Promise<McpLoadedContext> {
+): Promise<ResolvedContext> {
   const effectiveRosterName = rosterName ?? activeRoster;
   if (effectiveRosterName !== undefined) {
     return resolveByName(effectiveRosterName, ensure);
@@ -144,236 +124,64 @@ const server = new McpServer({
   version,
 });
 
-server.registerTool(
-  "bus_roster",
-  {
-    description: BUS_ROSTER_DESCRIPTION,
-    inputSchema: { roster: ROSTER_PARAM_SCHEMA },
-  },
-  async (args) => {
-    let loaded: McpLoadedContext;
-    try {
-      // MCP is single-directory-per-process: no per-call directory exists, so
-      // ambient resolution rides SPACE_BUS_CONFIG alone. Do not thread
-      // process.cwd() in.
-      loaded = await mcpLoadContext(args.roster);
-    } catch (e) {
-      return {
-        content: [{ type: "text", text: (e as Error).message }],
-        isError: true,
-      };
-    }
-    const source = { name: loaded.rosterName, path: loaded.rosterPath };
-    const r = await roster({ context: loaded.context });
-    if (!r.ok)
-      return {
-        content: [{ type: "text", text: withRosterHeader(source, r.error) }],
-        isError: true,
-      };
-    const header = formatRosterHeader(source);
-    return {
-      content: [
-        { type: "text", text: `${header}\n${formatRoster(r.projects)}` },
-      ],
-    };
-  },
-);
+// bus_task is the only roster-bearing tool with structured output: its
+// shared-factory `metadata` is MCP's `structuredContent`.
+const BUS_TASK_OUTPUT_SCHEMA = {
+  sessionId: z.string().describe("The dispatched or steered session ID"),
+  project: z.string().describe("Manifest project name that owns the session"),
+  mode: z
+    .enum(["new", "question-reply", "follow-up"])
+    .describe("How the prompt was delivered"),
+  messageId: z
+    .string()
+    .optional()
+    .describe(
+      "Echoes the supplied messageId for new/follow-up dispatches; omitted otherwise",
+    ),
+};
 
-server.registerTool(
-  "bus_task",
-  {
-    description: BUS_TASK_DESCRIPTION,
-    inputSchema: {
-      project: z
-        .string()
-        .optional()
-        .describe(
-          "Manifest project name, e.g. dashboard, agent, control-plane, infra. Required when starting a new session.",
-        ),
-      prompt: z.string().describe("The prompt to send to the delegated agent"),
-      title: z
-        .string()
-        .optional()
-        .describe(
-          "Optional session title (only used when starting a new session)",
-        ),
-      sessionId: z
-        .string()
-        .optional()
-        .describe(
-          "Existing session ID to steer instead of starting a new session",
-        ),
-      messageId: z
-        .string()
-        .optional()
-        .describe(
-          "Optional caller-supplied id to correlate this prompt with the message OpenCode creates for it (msg_ + 12 hex + 14 alphanumeric chars). Omit to dispatch without correlation.",
-        ),
-      roster: ROSTER_PARAM_SCHEMA,
-    },
-    outputSchema: {
-      sessionId: z.string().describe("The dispatched or steered session ID"),
-      project: z
-        .string()
-        .describe("Manifest project name that owns the session"),
-      mode: z
-        .enum(["new", "question-reply", "follow-up"])
-        .describe("How the prompt was delivered"),
-      messageId: z
-        .string()
-        .optional()
-        .describe(
-          "Echoes the supplied messageId for new/follow-up dispatches; omitted otherwise",
-        ),
-    },
-  },
-  async (args) => {
-    const dispatchArgs = toDispatchArgs(args);
-    if (!dispatchArgs.ok)
-      return {
-        content: [{ type: "text", text: dispatchArgs.error }],
-        isError: true,
-      };
-    let loaded: McpLoadedContext;
-    try {
-      loaded = await mcpLoadContext(args.roster);
-    } catch (e) {
-      return {
-        content: [{ type: "text", text: (e as Error).message }],
-        isError: true,
-      };
-    }
-    const source = { name: loaded.rosterName, path: loaded.rosterPath };
-    const r = await dispatch(dispatchArgs, { context: loaded.context });
-    if (!r.ok)
-      return {
-        content: [{ type: "text", text: withRosterHeader(source, r.error) }],
-        isError: true,
-      };
-    const header = formatRosterHeader(source);
-    return {
-      content: [{ type: "text", text: `${header}\n${formatDispatch(r)}` }],
-      structuredContent: dispatchMetadata(r),
-    };
-  },
-);
+function mcpError(message: string) {
+  return { content: [{ type: "text" as const, text: message }], isError: true };
+}
 
-server.registerTool(
-  "bus_status",
-  {
-    description: BUS_STATUS_DESCRIPTION,
-    inputSchema: {
-      sessionId: z.string().describe("Session ID returned by bus_task"),
-      roster: ROSTER_PARAM_SCHEMA,
+// The five roster-bearing tools come from the SAME factories as the plugin
+// adapters (tools/index.ts), so validation, error text, header echo and
+// output assembly have one implementation. MCP supplies only its own context
+// resolver (session roster > SPACE_BUS_CONFIG > registry default,
+// attach-only) and the protocol wrapping below. MCP is single-directory-per-
+// process: no per-call directory exists, so the directory argument is
+// ignored — ambient resolution rides SPACE_BUS_CONFIG alone. Do not thread
+// process.cwd() in.
+for (const tool of makeBusContextTools(undefined, (_directory, rosterName) =>
+  mcpLoadContext(rosterName),
+)) {
+  server.registerTool(
+    tool.name,
+    {
+      description: tool.description,
+      // Same field set as the plugin tool; only the roster param's
+      // description differs, to document the connector-session step.
+      inputSchema: { ...tool.args(z), roster: ROSTER_PARAM_SCHEMA },
+      ...(tool.name === "bus_task"
+        ? { outputSchema: BUS_TASK_OUTPUT_SCHEMA }
+        : {}),
     },
-  },
-  async (args) => {
-    let loaded: McpLoadedContext;
-    try {
-      loaded = await mcpLoadContext(args.roster);
-    } catch (e) {
-      return {
-        content: [{ type: "text", text: (e as Error).message }],
-        isError: true,
-      };
-    }
-    const source = { name: loaded.rosterName, path: loaded.rosterPath };
-    const r = await status(args.sessionId, { context: loaded.context });
-    if (!r.ok)
-      return {
-        content: [{ type: "text", text: withRosterHeader(source, r.error) }],
-        isError: true,
-      };
-    const header = formatRosterHeader(source);
-    return {
-      content: [{ type: "text", text: `${header}\n${formatStatus(r)}` }],
-    };
-  },
-);
-
-server.registerTool(
-  "bus_result",
-  {
-    description: BUS_RESULT_DESCRIPTION,
-    inputSchema: {
-      sessionId: z.string().describe("Session ID returned by bus_task"),
-      roster: ROSTER_PARAM_SCHEMA,
+    async (args: Record<string, unknown>) => {
+      try {
+        const out = await tool.execute(args);
+        if (typeof out === "string") {
+          return { content: [{ type: "text" as const, text: out }] };
+        }
+        return {
+          content: [{ type: "text" as const, text: out.output }],
+          ...(out.metadata ? { structuredContent: out.metadata } : {}),
+        };
+      } catch (e) {
+        return mcpError((e as Error).message);
+      }
     },
-  },
-  async (args) => {
-    let loaded: McpLoadedContext;
-    try {
-      loaded = await mcpLoadContext(args.roster);
-    } catch (e) {
-      return {
-        content: [{ type: "text", text: (e as Error).message }],
-        isError: true,
-      };
-    }
-    const source = { name: loaded.rosterName, path: loaded.rosterPath };
-    const r = await result(args.sessionId, { context: loaded.context });
-    if (!r.ok)
-      return {
-        content: [{ type: "text", text: withRosterHeader(source, r.error) }],
-        isError: true,
-      };
-    const header = formatRosterHeader(source);
-    return {
-      content: [{ type: "text", text: `${header}\n${formatResult(r)}` }],
-    };
-  },
-);
-
-server.registerTool(
-  "bus_wait",
-  {
-    description: BUS_WAIT_DESCRIPTION,
-    inputSchema: {
-      sessionIds: z
-        .array(z.string())
-        .min(1, "bus_wait requires at least one sessionId")
-        .max(100, "bus_wait accepts at most 100 sessionIds")
-        .describe("Session IDs to watch (returned by bus_task)"),
-      timeoutMs: z
-        .number()
-        .positive()
-        .optional()
-        .describe(
-          `Max time to wait in milliseconds before returning a timeout snapshot (default 60s, capped at ${MAX_WAIT_TIMEOUT_MS}ms; soft deadline, may overshoot by up to ~30s if a request is slow)`,
-        ),
-      roster: ROSTER_PARAM_SCHEMA,
-    },
-  },
-  async (args) => {
-    let loaded: McpLoadedContext;
-    try {
-      loaded = await mcpLoadContext(args.roster);
-    } catch (e) {
-      return {
-        content: [{ type: "text", text: (e as Error).message }],
-        isError: true,
-      };
-    }
-    const timeoutMs =
-      args.timeoutMs !== undefined
-        ? Math.min(args.timeoutMs, MAX_WAIT_TIMEOUT_MS)
-        : undefined;
-    const source = { name: loaded.rosterName, path: loaded.rosterPath };
-    const r = await wait(args.sessionIds, {
-      context: loaded.context,
-      timeoutMs,
-    });
-    if (!r.ok)
-      return {
-        content: [{ type: "text", text: withRosterHeader(source, r.error) }],
-        isError: true,
-      };
-    const header = formatRosterHeader(source);
-    return {
-      content: [{ type: "text", text: `${header}\n${formatWait(r)}` }],
-    };
-  },
-);
+  );
+}
 
 server.registerTool(
   "bus_registry",

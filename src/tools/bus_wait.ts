@@ -1,6 +1,10 @@
 import { wait } from "../core";
 import { formatRosterHeader, formatWait } from "../format";
-import { ensureAndLoadContext, withRosterHeader } from "./shared";
+import {
+  type ContextResolver,
+  ensureAndLoadContext,
+  withRosterHeader,
+} from "./shared";
 import { type BusTool, defineBusTool } from "./spec";
 
 export const BUS_WAIT_DESCRIPTION =
@@ -13,7 +17,10 @@ export const BUS_WAIT_DESCRIPTION =
 // still returns a normal (not error) snapshot either way.
 export const MAX_WAIT_TIMEOUT_MS = 5 * 60_000; // 5 minutes
 
-export function makeBusWait(defaultDirectory?: string): BusTool {
+export function makeBusWait(
+  defaultDirectory?: string,
+  resolveContext: ContextResolver = ensureAndLoadContext,
+): BusTool {
   return defineBusTool({
     name: "bus_wait",
     description: BUS_WAIT_DESCRIPTION,
@@ -42,9 +49,9 @@ export function makeBusWait(defaultDirectory?: string): BusTool {
       // `defineBusTool` enforces the .min(1)/.max(100) bounds on every
       // call (a wait([]) would otherwise just block for the full timeout
       // doing nothing useful), whether or not the host validated first.
-      let resolved: Awaited<ReturnType<typeof ensureAndLoadContext>>;
+      let resolved: Awaited<ReturnType<ContextResolver>>;
       try {
-        resolved = await ensureAndLoadContext(directory, args.roster);
+        resolved = await resolveContext(directory, args.roster);
       } catch (e) {
         throw new Error((e as Error).message);
       }

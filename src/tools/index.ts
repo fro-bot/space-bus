@@ -4,7 +4,28 @@ import { makeBusRoster } from "./bus_roster";
 import { makeBusStatus } from "./bus_status";
 import { makeBusTask } from "./bus_task";
 import { makeBusWait } from "./bus_wait";
+import type { ContextResolver } from "./shared";
 import type { BusTool } from "./spec";
+
+/**
+ * The five roster-bearing `bus_*` tools. Both surfaces build them here: the
+ * plugin adapters with the default directory-first resolver, the MCP facade
+ * with its own `resolveContext` (session roster, attach-only). Everything
+ * after context resolution — arg validation, error text, header echo, output
+ * assembly — is the factories' single implementation.
+ */
+export function makeBusContextTools(
+  defaultDirectory?: string,
+  resolveContext?: ContextResolver,
+): BusTool[] {
+  return [
+    makeBusRoster(defaultDirectory, resolveContext),
+    makeBusTask(defaultDirectory, resolveContext),
+    makeBusStatus(defaultDirectory, resolveContext),
+    makeBusResult(defaultDirectory, resolveContext),
+    makeBusWait(defaultDirectory, resolveContext),
+  ];
+}
 
 /**
  * The six `bus_*` tools for a plugin host, bound to the directory that owns
@@ -15,12 +36,5 @@ import type { BusTool } from "./spec";
  * rather than silently no-op'ing. `use` stays MCP-only (mcp.ts).
  */
 export function makeBusTools(defaultDirectory?: string): BusTool[] {
-  return [
-    makeBusRoster(defaultDirectory),
-    makeBusTask(defaultDirectory),
-    makeBusStatus(defaultDirectory),
-    makeBusResult(defaultDirectory),
-    makeBusWait(defaultDirectory),
-    makeBusRegistry(),
-  ];
+  return [...makeBusContextTools(defaultDirectory), makeBusRegistry()];
 }

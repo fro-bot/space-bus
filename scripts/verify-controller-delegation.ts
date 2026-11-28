@@ -47,9 +47,12 @@
  *   --mode external     external round trip only (managed NOT-RUN)
  *   --preflight-only    sandbox self-test + managed preflight, no build/hosts
  *
- * Exit: 0 every requested mode passed; 1 harness/control invalid or build/
- * install failed (nothing about U2 is proven); 2 harness valid but a U2 check
- * failed; 3 harness valid, what ran passed, but managed mode is BLOCKED.
+ * Exit: 0 every requested mode passed; 1 harness/control invalid, build/
+ * install failed, or the managed preflight was inconclusive (the unsandboxed
+ * control `ps` also failed, so the sandbox cannot be blamed; nothing about U2
+ * is proven); 2 harness valid but a U2 check failed; 3 harness valid, what ran
+ * passed, but managed mode is BLOCKED (sandboxed `ps` denied while the
+ * unsandboxed control works).
  */
 
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
@@ -94,14 +97,6 @@ import {
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PACKAGE = "@fro.bot/space-bus";
-const BUS_TOOLS = [
-  "bus_registry",
-  "bus_result",
-  "bus_roster",
-  "bus_status",
-  "bus_task",
-  "bus_wait",
-];
 const pickHost = (id: string): Host => {
   const h = HOSTS.find((x) => x.id === id);
   if (!h) throw new Error(`U1 host table has no ${id}`);
@@ -459,31 +454,179 @@ async function startHost(
   };
 }
 
-async function httpJson(
+/** Why `url` may not be requested, or undefined if it may. Never echoes userinfo. */
+export function destinationProblem(
   url: string,
-  headers: Record<string, string>,
-  method = "GET",
-  body?: unknown,
-): Promise<{ status: number; body: unknown }> {
+  allowed: ReadonlySet<number>,
+): string | undefined {
+  let u: URL;
   try {
-    const r = await fetch(url, {
-      method,
-      headers: {
-        ...headers,
-        ...(body ? { "content-type": "application/json" } : {}),
-      },
-      body: body ? JSON.stringify(body) : undefined,
-      signal: AbortSignal.timeout(60_000),
-    });
-    const text = await r.text();
-    try {
-      return { status: r.status, body: JSON.parse(text) };
-    } catch {
-      return { status: r.status, body: text };
-    }
-  } catch (e) {
-    return { status: 0, body: String(e) };
+    u = new URL(url);
+  } catch {
+    return "not a valid URL";
   }
+  if (u.protocol !== "http:") return `scheme ${u.protocol} is not http:`;
+  if (u.username !== "" || u.password !== "")
+    return "URL carries userinfo; credentials go in headers only";
+  if (u.hostname !== "127.0.0.1") return `host ${u.hostname} is not 127.0.0.1`;
+  const port = u.port === "" ? 80 : Number(u.port);
+  if (!allowed.has(port))
+    return `port ${port} is not one of this run's host ports`;
+  return undefined;
+}
+
+/** A network-derived id used as one URL path segment, and nothing else. */
+export function isSafeSessionId(id: unknown): id is string {
+  return typeof id === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(id);
+}
+
+export type ManagedDiscovery = { port: number; pid: number; password: string };
+
+/**
+ * Parses the plugin's discovery record (a file the plugin wrote, so not
+ * trusted): the port becomes a request destination and the pid a signal
+ * target. Reasons never include the record's contents.
+ */
+export function parseManagedDiscovery(
+  raw: string,
+): { ok: true; value: ManagedDiscovery } | { ok: false; reason: string } {
+  let v: unknown;
+  try {
+    v = JSON.parse(raw);
+  } catch {
+    return { ok: false, reason: "discovery record is not JSON" };
+  }
+  if (typeof v !== "object" || v === null || Array.isArray(v))
+    return { ok: false, reason: "discovery record is not an object" };
+  const r = v as Record<string, unknown>;
+  const { port, pid, password } = r;
+  if (
+    typeof port !== "number" ||
+    !Number.isInteger(port) ||
+    port < 1024 ||
+    port > 65535
+  )
+    return {
+      ok: false,
+      reason: "discovery port is not an integer in 1024-65535",
+    };
+  // pid 0/1/negative would turn a group signal into a broadcast.
+  if (typeof pid !== "number" || !Number.isInteger(pid) || pid < 2)
+    return { ok: false, reason: "discovery pid is not an integer >= 2" };
+  if (
+    typeof password !== "string" ||
+    password.length === 0 ||
+    password.length > 256 ||
+    [...password].some((ch) => {
+      const c = ch.charCodeAt(0);
+      return c < 0x20 || c === 0x7f;
+    })
+  )
+    return {
+      ok: false,
+      reason: "discovery password is not a bounded printable string",
+    };
+  return { ok: true, value: { port, pid, password } };
+}
+
+/**
+ * Verifies a discovery record against what the HARNESS independently knows,
+ * before its port is requested or its pid signalled. The record is a file the
+ * plugin wrote, so it is evidence to check, never a source of the destination:
+ *   1. it parses (`parseManagedDiscovery`);
+ *   2. its port equals `expectedPort`, which the harness reserved and wrote
+ *      into the managed roster (so the plugin had to bind exactly it);
+ *   3. its pid is a live process whose command line contains every
+ *      `mustContain` path (this run's wrapper and target binary) and
+ *      `--port <expectedPort>` as whole arguments.
+ * A mismatch is rejected here, before any request or signal. Reasons never
+ * include the record's contents.
+ */
+export function verifyManagedDiscovery(
+  raw: string,
+  opts: {
+    expectedPort: number;
+    mustContain: readonly string[];
+    commandOf: (pid: number) => string;
+  },
+): { ok: true; value: ManagedDiscovery } | { ok: false; reason: string } {
+  const parsed = parseManagedDiscovery(raw);
+  if (!parsed.ok) return parsed;
+  if (parsed.value.port !== opts.expectedPort)
+    return {
+      ok: false,
+      reason:
+        "discovery port is not the port reserved for this run's managed target",
+    };
+  const command = opts.commandOf(parsed.value.pid);
+  if (command.length === 0)
+    return { ok: false, reason: "discovery pid is not a running process" };
+  if (!opts.mustContain.every((needle) => command.includes(needle)))
+    return {
+      ok: false,
+      reason: "discovery pid is not this run's managed target process",
+    };
+  const argv = command.split(/\s+/);
+  const at = argv.indexOf("--port");
+  if (at < 0 || argv[at + 1] !== String(opts.expectedPort))
+    return {
+      ok: false,
+      reason: "discovery pid is not serving the reserved port",
+    };
+  return parsed;
+}
+/**
+ * A run-local HTTP client. Every request this harness makes goes to a host it
+ * started itself, on 127.0.0.1, on a port the HARNESS chose (`freePort()` for
+ * the controller, the external target and the managed target alike; the
+ * managed port is written into the roster so the plugin must use it). `json`
+ * refuses anything else before connecting, and never follows a redirect, so a
+ * response cannot move a request (or its basic-auth header) off the validated
+ * destination. Nothing about a destination is ever taken from a file or a
+ * response.
+ */
+export function createLoopbackHttp(): {
+  allow: (port: number) => void;
+  json: (
+    url: string,
+    headers: Record<string, string>,
+    method?: string,
+    body?: unknown,
+  ) => Promise<{ status: number; body: unknown }>;
+} {
+  const allowed = new Set<number>();
+  return {
+    allow(port) {
+      if (!Number.isInteger(port) || port < 1024 || port > 65535)
+        throw new Error("refusing to allow a port outside 1024-65535");
+      allowed.add(port);
+    },
+    async json(url, headers, method = "GET", body) {
+      const refused = destinationProblem(url, allowed);
+      if (refused !== undefined)
+        return { status: 0, body: `destination refused: ${refused}` };
+      try {
+        const r = await fetch(url, {
+          method,
+          headers: {
+            ...headers,
+            ...(body ? { "content-type": "application/json" } : {}),
+          },
+          body: body ? JSON.stringify(body) : undefined,
+          redirect: "manual",
+          signal: AbortSignal.timeout(60_000),
+        });
+        const text = await r.text();
+        try {
+          return { status: r.status, body: JSON.parse(text) };
+        } catch {
+          return { status: r.status, body: text };
+        }
+      } catch (e) {
+        return { status: 0, body: String(e) };
+      }
+    },
+  };
 }
 
 const basic = (user: string, pw: string) =>
@@ -519,13 +662,34 @@ async function until<T>(
 // is denied, managed mode is BLOCKED -- reported as such, never as a pass.
 // ---------------------------------------------------------------------------
 
-type ProbeRun = { status: number | null; stdout: string; stderr: string };
+export type ProbeRun = {
+  status: number | null;
+  stdout: string;
+  stderr: string;
+};
+
+const probeWorked = (p: ProbeRun) => p.status === 0 && p.stdout.length > 0;
+
+/**
+ * `available`: the native call works inside the sandbox. Otherwise the failure
+ * is attributable to the sandbox (managed mode BLOCKED) only if the same call
+ * works unsandboxed; if the control also fails, nothing is attributable and the
+ * preflight is `inconclusive` (the run is invalid, exit 1), never BLOCKED.
+ */
+export function classifyPreflight(
+  sandboxed: ProbeRun,
+  control: ProbeRun,
+): { available: boolean; inconclusive: boolean } {
+  const available = probeWorked(sandboxed);
+  return { available, inconclusive: !available && !probeWorked(control) };
+}
 
 function preflightProcessInspection(iso: Iso): {
   command: string;
   sandboxed: ProbeRun;
   control: ProbeRun;
   available: boolean;
+  inconclusive: boolean;
 } {
   const code =
     "const {execFileSync}=require('node:child_process');" +
@@ -557,7 +721,7 @@ function preflightProcessInspection(iso: Iso): {
     command: "node -e execFileSync('ps',['-p',<own pid>,'-o','lstart=,comm='])",
     sandboxed,
     control,
-    available: sandboxed.status === 0 && sandboxed.stdout.length > 0,
+    ...classifyPreflight(sandboxed, control),
   };
 }
 
@@ -567,6 +731,494 @@ class PreflightOnly extends Error {}
 // Evidence
 // ---------------------------------------------------------------------------
 
+const EVIDENCE_STRING_CAP = 4000;
+const CREDENTIAL_KEY =
+  /^(authorization|proxy-authorization|cookie|set-cookie|x-api-key|api[-_]?key|password|passwd|secret|(access[-_]?|refresh[-_]?|auth[-_]?)?token|credentials?)$/i;
+
+/**
+ * Everything persisted comes from hosts and HTTP reads, so it is treated as
+ * untrusted and sensitive until scrubbed. Per string, in this order: known
+ * secrets and local paths are replaced FIRST (so truncation cannot split one
+ * into an unredacted fragment), then credential-shaped text (Basic/Bearer
+ * values, URL userinfo, token-like query parameters), then control characters
+ * are dropped and the length is capped. Credential-named keys are redacted
+ * whatever their value. The final text is still checked against every needle
+ * that must never reach disk, and the check fails closed without echoing it.
+ */
+export function renderEvidence(
+  value: unknown,
+  opts: {
+    swaps: ReadonlyArray<readonly [string, string]>;
+    secrets: ReadonlySet<string>;
+    guard: readonly string[];
+  },
+): string {
+  const scrub = (s: string): string => {
+    let t = s;
+    for (const secret of opts.secrets)
+      if (secret.length > 0) t = t.split(secret).join("<redacted>");
+    for (const [from, to] of opts.swaps) t = t.split(from).join(to);
+    t = t
+      .replace(/\/Users\/[^\s"'\\/]+/g, "/Users/<user>")
+      .replace(/\b(Basic|Bearer)\s+[A-Za-z0-9+/=._~-]{16,}/g, "$1 <redacted>")
+      .replace(
+        /\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/@]*@/gi,
+        "$1<redacted>@",
+      )
+      .replace(
+        /([?&;](?:access[-_]?token|token|password|passwd|api[-_]?key|key|secret)=)[^&\s"']+/gi,
+        "$1<redacted>",
+      )
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping control characters from untrusted text is the point
+      .replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "");
+    return t.length > EVIDENCE_STRING_CAP
+      ? `${t.slice(0, EVIDENCE_STRING_CAP)}…[truncated ${t.length - EVIDENCE_STRING_CAP} chars]`
+      : t;
+  };
+  const walk = (v: unknown): unknown => {
+    if (typeof v === "string") return scrub(v);
+    if (Array.isArray(v)) return v.map(walk);
+    if (typeof v === "object" && v !== null)
+      return Object.fromEntries(
+        Object.entries(v).map(([k, x]) => [
+          scrub(k),
+          CREDENTIAL_KEY.test(k) ? "<redacted>" : walk(x),
+        ]),
+      );
+    return v;
+  };
+  const text = `${JSON.stringify(walk(value), null, 2)}\n`;
+  for (const needle of [...opts.guard, ...opts.secrets]) {
+    if (needle.length > 3 && text.includes(needle))
+      throw new Error("refusing to persist: leak guard tripped");
+  }
+  return text;
+}
+
+// ---------------------------------------------------------------------------
+// What is persisted
+//
+// Everything below is assembled from hosts and HTTP reads, so raw values
+// (prompts, tool arguments, tool results, transcripts, response bodies, error
+// text) stay in memory for the harness's assertions and are NEVER written.
+// What reaches disk is only: observed categorical verdicts, counts, ids that
+// match a fixed shape, members of sets the HARNESS supplied (projects, rosters,
+// nonces, directories, fixture roles/labels), booleans, and bounded digests
+// (length + a 16-hex SHA-256 prefix) for correlation. Free text is never
+// copied; reasons are copied only when they are in a closed, harness-authored
+// vocabulary (`recognizedReasons`). `renderEvidence` still scrubs and caps
+// whatever is written, as a second layer, but nothing here relies on it.
+// ---------------------------------------------------------------------------
+
+export type HarnessKnown = {
+  projects: ReadonlySet<string>;
+  rosters: ReadonlySet<string>;
+  nonces: ReadonlySet<string>;
+  dirs: Readonly<Record<string, string>>;
+};
+
+const OTHER = "<other>";
+const boundedDigest = (s: string) => ({
+  length: s.length,
+  sha256: sha(s).slice(0, 16),
+});
+const memberOf = (set: ReadonlySet<string>, v: unknown): string | null =>
+  typeof v === "string" && set.has(v) ? v : null;
+const noncesIn = (s: string, known: HarnessKnown): string[] =>
+  [...known.nonces].filter((n) => s.includes(n)).sort();
+
+/**
+ * The closed vocabulary of reasons the harness itself authors. Matching is
+ * anchored and the only variable parts are small integers or a fixed choice,
+ * so a response cannot smuggle text through a reason.
+ */
+const REASON_VOCABULARY: readonly RegExp[] = [
+  /^request failed or timed out \((destination refused|timed out|connection failed)\)$/,
+  /^HTTP \d{1,3}$/,
+  /^response is not (JSON|a list)$/,
+  /^unexpected response shape$/,
+  /^entry \d{1,5} is malformed$/,
+  /^entry \d{1,5} (is not an object|has no `info` object|has no `parts` list)$/,
+  /^entry \d{1,5} has no v1 `info\.role` \(user or assistant\)$/,
+  /^entry \d{1,5} part \d{1,5} (is not an object|has no string `type`)$/,
+  /^entry \d{1,5} part \d{1,5} is a (text|reasoning) part without a string `text`$/,
+  /^model fixture request log is missing$/,
+  /^model fixture request \d{1,5} is malformed$/,
+  /^managed target has no discovery record$/,
+  /^controller model was never called$/,
+  /^session create failed \(status \d{1,3}\)$/,
+];
+
+/** Fixed reasons `parseManagedDiscovery`/`verifyManagedDiscovery` can return. */
+const REASON_EXACT: ReadonlySet<string> = new Set([
+  "discovery record is not JSON",
+  "discovery record is not an object",
+  "discovery port is not an integer in 1024-65535",
+  "discovery pid is not an integer >= 2",
+  "discovery password is not a bounded printable string",
+  "discovery port is not the port reserved for this run's managed target",
+  "discovery pid is not a running process",
+  "discovery pid is not this run's managed target process",
+  "discovery pid is not serving the reserved port",
+]);
+
+/** The vocabulary reasons found in a harness-built message; nothing else is kept. */
+export function recognizedReasons(text: string): string[] {
+  const out = new Set<string>();
+  for (const clause of text.split("; "))
+    for (const piece of clause.split(": ")) {
+      const t = piece.trim();
+      if (REASON_EXACT.has(t) || REASON_VOCABULARY.some((re) => re.test(t)))
+        out.add(t);
+    }
+  return [...out].slice(0, 16);
+}
+
+/** A transport failure as a category, never the error text (which can echo a URL). */
+export function transportFailure(
+  body: unknown,
+): "destination refused" | "timed out" | "connection failed" {
+  const s = String(body);
+  if (s.startsWith("destination refused")) return "destination refused";
+  return /timeout|timed out|abort/i.test(s) ? "timed out" : "connection failed";
+}
+
+const FLOW_STEP_CAP = 64;
+const KNOWN_STEP_STATUS = new Set(["completed", "error", "running", "pending"]);
+// Closed sets of harness-authored names; anything else persists as "<other>".
+const FLOW_NAMES: ReadonlySet<string> = new Set([
+  "ext-ambient",
+  "managed-override",
+  "negative",
+]);
+const BUS_TOOL_NAMES: ReadonlySet<string> = new Set([
+  "bus_registry",
+  "bus_result",
+  "bus_roster",
+  "bus_status",
+  "bus_task",
+  "bus_wait",
+]);
+const FIXTURE_ROLES: ReadonlySet<string> = new Set([
+  "controller",
+  "target",
+  "unknown",
+]);
+const FIXTURE_LABELS: ReadonlySet<string> = new Set(["ext", "mgd"]);
+const FIXTURE_TOOLS: ReadonlySet<string> = new Set(["execute"]);
+
+/** A host session id as it is persisted: the fixed `ses_` form, bounded. */
+const HOST_SESSION_ID = /^ses_[A-Za-z0-9]{1,64}$/;
+const isHostSessionId = (v: unknown): v is string =>
+  typeof v === "string" && HOST_SESSION_ID.test(v);
+const SESSION_IN_TEXT = /Session (ses_[A-Za-z0-9]{1,64}) in /;
+
+export type StepEvidence = {
+  tool: string;
+  status: string | null;
+  argKeys: string[];
+  project: string | null;
+  roster: string | null;
+  nonce: string | null;
+  sessionIds: string[];
+  timeoutMs: number | null;
+  result: {
+    length: number;
+    sha256: string;
+    noncesSeen: string[];
+    dispatchedSession: string | null;
+  };
+};
+export type FlowEvidence = {
+  name: string;
+  sessionId: string | null;
+  outcome: "succeeded" | "other" | null;
+  stepCount: number;
+  steps: StepEvidence[];
+  finalText: {
+    length: number;
+    sha256: string;
+    noncesSeen: string[];
+  } | null;
+  problems: string[];
+  unreadable: string[];
+};
+
+const ARG_KEYS = [
+  "project",
+  "prompt",
+  "roster",
+  "sessionId",
+  "sessionIds",
+  "timeoutMs",
+] as const;
+
+const boundedMs = (v: unknown): number | null =>
+  typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= 3_600_000
+    ? v
+    : null;
+
+function projectStep(s: ToolStep, known: HarnessKnown): StepEvidence {
+  const args = isRecord(s.args) ? s.args : {};
+  const text = typeof s.text === "string" ? s.text : "";
+  const prompt = typeof args["prompt"] === "string" ? args["prompt"] : "";
+  const ids = Array.isArray(args["sessionIds"]) ? args["sessionIds"] : [];
+  return {
+    tool: memberOf(BUS_TOOL_NAMES, s.tool) ?? OTHER,
+    status:
+      typeof s.status === "string"
+        ? (memberOf(KNOWN_STEP_STATUS, s.status) ?? OTHER)
+        : null,
+    argKeys: ARG_KEYS.filter((k) => k in args),
+    project: memberOf(known.projects, args["project"]),
+    roster: memberOf(known.rosters, args["roster"]),
+    nonce: noncesIn(prompt, known)[0] ?? null,
+    sessionIds: [args["sessionId"], ...ids]
+      .filter(isHostSessionId)
+      .slice(0, 16),
+    timeoutMs: boundedMs(args["timeoutMs"]),
+    result: {
+      ...boundedDigest(text),
+      noncesSeen: noncesIn(text, known),
+      dispatchedSession: SESSION_IN_TEXT.exec(text)?.[1] ?? null,
+    },
+  };
+}
+
+/**
+ * The persisted form of a flow: categorical and bounded (see the section
+ * comment). The raw `args`, step `text` and `finalText` are not copied; their
+ * routing-relevant content is reduced to harness-known members (project,
+ * roster, nonces seen), `ses_` ids and a digest.
+ */
+export function projectFlowEvidence(
+  f: Flow,
+  known: HarnessKnown,
+): FlowEvidence {
+  const steps = Array.isArray(f.steps) ? f.steps : [];
+  return {
+    name: memberOf(FLOW_NAMES, f.name) ?? OTHER,
+    sessionId: isHostSessionId(f.sessionId) ? f.sessionId : null,
+    outcome:
+      typeof f.outcome === "string"
+        ? f.outcome === "succeeded"
+          ? "succeeded"
+          : "other"
+        : null,
+    stepCount: steps.length,
+    steps: steps.slice(0, FLOW_STEP_CAP).map((s) => projectStep(s, known)),
+    finalText:
+      typeof f.finalText === "string"
+        ? {
+            ...boundedDigest(f.finalText),
+            noncesSeen: noncesIn(f.finalText, known),
+          }
+        : null,
+    problems: recognizedReasons((f.problems ?? []).join("; ")),
+    unreadable: recognizedReasons((f.unreadable ?? []).join("; ")),
+  };
+}
+
+export type CheckEvidence = {
+  name: string;
+  kind: Check["kind"];
+  mode: Check["mode"];
+  ok: boolean;
+  unobserved: boolean;
+  reasons: string[];
+  detail: { length: number; sha256: string } | null;
+};
+
+/**
+ * A check's name is harness-authored (never built from host content). Its
+ * `detail` is raw (host versions, ids, paths, response snippets) and stays in
+ * memory: only the vocabulary reasons it contains and a digest are persisted.
+ */
+export function projectCheckEvidence(c: Check): CheckEvidence {
+  const detail = typeof c.detail === "string" ? c.detail : undefined;
+  return {
+    name: String(c.name).slice(0, 200),
+    kind: c.kind,
+    mode: c.mode,
+    ok: c.ok === true,
+    unobserved: c.unobserved === true,
+    reasons: detail === undefined ? [] : recognizedReasons(detail),
+    detail: detail === undefined ? null : boundedDigest(detail),
+  };
+}
+
+function projectFixtureRequest(q: unknown, index: number, known: HarnessKnown) {
+  const r = isRecord(q) ? q : {};
+  const d = isRecord(r["decision"]) ? r["decision"] : {};
+  const nonces = Array.isArray(r["nonces"])
+    ? r["nonces"].filter((n): n is string => typeof n === "string")
+    : [];
+  const label = r["label"];
+  const cwd = r["cwd"];
+  const text = d["text"];
+  const step = d["step"];
+  return {
+    index,
+    role: memberOf(FIXTURE_ROLES, r["role"]) ?? OTHER,
+    label:
+      label === null || label === undefined
+        ? null
+        : (memberOf(FIXTURE_LABELS, label) ?? OTHER),
+    hasTools: r["hasTools"] === true,
+    noncesSeen: nonces.filter((n) => known.nonces.has(n)).sort(),
+    otherNonces: nonces.filter((n) => !known.nonces.has(n)).length,
+    cwd:
+      typeof cwd === "string"
+        ? (Object.entries(known.dirs).find(([, dir]) => dir === cwd)?.[0] ??
+          OTHER)
+        : null,
+    decision: {
+      kind: typeof text === "string" ? "text" : "via" in d ? "tool" : OTHER,
+      tool: memberOf(FIXTURE_TOOLS, d["via"]),
+      step:
+        typeof step === "number" &&
+        Number.isInteger(step) &&
+        step >= 0 &&
+        step <= 1000
+          ? step
+          : null,
+      ack: typeof text === "string" && text.startsWith("ACK"),
+    },
+  };
+}
+
+export function projectFixtureRequests(reqs: unknown, known: HarnessKnown) {
+  return (Array.isArray(reqs) ? reqs : [])
+    .slice(0, 512)
+    .map((q, index) => projectFixtureRequest(q, index, known));
+}
+
+/** Teardown results as booleans and counts; a thrown error's text is not kept. */
+export function projectTeardown(t: Record<string, unknown>) {
+  return Object.fromEntries(
+    Object.entries(t).map(([label, v]) => [
+      label,
+      typeof v === "number" && Number.isFinite(v)
+        ? v
+        : isRecord(v) && "error" in v
+          ? { threw: true }
+          : isRecord(v)
+            ? {
+                stopped: v["stopped"] === true,
+                portClosed: v["portClosed"] === true,
+              }
+            : OTHER,
+    ]),
+  );
+}
+
+/** A local probe's stderr as a coarse kind; the text itself is not kept. */
+const stderrKind = (s: string) =>
+  s.length === 0
+    ? "none"
+    : /EPERM|EACCES|not permitted|Operation/.test(s)
+      ? "denied"
+      : /ENOENT|not found/.test(s)
+        ? "not-found"
+        : "other";
+
+export function projectPreflight(p: {
+  command: string;
+  sandboxed: ProbeRun;
+  control: ProbeRun;
+  available: boolean;
+  inconclusive: boolean;
+}) {
+  const probe = (r: ProbeRun) => ({
+    status: r.status,
+    stdoutBytes: r.stdout.length,
+    stderrKind: stderrKind(r.stderr),
+  });
+  return {
+    command: p.command,
+    sandboxed: probe(p.sandboxed),
+    control: probe(p.control),
+    available: p.available,
+    inconclusive: p.inconclusive,
+  };
+}
+
+/** A thrown message as a category: its text can carry child-process output. */
+export function fatalCategory(message: string): string {
+  if (message.startsWith("global deadline hit")) return "global deadline hit";
+  if (message.startsWith("timed out waiting")) return "timed out waiting";
+  if (message === "OS sandbox self-test failed")
+    return "OS sandbox self-test failed";
+  if (message === "harness identity checks failed")
+    return "harness identity checks failed";
+  return "harness step failed";
+}
+
+/**
+ * Console output is treated like persisted output: it may be captured by a
+ * terminal, CI or a log shipper, so it carries the same categorical
+ * projections and never raw host strings, prompts, tool results or
+ * credentials. (Child-process output goes to per-host log files in the work
+ * dir, not to the console.) Free text and thrown messages are never echoed.
+ */
+const oneLine = (s: string) => [...s].filter((c) => c >= " ").join("");
+
+/** Any thrown value as a fixed category (a filesystem code is kept; a path is not). */
+export function errorCategory(e: unknown): string {
+  const message = e instanceof Error ? e.message : "";
+  if (message.startsWith("refusing to persist")) return "leak guard tripped";
+  if (message.startsWith("refusing to overwrite"))
+    return "refusing to overwrite an evidence file";
+  if (message === "invalid --run-id") return "invalid --run-id";
+  if (message.endsWith("is not git-ignored"))
+    return "evidence directory is not git-ignored";
+  const code = (e as { code?: unknown } | null)?.code;
+  if (typeof code === "string" && /^E[A-Z0-9]{2,12}$/.test(code))
+    return `filesystem error ${code}`;
+  return fatalCategory(message);
+}
+
+/** One console line for a check: verdict, harness-authored name, recognised reasons, detail digest. */
+export function renderCheckLog(c: Check): string {
+  const e = projectCheckEvidence(c);
+  const status = e.ok ? "ok  " : e.unobserved ? "UNOBSERVED" : "FAIL";
+  const why =
+    e.ok || e.reasons.length === 0 ? "" : ` — ${e.reasons.join("; ")}`;
+  const digest =
+    e.ok || !e.detail
+      ? ""
+      : ` (detail ${e.detail.length} chars #${e.detail.sha256.slice(0, 8)})`;
+  return oneLine(`${status} [${e.kind}/${e.mode}] ${e.name}${why}${digest}`);
+}
+
+/** Console lines for a flow: phase, outcome, routing correlation, result digests. */
+export function renderFlowLog(f: Flow, known: HarnessKnown): string[] {
+  const e = projectFlowEvidence(f, known);
+  const list = (xs: string[]) => (xs.length > 0 ? xs.join("; ") : "none");
+  return [
+    `flow ${e.name}: outcome=${e.outcome} steps=${e.stepCount} problems=${list(e.problems)} unreadable=${list(e.unreadable)}`,
+    ...e.steps.map(
+      (s) =>
+        `  ${s.tool} [${s.status}] project=${s.project ?? "-"} roster=${s.roster ?? "-"} nonce=${s.nonce ?? "-"} session=${s.result.dispatchedSession ?? "-"} nonces-in-result=[${s.result.noncesSeen.join(",")}] result=${s.result.length} chars #${s.result.sha256.slice(0, 8)}`,
+    ),
+  ].map(oneLine);
+}
+
+export const renderPreflightLog = (p: Parameters<typeof projectPreflight>[0]) =>
+  `managed preflight: ${JSON.stringify(projectPreflight(p))}`;
+
+/** The sandbox self-test as its verdict and the names of the checks that failed. */
+export function renderSelfTestLog(s: {
+  ok: boolean;
+  checks: Record<string, boolean>;
+}): string {
+  const failed = Object.entries(s.checks)
+    .filter(([, v]) => v !== true)
+    .map(([k]) => k);
+  return oneLine(
+    `sandbox self-test: ok=${s.ok === true} failed=[${failed.join(",")}]`,
+  );
+}
 function openEvidence(iso: Iso, runId: string, secrets: Set<string>) {
   if (!/^[A-Za-z0-9._-]{6,80}$/.test(runId))
     throw new Error("invalid --run-id");
@@ -599,20 +1251,11 @@ function openEvidence(iso: Iso, runId: string, secrets: Set<string>) {
     write(rel: string, value: unknown) {
       const final = join(dir, rel);
       if (existsSync(final)) throw new Error(`refusing to overwrite ${rel}`);
-      let text = `${JSON.stringify(value, null, 2)}\n`;
-      for (const [from, to] of swaps) text = text.split(from).join(to);
-      text = text.replace(/\/Users\/[^\s"'\\/]+/g, "/Users/<user>");
-      for (const s of secrets) text = text.split(s).join("<redacted>");
-      for (const needle of [
-        iso.realHome,
-        process.env["HOME"] ?? "",
-        iso.work,
-        repoRoot,
-        ...secrets,
-      ]) {
-        if (needle.length > 3 && text.includes(needle))
-          throw new Error("refusing to persist: leak guard tripped");
-      }
+      const text = renderEvidence(value, {
+        swaps,
+        secrets,
+        guard: [iso.realHome, process.env["HOME"] ?? "", iso.work, repoRoot],
+      });
       const tmp = `${final}.${randomBytes(4).toString("hex")}.tmp`;
       const fd = openSync(tmp, "wx", 0o600);
       try {
@@ -673,7 +1316,7 @@ const unreadable = (reason: string): Observation<never> => ({
 function readJsonList(r: HttpRead, what: string): Observation<unknown[]> {
   if (r.status === 0)
     return unreadable(
-      `${what}: request failed or timed out (${String(r.body).slice(0, 80)})`,
+      `${what}: request failed or timed out (${transportFailure(r.body)})`,
     );
   if (r.status < 200 || r.status > 299)
     return unreadable(`${what}: HTTP ${r.status}`);
@@ -772,7 +1415,7 @@ type FixtureRequest = {
 export function readControllerMessages(r: HttpRead): Observation<Json[]> {
   if (r.status === 0)
     return unreadable(
-      `controller message list: request failed or timed out (${String(r.body).slice(0, 80)})`,
+      `controller message list: request failed or timed out (${transportFailure(r.body)})`,
     );
   if (r.status < 200 || r.status > 299)
     return unreadable(`controller message list: HTTP ${r.status}`);
@@ -1397,15 +2040,18 @@ export function finalizeOutcome(input: {
   };
 }
 
+type PreflightResult = { available: boolean; inconclusive?: boolean };
+
 function managedStatusOf(
-  preflight: { available: boolean } | undefined,
+  preflight: PreflightResult | undefined,
   modeArg: "both" | "external",
   preflightOnly: boolean,
   mgdChecks: Check[],
 ): string {
   if (!preflight) return "INCOMPLETE";
   if (modeArg === "external") return "NOT-RUN (--mode external)";
-  if (!preflight.available) return "BLOCKED";
+  if (!preflight.available)
+    return preflight.inconclusive ? "INCONCLUSIVE" : "BLOCKED";
   if (preflightOnly) return "PREFLIGHT-OK (flows not run: --preflight-only)";
   return verdictOf(mgdChecks);
 }
@@ -1417,9 +2063,16 @@ function exitCodeOf(
   managedStatus: string,
 ): number {
   if (harnessBad) return 1;
-  if (preflightOnly) return managedStatus === "BLOCKED" ? 3 : 0;
+  if (preflightOnly) {
+    if (managedStatus === "INCONCLUSIVE") return 1;
+    return managedStatus === "BLOCKED" ? 3 : 0;
+  }
   if (externalStatus === "FAIL" || managedStatus === "FAIL") return 2;
-  if (externalStatus === "INCOMPLETE" || managedStatus === "INCOMPLETE")
+  if (
+    externalStatus === "INCOMPLETE" ||
+    managedStatus === "INCOMPLETE" ||
+    managedStatus === "INCONCLUSIVE"
+  )
     return 1;
   return managedStatus === "BLOCKED" ? 3 : 0;
 }
@@ -1429,7 +2082,7 @@ function meaningOf(exit: number, unobserved: number): string {
     case 0:
       return "harness valid; every requested mode passed";
     case 1:
-      return "harness invalid or run incomplete (including unreadable evidence); U2 behavior NOT established";
+      return "harness invalid or run incomplete (including unreadable evidence or an inconclusive managed preflight); U2 behavior NOT established";
     case 2:
       return `harness valid; a U2 check failed (finding)${unobserved > 0 ? `; ${unobserved} other check(s) were unobserved and are NOT established (see unobservedChecks)` : ""}`;
     default:
@@ -1439,7 +2092,7 @@ function meaningOf(exit: number, unobserved: number): string {
 
 export function summarize(input: {
   checks: Check[];
-  preflight: { available: boolean } | undefined;
+  preflight: PreflightResult | undefined;
   preflightOnly: boolean;
   modeArg: "both" | "external";
 }) {
@@ -1493,7 +2146,7 @@ type ToolStep = {
   /** The tool's result text as the controller model received it. */
   text: string;
 };
-type Flow = {
+export type Flow = {
   name: string;
   sessionId: string | null;
   outcome: string | null;
@@ -1533,13 +2186,15 @@ async function main(): Promise<number> {
   const evidence = openEvidence(iso, runId, secrets);
   log(`run ${runId} -> .context/u2-delegation/${runId}/`);
 
+  // Run-local request allow-list: ports are added only from ports this
+  // harness chose, never from a file or a response.
+  const net = createLoopbackHttp();
+  const httpJson = net.json;
   const checks: Check[] = [];
   let curMode: Check["mode"] = "external";
   const record = (c: Check) => {
     checks.push(c);
-    log(
-      `${c.ok ? "ok  " : c.unobserved ? "UNOBSERVED" : "FAIL"} [${c.kind}/${c.mode}] ${c.name}${c.ok || !c.detail ? "" : ` — ${c.detail}`}`,
-    );
+    log(renderCheckLog(c));
   };
   const check = (
     kind: Check["kind"],
@@ -1565,7 +2220,7 @@ async function main(): Promise<number> {
   let managedRun = false;
   try {
     const selfTest = await sandboxSelfTest(iso);
-    log(`sandbox self-test: ${JSON.stringify(selfTest)}`);
+    log(renderSelfTestLog(selfTest));
     check(
       "harness",
       "sandbox self-test (read/write home and network denied; control allowed)",
@@ -1577,8 +2232,8 @@ async function main(): Promise<number> {
     // this sandbox. Probe once, before anything is spawned.
     preflight = preflightProcessInspection(iso);
     managedRun = modeArg === "both" && preflight.available;
-    log(`managed preflight: ${JSON.stringify(preflight)}`);
-    evidence.write("preflight.json", preflight);
+    log(renderPreflightLog(preflight));
+    evidence.write("preflight.json", projectPreflight(preflight));
     if (preflightOnly) throw new PreflightOnly();
 
     const built = buildPackage(iso);
@@ -1680,6 +2335,7 @@ async function main(): Promise<number> {
       OPENCODE_SERVER_PASSWORD: pw,
     });
     procs.push({ label: "target-ext", port: extHost.port, stop: extHost.stop });
+    net.allow(extHost.port);
     const extAuth = { authorization: basic("opencode", pw) };
     const extHealth = await until(
       "external v1 target health",
@@ -1712,11 +2368,16 @@ async function main(): Promise<number> {
         projects: [proj("alpha", dirs.alpha), proj("beta", dirs.beta)],
       }),
     );
+    // The managed target's port is chosen HERE, written into its roster, and
+    // is the only port the managed target is ever requested on. The plugin's
+    // discovery file is later verified against it, never trusted for it.
+    const managedPort = managedRun ? await freePort() : undefined;
+    if (managedPort !== undefined) net.allow(managedPort);
+    const managedWrapper = mgd.p("managed-wrapper.sh");
     if (managedRun) {
       // The wrapper stays resident (no exec), so the pid the plugin records is
       // stable across its identity check, and it gives the spawned host ITS OWN
       // private home/config instead of the controller's inherited environment.
-      const managedWrapper = mgd.p("managed-wrapper.sh");
       writeFileSync(
         managedWrapper,
         [
@@ -1735,7 +2396,7 @@ async function main(): Promise<number> {
       );
       // Managed roster: the plugin spawns the v1 target itself. `env` is the
       // command so the spawned host gets ITS OWN private home/config; the
-      // plugin appends `--port <n>` and sets the per-spawn password.
+      // plugin appends `--port <managedPort>` and sets the per-spawn password.
       writeFileSync(
         join(dirs.rosterB, "spacebus.json"),
         JSON.stringify({
@@ -1749,6 +2410,7 @@ async function main(): Promise<number> {
                 "127.0.0.1",
               ],
               cwd: dirs.rosterB,
+              port: managedPort,
             },
           },
           projects: [proj("omega", dirs.omega)],
@@ -1800,6 +2462,7 @@ async function main(): Promise<number> {
       FIXTURE_API_KEY: "fixture-key",
     });
     procs.push({ label: "controller", port: ctlHost.port, stop: ctlHost.stop });
+    net.allow(ctlHost.port);
     const ctlBase = `http://127.0.0.1:${ctlHost.port}`;
     const ctlAuth = {
       authorization: basic("opencode", pw),
@@ -1861,10 +2524,8 @@ async function main(): Promise<number> {
       const sid = ((created.body as Json)?.["data"] as Json | undefined)?.[
         "id"
       ];
-      if (typeof sid !== "string") {
-        flow.problems.push(
-          `session create failed: ${JSON.stringify(created.body).slice(0, 200)}`,
-        );
+      if (!isSafeSessionId(sid)) {
+        flow.problems.push(`session create failed (status ${created.status})`);
         return flow;
       }
       flow.sessionId = sid;
@@ -1947,14 +2608,8 @@ async function main(): Promise<number> {
         f.unreadable.length === 0,
         f.unreadable.join("; "),
       );
-      evidence.write(`flows/${f.name}.json`, f);
-      log(
-        `flow ${f.name}: outcome=${f.outcome} steps=${f.steps.length} problems=${f.problems.join(";") || "none"}`,
-      );
-      for (const st of f.steps)
-        log(
-          `  ${st.tool} [${st.status}] ${st.text.replaceAll("\n", " | ").slice(0, 220)}`,
-        );
+      evidence.write(`flows/${f.name}.json`, projectFlowEvidence(f, known));
+      for (const line of renderFlowLog(f, known)) log(line);
     };
     const N = {
       alpha: nonce("alpha"),
@@ -1963,6 +2618,13 @@ async function main(): Promise<number> {
       badProject: nonce("badproj"),
       wrongRoster: nonce("wrongrost"),
       outside: nonce("outside"),
+    };
+    // The only values persisted evidence may name verbatim (besides safe ids).
+    const known: HarnessKnown = {
+      projects: new Set(["alpha", "beta", "omega", "outside-roster"]),
+      rosters: new Set(["managed-b"]),
+      nonces: new Set(Object.values(N)),
+      dirs,
     };
     const ask = (
       project: string,
@@ -2052,13 +2714,24 @@ async function main(): Promise<number> {
       }
       return undefined;
     })();
-    const discovery = discoveryFile
-      ? (JSON.parse(readFileSync(discoveryFile, "utf8")) as {
-          port: number;
-          pid: number;
-          password: string;
-        })
-      : undefined;
+    // The record is a file the plugin wrote, so it is evidence to verify, not
+    // a source of the destination: the port must equal the one this harness
+    // reserved (`managedPort`, already allowed and written into the roster),
+    // and the pid must be a live process that is this run's wrapper + target
+    // serving that port. Any mismatch is rejected here, before a request is
+    // sent, a credential is used or a signal is queued. Without a reserved
+    // port (managed mode not run) the file is not consulted at all.
+    const discoveryRead =
+      discoveryFile && managedPort !== undefined
+        ? verifyManagedDiscovery(readFileSync(discoveryFile, "utf8"), {
+            expectedPort: managedPort,
+            mustContain: [hosts.targetBin, managedWrapper],
+            commandOf: psCommand,
+          })
+        : undefined;
+    const discoveryProblem =
+      discoveryRead && !discoveryRead.ok ? discoveryRead.reason : undefined;
+    const discovery = discoveryRead?.ok ? discoveryRead.value : undefined;
     if (discovery) secrets.add(discovery.password);
     if (managedRun) {
       curMode = "managed";
@@ -2066,6 +2739,7 @@ async function main(): Promise<number> {
         "u2",
         "plugin spawned a managed v1 target (private discovery record exists)",
         !!discovery,
+        discoveryProblem,
       );
       curMode = "external";
     }
@@ -2289,11 +2963,20 @@ async function main(): Promise<number> {
     );
 
     // ---- persist flows ---------------------------------------------------
-    evidence.write("fixture-requests.json", fixture?.requests ?? []);
+    evidence.write(
+      "fixture-requests.json",
+      projectFixtureRequests(fixture?.requests, known),
+    );
     evidence.write("manifest.json", {
       runId,
-      command:
-        `bun run scripts/verify-controller-delegation.ts ${argv.join(" ")}`.trim(),
+      // Rebuilt from the parsed, validated options: raw argv is not copied.
+      command: [
+        "bun run scripts/verify-controller-delegation.ts",
+        `--run-id ${runId}`,
+        `--mode ${modeArg}`,
+        ...(keep ? ["--keep"] : []),
+        ...(preflightOnly ? ["--preflight-only"] : []),
+      ].join(" "),
       tools: { node: process.version, bun: process.versions["bun"] },
       source: built.provenance,
       package: {
@@ -2309,9 +2992,17 @@ async function main(): Promise<number> {
           version: CONTROLLER.version,
         },
         target: { package: TARGET.packages, version: TARGET.version },
-        identity: hosts.identity,
+        identity: {
+          controllerPinned: hosts.identity.controllerPinned,
+          targetPinned: hosts.identity.targetPinned,
+          controllerHasV1SdkCount: hosts.identity.controllerHasV1Sdk.length,
+          targetHasV2Count: hosts.identity.targetHasV2.length,
+          tarballLocked: hosts.identity.tarballLocked,
+          installedEntrySha: hosts.identity.installedEntrySha,
+          installedPackagePresent: hosts.identity.installedPackagePresent,
+        },
       },
-      preflight,
+      preflight: preflight ? projectPreflight(preflight) : null,
       mode: modeArg,
       managedRun,
       nonces: N,
@@ -2325,7 +3016,12 @@ async function main(): Promise<number> {
     });
   } catch (e) {
     if (!(e instanceof PreflightOnly))
-      check("harness", `fatal: ${(e as Error).message.slice(0, 300)}`, false);
+      check(
+        "harness",
+        `fatal: ${fatalCategory((e as Error).message)}`,
+        false,
+        (e as Error).message.slice(0, 300),
+      );
   } finally {
     for (const p of procs.reverse()) {
       try {
@@ -2388,10 +3084,22 @@ async function main(): Promise<number> {
   } = summarize({ checks, preflight, preflightOnly, modeArg });
   const blockedWhy =
     managedStatus === "BLOCKED" && preflight
-      ? `native \`ps\` identity call is denied inside the sandbox (status ${preflight.sandboxed.status}: ${preflight.sandboxed.stderr || "no output"}); unsandboxed control status ${preflight.control.status}. The plugin cannot record or verify a managed server's identity here, and no workaround was applied.`
+      ? `native \`ps\` identity call is denied inside the sandbox (status ${preflight.sandboxed.status}: ${stderrKind(preflight.sandboxed.stderr)}); unsandboxed control status ${preflight.control.status}. The plugin cannot record or verify a managed server's identity here, and no workaround was applied.`
+      : undefined;
+  const inconclusiveWhy =
+    managedStatus === "INCONCLUSIVE" && preflight
+      ? `native \`ps\` failed both inside the sandbox (status ${preflight.sandboxed.status}: ${stderrKind(preflight.sandboxed.stderr)}) and unsandboxed (status ${preflight.control.status}: ${stderrKind(preflight.control.stderr)}), so the failure cannot be attributed to the sandbox; managed mode was not run and is neither blocked nor passed.`
       : undefined;
   exit = summaryExit;
-  const writeSummary = () =>
+  // A write failure's message can carry a path; only its category escapes.
+  const writeSummary = () => {
+    try {
+      writeSummaryFile();
+    } catch (e) {
+      throw new Error(errorCategory(e));
+    }
+  };
+  const writeSummaryFile = () =>
     evidence.write("summary.json", {
       runId,
       exit,
@@ -2406,6 +3114,7 @@ async function main(): Promise<number> {
           checks: mgdChecks.length,
           unobserved: unobservedByMode.managed,
           ...(blockedWhy ? { blocker: blockedWhy } : {}),
+          ...(inconclusiveWhy ? { inconclusive: inconclusiveWhy } : {}),
         },
       },
       meaning: meaningOf(exit, unobserved),
@@ -2415,14 +3124,20 @@ async function main(): Promise<number> {
         failed,
         unobserved,
       },
-      unobservedChecks,
-      teardown,
-      checks,
+      unobservedChecks: unobservedChecks.map((u) => ({
+        name: String(u.name).slice(0, 200),
+        mode: u.mode,
+        kind: u.kind,
+        reasons: recognizedReasons(u.reason),
+      })),
+      teardown: projectTeardown(teardown),
+      checks: checks.map(projectCheckEvidence),
       limitations: [
         "macOS arm64 only",
         "the model is a deterministic fixture: this proves plugin->host wiring, routing and result plumbing, not agent behavior",
         "v2.3.2 exposes plugin tools only through Code Mode `execute`; the fixture drives them that way",
         "blocked-question flows, steering and follow-ups are not exercised here",
+        "persisted evidence is categorical: raw prompts, tool arguments, tool results, transcripts and response bodies are not retained; correlation is by harness nonces, `ses_` ids and 16-hex SHA-256 digests",
         "nothing brokers or relaxes a sandbox denial: a denied native operation blocks the mode that needs it",
         "an absence claim is made only from reads that succeeded: a failed, timed-out, non-2xx or malformed session/transcript read, or a missing fixture log, leaves the check unobserved and its mode INCOMPLETE (exit 1); it is never an empty result",
         "the session-reader controls (known-present, valid-empty, refused-read-is-unreadable) are written but were not exercised against live hosts in this change",
@@ -2470,4 +3185,10 @@ async function startFixture() {
   return mod.startModelFixture();
 }
 
-if (import.meta.main) process.exit(await main());
+if (import.meta.main)
+  process.exit(
+    await main().catch((e) => {
+      log(`unhandled: ${errorCategory(e)}`);
+      return 1;
+    }),
+  );

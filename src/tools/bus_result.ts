@@ -1,12 +1,19 @@
 import { result } from "../core";
 import { formatResult, formatRosterHeader } from "../format";
-import { ensureAndLoadContext, withRosterHeader } from "./shared";
+import {
+  type ContextResolver,
+  ensureAndLoadContext,
+  withRosterHeader,
+} from "./shared";
 import { type BusTool, defineBusTool } from "./spec";
 
 export const BUS_RESULT_DESCRIPTION =
   "Return a completed space-bus session's final assistant message and diff. Errors if the session is still running — use bus_status to check first.";
 
-export function makeBusResult(defaultDirectory?: string): BusTool {
+export function makeBusResult(
+  defaultDirectory?: string,
+  resolveContext: ContextResolver = ensureAndLoadContext,
+): BusTool {
   return defineBusTool({
     name: "bus_result",
     description: BUS_RESULT_DESCRIPTION,
@@ -21,9 +28,9 @@ export function makeBusResult(defaultDirectory?: string): BusTool {
         ),
     }),
     async run(args, directory) {
-      let resolved: Awaited<ReturnType<typeof ensureAndLoadContext>>;
+      let resolved: Awaited<ReturnType<ContextResolver>>;
       try {
-        resolved = await ensureAndLoadContext(directory, args.roster);
+        resolved = await resolveContext(directory, args.roster);
       } catch (e) {
         throw new Error((e as Error).message);
       }

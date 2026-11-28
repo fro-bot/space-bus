@@ -1,12 +1,19 @@
 import { roster } from "../core";
 import { formatRoster, formatRosterHeader } from "../format";
-import { ensureAndLoadContext, withRosterHeader } from "./shared";
+import {
+  type ContextResolver,
+  ensureAndLoadContext,
+  withRosterHeader,
+} from "./shared";
 import { type BusTool, defineBusTool } from "./spec";
 
 export const BUS_ROSTER_DESCRIPTION =
   "List the space-bus manifest projects with live session status per project.";
 
-export function makeBusRoster(defaultDirectory?: string): BusTool {
+export function makeBusRoster(
+  defaultDirectory?: string,
+  resolveContext: ContextResolver = ensureAndLoadContext,
+): BusTool {
   return defineBusTool({
     name: "bus_roster",
     description: BUS_ROSTER_DESCRIPTION,
@@ -20,9 +27,9 @@ export function makeBusRoster(defaultDirectory?: string): BusTool {
         ),
     }),
     async run(args, directory) {
-      let resolved: Awaited<ReturnType<typeof ensureAndLoadContext>>;
+      let resolved: Awaited<ReturnType<ContextResolver>>;
       try {
-        resolved = await ensureAndLoadContext(directory, args.roster);
+        resolved = await resolveContext(directory, args.roster);
       } catch (e) {
         throw new Error((e as Error).message);
       }

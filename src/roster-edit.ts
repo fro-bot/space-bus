@@ -108,7 +108,10 @@ function validateManifest(
   if (baseUrl !== undefined && !loopbackOk(baseUrl)) {
     return {
       ok: false,
-      error: `space-bus: roster's server.baseUrl must point to localhost (got ${baseUrl}) — refusing to send credentials off-machine`,
+      // Fixed diagnostic: never reflect the URL (userinfo/query/fragment may
+      // carry credentials). Mirrors config.ts, which echoes at most a hostname.
+      error:
+        "space-bus: roster's server.baseUrl must point to localhost (the rejected URL is omitted because it may embed credentials) — refusing to send credentials off-machine",
     };
   }
   const dup = duplicateProjectName(parsed.data.projects);

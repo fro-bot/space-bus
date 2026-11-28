@@ -378,6 +378,79 @@ describe("roster-edit: editServer", () => {
   });
 });
 
+describe("roster-edit: rejected baseUrl never reflects the URL", () => {
+  // Fake sentinels only — never real credentials.
+  const USERINFO = "fake-user:fake-pass-SENTINEL";
+  const QUERY_TOKEN = "fake-query-token-SENTINEL";
+  const FRAGMENT = "fake-fragment-SENTINEL";
+  const leakyUrls = [
+    `http://${USERINFO}@evil.example:4096/path?token=${QUERY_TOKEN}#${FRAGMENT}`,
+    `https://${USERINFO}@evil.example/?token=${QUERY_TOKEN}#${FRAGMENT}`,
+  ];
+  const SENTINELS = [
+    "fake-user",
+    "fake-pass-SENTINEL",
+    QUERY_TOKEN,
+    FRAGMENT,
+    "evil.example",
+    "?token=",
+  ];
+
+  function expectNoLeak(error: string): void {
+    for (const s of SENTINELS) expect(error).not.toContain(s);
+    // Operator guidance is retained.
+    expect(error).toContain("localhost");
+    expect(error).toContain("refusing to send credentials off-machine");
+  }
+
+  for (const url of leakyUrls) {
+    test(`editServer rejection omits the URL (${new URL(url).protocol})`, () => {
+      const path = rosterPathFor();
+      expect(createRoster({ name: "leak-edit", rosterPath: path }).ok).toBe(
+        true,
+      );
+      const before = readFileSync(path);
+      const result = editServer(path, { baseUrl: url });
+      expect(result.ok).toBe(false);
+      if (!result.ok) expectNoLeak(result.error);
+      expect(Buffer.compare(before, readFileSync(path))).toBe(0);
+    });
+
+    test(`createRoster rejection omits the URL (${new URL(url).protocol})`, () => {
+      const path = rosterPathFor();
+      const result = createRoster({
+        name: "leak-create",
+        rosterPath: path,
+        server: { baseUrl: url },
+      });
+      expect(result.ok).toBe(false);
+      if (!result.ok) expectNoLeak(result.error);
+      expect(existsSync(path)).toBe(false);
+    });
+  }
+
+  test("schema-invalid baseUrl error does not echo the URL either", () => {
+    const path = rosterPathFor();
+    const bad = `http://${USERINFO}@:bad port?token=${QUERY_TOKEN}#${FRAGMENT}`;
+    const result = createRoster({
+      name: "leak-schema",
+      rosterPath: path,
+      server: { baseUrl: bad },
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      for (const s of [
+        "fake-user",
+        "fake-pass-SENTINEL",
+        QUERY_TOKEN,
+        FRAGMENT,
+      ]) {
+        expect(result.error).not.toContain(s);
+      }
+    }
+  });
+});
+
 describe("roster-edit: error cases on the file itself", () => {
   test("edit on a missing roster file is ok:false with an actionable message", () => {
     const path = join(scratchDir, "does-not-exist.json");

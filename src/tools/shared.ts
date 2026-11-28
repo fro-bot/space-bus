@@ -38,6 +38,19 @@ export type ResolvedContext = {
   rosterPath: string;
 };
 
+/**
+ * How a surface turns (per-call directory, optional `roster` param) into a
+ * loaded context. The five roster-bearing factories take this as their only
+ * surface-specific seam: the plugin adapters use `ensureAndLoadContext`
+ * (directory-first), while the MCP facade injects its own resolver (session
+ * roster, SPACE_BUS_CONFIG, registry default, attach-only). Validation, error
+ * text and output assembly stay in the factories so the surfaces can't drift.
+ */
+export type ContextResolver = (
+  directory: string | undefined,
+  rosterName: string | undefined,
+) => Promise<ResolvedContext>;
+
 /** Injectable `ensureServer` seam — defaults to the real implementation.
  * Exists so tests can prove the registry name is resolved exactly ONCE
  * per call: a test can rebind the registry mid-call (inside this

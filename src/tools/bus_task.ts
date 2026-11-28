@@ -4,13 +4,20 @@ import {
   formatDispatch,
   formatRosterHeader,
 } from "../format";
-import { ensureAndLoadContext, withRosterHeader } from "./shared";
+import {
+  type ContextResolver,
+  ensureAndLoadContext,
+  withRosterHeader,
+} from "./shared";
 import { type BusTool, defineBusTool } from "./spec";
 
 export const BUS_TASK_DESCRIPTION =
   "Dispatch a prompt to an agent in the given space-bus manifest project, or steer an existing session by passing sessionId (answers its pending question, else sends a follow-up prompt). Returns immediately; does not wait for completion.";
 
-export function makeBusTask(defaultDirectory?: string): BusTool {
+export function makeBusTask(
+  defaultDirectory?: string,
+  resolveContext: ContextResolver = ensureAndLoadContext,
+): BusTool {
   return defineBusTool({
     name: "bus_task",
     description: BUS_TASK_DESCRIPTION,
@@ -53,9 +60,9 @@ export function makeBusTask(defaultDirectory?: string): BusTool {
       // loading (index.test.ts asserts this).
       const dispatchArgs = toDispatchArgs(args);
       if (!dispatchArgs.ok) throw new Error(dispatchArgs.error);
-      let resolved: Awaited<ReturnType<typeof ensureAndLoadContext>>;
+      let resolved: Awaited<ReturnType<ContextResolver>>;
       try {
-        resolved = await ensureAndLoadContext(directory, args.roster);
+        resolved = await resolveContext(directory, args.roster);
       } catch (e) {
         throw new Error((e as Error).message);
       }

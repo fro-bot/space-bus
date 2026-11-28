@@ -1,10 +1,14 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
+  closeSync,
+  constants as fsConstants,
+  fstatSync,
   mkdtempSync,
+  openSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
   rmSync,
-  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -66,7 +70,25 @@ function snapshot(root: string): Record<string, string> {
   const out: Record<string, string> = {};
   for (const rel of readdirSync(root, { recursive: true }) as string[]) {
     const full = join(root, rel);
-    if (statSync(full).isFile()) out[rel] = readFileSync(full, "utf8");
+    // Open first, then fstat/read through the same fd: no check-then-use gap
+    // between a stat and a later read. O_NOFOLLOW means a symlink swapped in
+    // is never followed; it is recorded as its own entry so it still shows
+    // up as a state change.
+    let fd: number;
+    try {
+      fd = openSync(full, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ELOOP") {
+        out[rel] = `symlink -> ${readlinkSync(full)}`;
+        continue;
+      }
+      throw err;
+    }
+    try {
+      if (fstatSync(fd).isFile()) out[rel] = readFileSync(fd, "utf8");
+    } finally {
+      closeSync(fd);
+    }
   }
   return out;
 }
@@ -285,6 +307,53 @@ for (const surfaceName of ["v1", "v2", "mcp"] as const) {
         });
         expect(out.ok).toBe(false);
         expect(out.text).toContain(c.inapplicableName);
+        expect(state()).toEqual(before);
+      });
+    }
+  });
+}
+
+// A rejected non-loopback `server.baseUrl` must never be reflected in the
+// error on any surface: userinfo, query and fragment can all carry secrets.
+// The sentinels below are fake. The error must stay actionable (localhost
+// guidance) and the refusal must leave registry + scratch state untouched.
+const LEAK_USERINFO = "fake-user:fake-pass-SENTINEL";
+const LEAK_QUERY = "fake-query-token-SENTINEL";
+const LEAK_FRAGMENT = "fake-fragment-SENTINEL";
+const LEAKY_URLS = [
+  `http://${LEAK_USERINFO}@evil.example:4096/p?token=${LEAK_QUERY}#${LEAK_FRAGMENT}`,
+  `https://${LEAK_USERINFO}@evil.example/?token=${LEAK_QUERY}#${LEAK_FRAGMENT}`,
+];
+const LEAK_FRAGMENTS = [
+  "fake-user",
+  "fake-pass-SENTINEL",
+  LEAK_QUERY,
+  LEAK_FRAGMENT,
+  "evil.example",
+  "?token=",
+];
+
+function expectRedactedLocalhostError(text: string): void {
+  for (const s of LEAK_FRAGMENTS) expect(text).not.toContain(s);
+  expect(text).toContain("localhost");
+  expect(text).toContain("refusing to send credentials off-machine");
+}
+
+for (const surfaceName of ["v1", "v2", "mcp"] as const) {
+  describe(`bus_registry rejected baseUrl redaction via ${surfaceName}`, () => {
+    for (const url of LEAKY_URLS) {
+      test(`create with ${new URL(url).protocol} userinfo/query/fragment URL: redacted actionable error, state unchanged`, async () => {
+        const surface = await makeSurface(surfaceName);
+        const paths = await seed(surface);
+        const before = state();
+        const out = await surface.call({
+          action: "create",
+          name: "leaky",
+          path: paths.created,
+          server: { baseUrl: url },
+        });
+        expect(out.ok).toBe(false);
+        expectRedactedLocalhostError(out.text);
         expect(state()).toEqual(before);
       });
     }
