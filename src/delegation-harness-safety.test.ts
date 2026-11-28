@@ -210,16 +210,12 @@ describe("createLoopbackHttp: a run-local client that enforces the destination a
     }
   });
 
-  test.each([
-    0,
-    80,
-    1023,
-    65536,
-    1.5,
-    Number.NaN,
-  ])("allow(%p) is rejected", (port) => {
-    expect(() => createLoopbackHttp().allow(port)).toThrow();
-  });
+  test.each([0, 80, 1023, 65536, 1.5, Number.NaN])(
+    "allow(%p) is rejected",
+    (port) => {
+      expect(() => createLoopbackHttp().allow(port)).toThrow();
+    },
+  );
 
   test("control: a listed loopback port is reached and its JSON returned", async () => {
     const l = listener(() => Response.json({ hello: "synthetic" }));
@@ -709,13 +705,12 @@ describe("wiring: the discovery file never decides the destination", () => {
 });
 
 describe("isSafeSessionId: a network-derived id is a path segment, nothing else", () => {
-  test.each([
-    "ses_abc123",
-    "ses_ABCdef0123456789",
-    "a-b_c",
-  ])("control: %s is accepted", (id) => {
-    expect(isSafeSessionId(id)).toBe(true);
-  });
+  test.each(["ses_abc123", "ses_ABCdef0123456789", "a-b_c"])(
+    "control: %s is accepted",
+    (id) => {
+      expect(isSafeSessionId(id)).toBe(true);
+    },
+  );
   test.each([
     "",
     "../x",
