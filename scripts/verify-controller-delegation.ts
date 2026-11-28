@@ -360,63 +360,256 @@ function installHosts(iso: Iso, tarballFile: string, tarballIntegrity: string) {
 // Host processes
 // ---------------------------------------------------------------------------
 
+/**
+ * `portClosed` is `true`/`false` only for a port this harness reserved and
+ * probed. `null` means the port was NOT CHECKED (none is known, or it is not a
+ * reserved one): that is "unknown", never "verified closed".
+ */
+export type KillResult = { stopped: boolean; portClosed: boolean | null };
+
 type Proc = {
   child: ChildProcess;
   bin: string;
   port: number;
-  stop: () => Promise<{ stopped: boolean; portClosed: boolean }>;
+  stop: () => Promise<KillResult>;
 };
 
+/**
+ * The process/port operations killChecked needs, injectable so the safety
+ * logic is testable without real processes. `command`/`groupMembers` return
+ * `undefined` when `ps` itself failed (distinct from "no such process", which
+ * is `""` / `[]`), because a failed inspection must never read as "gone".
+ */
+export type KillSeams = {
+  command: (pid: number) => string | undefined;
+  groupMembers: (pgid: number) => number[] | undefined;
+  signal: (target: number, sig: NodeJS.Signals) => void;
+  sleep: (ms: number) => Promise<void>;
+  portOpen: (port: number) => Promise<boolean>;
+};
+
+const PS_ENV = { PATH: "/bin:/usr/bin" };
+
+/** `""` when the pid does not exist, `undefined` when `ps` itself failed. */
+function inspectCommand(pid: number): string | undefined {
+  const r = spawnSync("/bin/ps", ["-o", "command=", "-p", String(pid)], {
+    env: PS_ENV,
+  });
+  if (r.error || r.signal) return undefined;
+  const out = r.stdout.toString().trim();
+  if (r.status === 0) return out;
+  // BSD ps exits 1 with no output and no diagnostic for a pid that is gone.
+  return r.status === 1 && out.length === 0 && r.stderr.length === 0
+    ? ""
+    : undefined;
+}
+
 function psCommand(pid: number): string {
-  return spawnSync("/bin/ps", ["-o", "command=", "-p", String(pid)], {
-    env: { PATH: "/bin:/usr/bin" },
-  })
-    .stdout.toString()
-    .trim();
+  return inspectCommand(pid) ?? "";
 }
 
 /** pids whose process group is `pgid` (this run's detached managed target). */
-function groupMembers(pgid: number): number[] {
-  return spawnSync("/bin/ps", ["-axo", "pid=,pgid="], {
-    env: { PATH: "/bin:/usr/bin" },
-  })
-    .stdout.toString()
+function inspectGroupMembers(pgid: number): number[] | undefined {
+  const r = spawnSync("/bin/ps", ["-axo", "pid=,pgid="], { env: PS_ENV });
+  if (r.error || r.signal || r.status !== 0) return undefined;
+  return r.stdout
+    .toString()
     .split("\n")
     .map((l) => l.trim().split(/\s+/).map(Number))
-    .filter((c) => c[1] === pgid && typeof c[0] === "number")
+    .filter(
+      (c) => c[1] === pgid && Number.isInteger(c[0]) && (c[0] as number) > 0,
+    )
     .map((c) => c[0] as number);
 }
+
+const realKillSeams: KillSeams = {
+  command: inspectCommand,
+  groupMembers: inspectGroupMembers,
+  signal: (target, sig) => {
+    try {
+      process.kill(target, sig);
+    } catch (e) {
+      // Gone between the identity check and the signal: that is the goal.
+      if ((e as NodeJS.ErrnoException).code !== "ESRCH") throw e;
+    }
+  },
+  sleep: async (ms) => {
+    await sleep(ms);
+  },
+  portOpen,
+};
 
 /**
  * Signals only a process whose command line contains `mustContain` (a path
  * inside this run's work dir). With `group`, the whole process group is
  * signalled, but only after checking that the pid really leads it and that
- * every member's command line is also inside this run's work dir.
+ * every member's command line is also inside this run's work dir. If `ps`
+ * cannot be read, nothing is signalled and the process is not claimed stopped.
+ *
+ * Reaping is independent of port verification. `port` is only for a port this
+ * harness reserved; with none (`undefined`) the result says `portClosed: null`
+ * (not checked). A port the guard refuses to probe is also "not checked", not
+ * "closed" and not a throw.
  */
-async function killChecked(
+export async function killChecked(
   pid: number,
   mustContain: string,
-  port: number,
+  port: number | undefined,
   group = false,
-): Promise<{ stopped: boolean; portClosed: boolean }> {
-  const members = () => (group ? groupMembers(pid) : [pid]);
-  const alive = () => members().some((m) => psCommand(m).length > 0);
-  const safe = () =>
-    members()
-      .filter((m) => psCommand(m).length > 0)
-      .every((m) => psCommand(m).includes(mustContain)) &&
-    (!group || members().includes(pid));
-  const send = (sig: NodeJS.Signals) => process.kill(group ? -pid : pid, sig);
-  if (alive() && safe()) {
+  seams: KillSeams = realKillSeams,
+): Promise<KillResult> {
+  type Look = { live: string[]; members: number[] };
+  const look = (): Look | undefined => {
+    const members = group ? seams.groupMembers(pid) : [pid];
+    if (!members) return undefined;
+    const live: string[] = [];
+    for (const m of members) {
+      const c = seams.command(m);
+      if (c === undefined) return undefined;
+      if (c.length > 0) live.push(c);
+    }
+    return { live, members };
+  };
+  const safe = (l: Look) =>
+    l.live.every((c) => c.includes(mustContain)) &&
+    (!group || l.members.includes(pid));
+  const send = (sig: NodeJS.Signals) => seams.signal(group ? -pid : pid, sig);
+  const wait = async (l: Look | undefined, polls: number) => {
+    for (let i = 0; i < polls && l && l.live.length > 0; i++) {
+      await seams.sleep(250);
+      l = look();
+    }
+    return l;
+  };
+
+  let l = look();
+  if (l && l.live.length > 0 && safe(l)) {
     send("SIGTERM");
-    for (let i = 0; i < 40 && alive(); i++) await sleep(250);
-    if (alive() && safe()) {
+    l = await wait(l, 40);
+    if (l && l.live.length > 0 && safe(l)) {
       send("SIGKILL");
-      for (let i = 0; i < 20 && alive(); i++) await sleep(250);
+      await wait(l, 20);
     }
   }
-  await sleep(200);
-  return { stopped: !alive(), portClosed: !(await portOpen(port)) };
+  await seams.sleep(200);
+  const last = look();
+  const portClosed =
+    port === undefined
+      ? null
+      : await seams.portOpen(port).then(
+          (open) => !open,
+          () => null,
+        );
+  return { stopped: last !== undefined && last.live.length === 0, portClosed };
+}
+
+/** pid + command lines from `ps -axo pid=,command=`; `undefined` if ps failed. */
+function scanProcesses(): string | undefined {
+  const r = spawnSync("/bin/ps", ["-axo", "pid=,command="], { env: PS_ENV });
+  return r.error || r.signal || r.status !== 0
+    ? undefined
+    : r.stdout.toString();
+}
+
+/** A teardown entry counts only if it is a clean zero or a verified stop. */
+export function teardownOk(teardown: Record<string, unknown>): boolean {
+  return Object.values(teardown).every((v) =>
+    typeof v === "number"
+      ? v === 0
+      : (v as { stopped?: boolean; portClosed?: boolean | null }).stopped ===
+          true && (v as { portClosed?: boolean | null }).portClosed === true,
+  );
+}
+
+/**
+ * Anything still running from this run's private target install is ours (the
+ * path is inside this run's work dir): reap it, one target at a time, each in
+ * isolation. A pid that is init, this process or not a positive integer is
+ * never handed to `reap`; it counts as a failure.
+ */
+async function reapLeaked(
+  workDir: string,
+  lines: string[],
+  reap: (pid: number) => Promise<KillResult>,
+): Promise<{ leaked: number; reapFailures: number }> {
+  const dir = `${workDir}/hosts/target/`;
+  let leaked = 0;
+  let reapFailures = 0;
+  for (const line of lines) {
+    const m = /^\s*(\d+)\s+(.*)$/.exec(line);
+    if (!m?.[2]?.includes(dir) || !m[2].includes(" serve ")) continue;
+    leaked++;
+    const pid = Number(m[1]);
+    if (!Number.isSafeInteger(pid) || pid <= 1 || pid === process.pid) {
+      reapFailures++;
+      continue;
+    }
+    try {
+      if (!(await reap(pid)).stopped) reapFailures++;
+    } catch {
+      reapFailures++;
+    }
+  }
+  return { leaked, reapFailures };
+}
+
+const errText = (e: unknown) => String(e);
+
+/**
+ * Every teardown step is isolated: a throw in one stop, the fixture close, the
+ * leak sweep or a single leaked target is recorded against that step and the
+ * rest still run. Nothing here throws, so the caller always reaches the
+ * summary. A failed `ps` scan or an unreapable leak is recorded as a failure
+ * count, never as a clean zero.
+ *
+ *  - `procs` stop in reverse start order (without being mutated);
+ *  - leaked targets under `workDir`/hosts/target/ are process-only reaped via
+ *    `reap` (they own no reserved port; pass none);
+ *  - a pid that is init, this process or not a positive integer is never handed
+ *    to `reap`; it is recorded as a failure.
+ */
+export async function runTeardown(input: {
+  procs: ReadonlyArray<{ label: string; stop: () => Promise<KillResult> }>;
+  closeFixture: () => Promise<void> | undefined;
+  workDir: string;
+  scan: () => string | undefined;
+  reap: (pid: number) => Promise<KillResult>;
+}): Promise<{ teardown: Record<string, unknown>; ok: boolean }> {
+  const teardown: Record<string, unknown> = {};
+  for (const p of [...input.procs].reverse()) {
+    try {
+      teardown[p.label] = await p.stop();
+    } catch (e) {
+      teardown[p.label] = { error: errText(e) };
+    }
+  }
+  try {
+    await input.closeFixture();
+  } catch (e) {
+    teardown["fixtureClose"] = { error: errText(e) };
+  }
+  let scanFailures = 0;
+  const scanLines = (): string[] | undefined => {
+    try {
+      const out = input.scan();
+      if (out !== undefined) return out.split("\n");
+    } catch {
+      // recorded below
+    }
+    scanFailures++;
+    return undefined;
+  };
+  const { leaked, reapFailures } = await reapLeaked(
+    input.workDir,
+    scanLines() ?? [],
+    input.reap,
+  );
+  teardown["reapedLeakedTargets"] = leaked;
+  teardown["reapFailures"] = reapFailures;
+  const stray = (scanLines() ?? []).filter((l) => l.includes(input.workDir));
+  teardown["strayProcessesUnderWorkDir"] = stray.length;
+  teardown["scanFailures"] = scanFailures;
+  return { teardown, ok: teardownOk(teardown) };
 }
 
 async function startHost(
@@ -1106,6 +1299,8 @@ export function projectTeardown(t: Record<string, unknown>) {
             ? {
                 stopped: v["stopped"] === true,
                 portClosed: v["portClosed"] === true,
+                // null = the port was not probed: unknown, not "closed"
+                ...(v["portClosed"] === null ? { portChecked: false } : {}),
               }
             : OTHER,
     ]),
@@ -2750,7 +2945,7 @@ async function main(): Promise<number> {
         label: "target-mgd (plugin-spawned)",
         port: mgdHostPort,
         stop: () =>
-          killChecked(discovery.pid, hosts.targetBin, mgdHostPort, true),
+          killChecked(discovery.pid, hosts.targetBin, managedPort, true),
       });
     }
     const targets: Record<
@@ -3024,45 +3219,16 @@ async function main(): Promise<number> {
         (e as Error).message.slice(0, 300),
       );
   } finally {
-    for (const p of procs.reverse()) {
-      try {
-        teardown[p.label] = await p.stop();
-      } catch (e) {
-        teardown[p.label] = { error: String(e) };
-      }
-    }
-    await fixture?.close();
-    // Anything still running from this run's private target install is ours
-    // (the path is inside this run's work dir); reap it and count it as a leak.
-    const reaped: number[] = [];
-    for (const line of spawnSync("/bin/ps", ["-axo", "pid=,command="], {
-      env: { PATH: "/bin:/usr/bin" },
-    })
-      .stdout.toString()
-      .split("\n")) {
-      const m = /^\s*(\d+)\s+(.*)$/.exec(line);
-      if (
-        m?.[2]?.includes(`${iso.work}/hosts/target/`) &&
-        m[2].includes(" serve ")
-      ) {
-        await killChecked(Number(m[1]), `${iso.work}/hosts/target/`, 0);
-        reaped.push(Number(m[1]));
-      }
-    }
-    teardown["reapedLeakedTargets"] = reaped.length;
-    const stray = spawnSync("/bin/ps", ["-axo", "pid=,command="], {
-      env: { PATH: "/bin:/usr/bin" },
-    })
-      .stdout.toString()
-      .split("\n")
-      .filter((l) => l.includes(iso.work));
-    teardown["strayProcessesUnderWorkDir"] = stray.length;
-    const tdOk = Object.values(teardown).every((v) =>
-      typeof v === "number"
-        ? v === 0
-        : (v as { stopped?: boolean; portClosed?: boolean }).stopped === true &&
-          (v as { portClosed?: boolean }).portClosed === true,
-    );
+    const td = await runTeardown({
+      procs,
+      closeFixture: () => fixture?.close(),
+      workDir: iso.work,
+      scan: scanProcesses,
+      // Process-only: these leaks own no reserved port, so none is named.
+      reap: (pid) => killChecked(pid, `${iso.work}/hosts/target/`, undefined),
+    });
+    Object.assign(teardown, td.teardown);
+    const tdOk = td.ok;
     check(
       "harness",
       "teardown: every host process this run started is gone and its port closed; no stray under the work dir",

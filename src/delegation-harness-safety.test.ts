@@ -22,8 +22,12 @@ import {
   destinationProblem,
   errorCategory,
   fatalCategory,
+  finalizeOutcome,
   type HarnessKnown,
   isSafeSessionId,
+  type KillResult,
+  type KillSeams,
+  killChecked,
   type ProbeRun,
   parseManagedDiscovery,
   projectCheckEvidence,
@@ -41,10 +45,13 @@ import {
   renderFlowLog,
   renderPreflightLog,
   renderSelfTestLog,
+  runTeardown,
   summarize,
+  teardownOk,
   transportFailure,
   verifyManagedDiscovery,
 } from "../scripts/verify-controller-delegation";
+import { portOpen } from "../scripts/verify-host-matrix";
 
 const FAKE_PW = "synthetic-nonsecret-pw-0001";
 
@@ -203,12 +210,16 @@ describe("createLoopbackHttp: a run-local client that enforces the destination a
     }
   });
 
-  test.each([0, 80, 1023, 65536, 1.5, Number.NaN])(
-    "allow(%p) is rejected",
-    (port) => {
-      expect(() => createLoopbackHttp().allow(port)).toThrow();
-    },
-  );
+  test.each([
+    0,
+    80,
+    1023,
+    65536,
+    1.5,
+    Number.NaN,
+  ])("allow(%p) is rejected", (port) => {
+    expect(() => createLoopbackHttp().allow(port)).toThrow();
+  });
 
   test("control: a listed loopback port is reached and its JSON returned", async () => {
     const l = listener(() => Response.json({ hello: "synthetic" }));
@@ -698,12 +709,13 @@ describe("wiring: the discovery file never decides the destination", () => {
 });
 
 describe("isSafeSessionId: a network-derived id is a path segment, nothing else", () => {
-  test.each(["ses_abc123", "ses_ABCdef0123456789", "a-b_c"])(
-    "control: %s is accepted",
-    (id) => {
-      expect(isSafeSessionId(id)).toBe(true);
-    },
-  );
+  test.each([
+    "ses_abc123",
+    "ses_ABCdef0123456789",
+    "a-b_c",
+  ])("control: %s is accepted", (id) => {
+    expect(isSafeSessionId(id)).toBe(true);
+  });
   test.each([
     "",
     "../x",
@@ -1100,5 +1112,389 @@ describe("console log rendering is categorical too: raw host content is not echo
         expect(call).not.toMatch(/JSON\.stringify\((selfTest|preflight|f\b)/);
       }
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Teardown: process-only reaping vs. port-closure verification
+// ---------------------------------------------------------------------------
+
+describe("killChecked: identity-checked reaping is separate from port verification", () => {
+  const DIR = "/work/hosts/target/";
+  type Fake = { cmd: string; pgid: number };
+
+  /** An in-memory process table behind the same seams the real code uses. */
+  function fakeOs(
+    initial: Record<number, Fake>,
+    opts: {
+      ignoreTerm?: boolean;
+      psFails?: boolean;
+      denySignal?: ReadonlySet<number>;
+    } = {},
+  ) {
+    const table = new Map<number, Fake>(
+      Object.entries(initial).map(([k, v]) => [Number(k), v]),
+    );
+    const signals: Array<[number, string]> = [];
+    const portProbes: number[] = [];
+    const seams: KillSeams = {
+      command: (pid) =>
+        opts.psFails ? undefined : (table.get(pid)?.cmd ?? ""),
+      groupMembers: (pgid) =>
+        opts.psFails
+          ? undefined
+          : [...table].filter(([, v]) => v.pgid === pgid).map(([p]) => p),
+      signal: (target, sig) => {
+        signals.push([target, sig]);
+        if (opts.denySignal?.has(Math.abs(target)))
+          throw Object.assign(new Error("EPERM"), { code: "EPERM" });
+        if (sig === "SIGTERM" && opts.ignoreTerm) return;
+        const gone =
+          target < 0
+            ? [...table].filter(([, v]) => v.pgid === -target).map(([p]) => p)
+            : [target];
+        for (const p of gone) table.delete(p);
+      },
+      sleep: async () => {},
+      portOpen: async (port) => {
+        portProbes.push(port);
+        return false;
+      },
+    };
+    return { table, signals, portProbes, seams };
+  }
+  const host = (pid: number, extra = ""): Fake => ({
+    cmd: `${DIR}bin serve${extra}`,
+    pgid: pid,
+  });
+
+  test("no known port: the verified process is reaped, no port is probed, and the port is reported not checked", async () => {
+    const os = fakeOs({ 101: host(101) });
+    const r = await killChecked(101, DIR, undefined, false, os.seams);
+    expect(r).toEqual({ stopped: true, portClosed: null });
+    expect(os.signals).toEqual([[101, "SIGTERM"]]);
+    expect(os.portProbes).toEqual([]);
+  });
+
+  test("a real reserved port is still verified closed (or reported open)", async () => {
+    const os = fakeOs({ 101: host(101) });
+    expect(await killChecked(101, DIR, 4242, false, os.seams)).toEqual({
+      stopped: true,
+      portClosed: true,
+    });
+    expect(os.portProbes).toEqual([4242]);
+    const open = fakeOs({ 101: host(101) });
+    open.seams.portOpen = async () => true;
+    expect(
+      (await killChecked(101, DIR, 4242, false, open.seams)).portClosed,
+    ).toBe(false);
+  });
+
+  test("the port guard stays intact: an unreserved port is not probed and reports not checked instead of throwing", async () => {
+    const os = fakeOs({ 101: host(101) });
+    const r = await killChecked(101, DIR, 0, false, {
+      ...os.seams,
+      portOpen,
+    });
+    expect(r).toEqual({ stopped: true, portClosed: null });
+  });
+
+  test("a stubborn process gets SIGKILL after SIGTERM", async () => {
+    const os = fakeOs({ 101: host(101) }, { ignoreTerm: true });
+    const r = await killChecked(101, DIR, undefined, false, os.seams);
+    expect(r.stopped).toBe(true);
+    expect(os.signals).toEqual([
+      [101, "SIGTERM"],
+      [101, "SIGKILL"],
+    ]);
+  });
+
+  test("a process whose command line is not inside the work dir is never signalled", async () => {
+    const os = fakeOs({ 101: { cmd: "/usr/bin/other serve", pgid: 101 } });
+    const r = await killChecked(101, DIR, undefined, false, os.seams);
+    expect(os.signals).toEqual([]);
+    expect(r.stopped).toBe(false);
+  });
+
+  test("a failed ps inspection is not 'gone': nothing is signalled and stopped is not claimed", async () => {
+    const os = fakeOs({ 101: host(101) }, { psFails: true });
+    const r = await killChecked(101, DIR, undefined, false, os.seams);
+    expect(os.signals).toEqual([]);
+    expect(r.stopped).toBe(false);
+  });
+
+  test("group: signalled only when the pid leads it and every member is inside the work dir", async () => {
+    const ok = fakeOs({
+      101: host(101),
+      102: { cmd: `${DIR}child`, pgid: 101 },
+    });
+    expect((await killChecked(101, DIR, 4242, true, ok.seams)).stopped).toBe(
+      true,
+    );
+    expect(ok.signals).toEqual([[-101, "SIGTERM"]]);
+
+    const foreign = fakeOs({
+      101: host(101),
+      102: { cmd: "/usr/bin/foreign", pgid: 101 },
+    });
+    expect(
+      (await killChecked(101, DIR, 4242, true, foreign.seams)).stopped,
+    ).toBe(false);
+    expect(foreign.signals).toEqual([]);
+
+    const notLeader = fakeOs({ 102: { cmd: `${DIR}child`, pgid: 101 } });
+    await killChecked(101, DIR, 4242, true, notLeader.seams);
+    expect(notLeader.signals).toEqual([]);
+  });
+});
+
+describe("runTeardown: one failed cleanup never skips the rest or the summary", () => {
+  const WORK = "/work";
+  const DIR = `${WORK}/hosts/target/`;
+  type Fake = { cmd: string; pgid: number };
+
+  function leakedOs(
+    pids: number[],
+    opts: { denySignal?: ReadonlySet<number>; psFails?: boolean } = {},
+  ) {
+    const table = new Map<number, Fake>(
+      pids.map((p) => [p, { cmd: `${DIR}bin serve --port ${p}`, pgid: p }]),
+    );
+    const signals: Array<[number, string]> = [];
+    const portProbes: number[] = [];
+    const seams: KillSeams = {
+      command: (pid) =>
+        opts.psFails ? undefined : (table.get(pid)?.cmd ?? ""),
+      groupMembers: () => [],
+      signal: (target, sig) => {
+        signals.push([target, sig]);
+        if (opts.denySignal?.has(target))
+          throw Object.assign(new Error("EPERM"), { code: "EPERM" });
+        table.delete(target);
+      },
+      sleep: async () => {},
+      portOpen: async (port) => {
+        portProbes.push(port);
+        return false;
+      },
+    };
+    const scan = () =>
+      opts.psFails
+        ? undefined
+        : [...table].map(([p, v]) => `  ${p} ${v.cmd}`).join("\n");
+    const reap = (pid: number) =>
+      killChecked(pid, DIR, undefined, false, seams);
+    return { table, signals, portProbes, scan, reap };
+  }
+
+  const okStop = (log: string[], label: string) => async () => {
+    log.push(label);
+    return { stopped: true, portClosed: true } satisfies KillResult;
+  };
+
+  test("a throwing stop, a throwing reap and an unkillable leak: later targets, fixture close and the sweep still run, the run is invalid, and the summary is still persisted", async () => {
+    const os = leakedOs([201, 202, 203], { denySignal: new Set([201]) });
+    const order: string[] = [];
+    let fixtureClosed = false;
+    const out = await runTeardown({
+      procs: [
+        { label: "target-ext", stop: okStop(order, "target-ext") },
+        {
+          label: "controller",
+          stop: async () => {
+            order.push("controller");
+            throw new Error("stop failed");
+          },
+        },
+        { label: "target-mgd", stop: okStop(order, "target-mgd") },
+      ],
+      closeFixture: async () => {
+        fixtureClosed = true;
+      },
+      workDir: WORK,
+      scan: os.scan,
+      reap: os.reap,
+    });
+
+    // every stop was attempted, in reverse start order, despite the throw
+    expect(order).toEqual(["target-mgd", "controller", "target-ext"]);
+    expect(fixtureClosed).toBe(true);
+    // the zero-port probe is gone, and the later leaked targets were reaped
+    expect(os.portProbes).toEqual([]);
+    expect(os.signals).toEqual([
+      [201, "SIGTERM"],
+      [202, "SIGTERM"],
+      [203, "SIGTERM"],
+    ]);
+    expect(out.teardown["controller"]).toEqual({ error: "Error: stop failed" });
+    expect(out.teardown["reapedLeakedTargets"]).toBe(3);
+    expect(out.teardown["reapFailures"]).toBe(1);
+    expect(out.teardown["strayProcessesUnderWorkDir"]).toBe(1);
+    expect(out.ok).toBe(false);
+    expect(teardownOk(out.teardown)).toBe(false);
+
+    // invalid harness -> exit 1, summary still attempted, work dir retained
+    const summary = summarize({
+      checks: [
+        { name: "teardown", kind: "harness", mode: "external", ok: out.ok },
+      ],
+      preflight: { available: true },
+      preflightOnly: false,
+      modeArg: "external",
+    });
+    let wrote = 0;
+    const outcome = finalizeOutcome({
+      exit: summary.exit,
+      keep: false,
+      ownWorkDir: true,
+      externalStatus: summary.externalStatus,
+      managedStatus: summary.managedStatus,
+      writeSummary: () => {
+        wrote++;
+      },
+    });
+    expect(summary.exit).toBe(1);
+    expect(wrote).toBe(1);
+    expect(outcome.summaryPersisted).toBe(true);
+    expect(outcome.removeWorkDir).toBe(false);
+  });
+
+  test("a leaked pid whose identity does not check out (recycled) is never signalled and invalidates the run", async () => {
+    const os = leakedOs([]);
+    // ps listed it under the work dir, but the pid now belongs to something else
+    os.table.set(301, { cmd: "/usr/bin/foreign serve", pgid: 301 });
+    const out = await runTeardown({
+      procs: [],
+      closeFixture: async () => {},
+      workDir: WORK,
+      scan: () => `  301 ${DIR}bin serve --port 1`,
+      reap: os.reap,
+    });
+    expect(os.signals).toEqual([]);
+    expect(out.teardown["reapFailures"]).toBe(1);
+    expect(out.ok).toBe(false);
+  });
+
+  test("a pid that is init or this process is never handed to the reaper", async () => {
+    const reaped: number[] = [];
+    const out = await runTeardown({
+      procs: [],
+      closeFixture: async () => {},
+      workDir: WORK,
+      scan: () =>
+        [
+          `  1 ${DIR}bin serve --port 1`,
+          `  ${process.pid} ${DIR}bin serve --port 1`,
+          `  0 ${DIR}bin serve --port 1`,
+        ].join("\n"),
+      reap: async (pid) => {
+        reaped.push(pid);
+        return { stopped: true, portClosed: null };
+      },
+    });
+    expect(reaped).toEqual([]);
+    expect(out.teardown["reapFailures"]).toBe(3);
+    expect(out.ok).toBe(false);
+  });
+
+  test("a failed ps scan is invalid, never a clean 'nothing leaked'", async () => {
+    const os = leakedOs([], { psFails: true });
+    const out = await runTeardown({
+      procs: [],
+      closeFixture: async () => {},
+      workDir: WORK,
+      scan: os.scan,
+      reap: os.reap,
+    });
+    expect(out.teardown["scanFailures"]).toBe(2);
+    expect(out.ok).toBe(false);
+  });
+
+  test("a throwing scan seam is isolated too", async () => {
+    const out = await runTeardown({
+      procs: [],
+      closeFixture: async () => {},
+      workDir: WORK,
+      scan: () => {
+        throw new Error("spawn failed");
+      },
+      reap: async () => ({ stopped: true, portClosed: null }),
+    });
+    expect(out.teardown["scanFailures"]).toBe(2);
+    expect(out.ok).toBe(false);
+  });
+
+  test("a throwing fixture close does not skip the sweep and is invalid", async () => {
+    const os = leakedOs([]);
+    let scans = 0;
+    const out = await runTeardown({
+      procs: [],
+      closeFixture: async () => {
+        throw new Error("close failed");
+      },
+      workDir: WORK,
+      scan: () => {
+        scans++;
+        return os.scan() ?? "";
+      },
+      reap: os.reap,
+    });
+    expect(scans).toBe(2);
+    expect(out.teardown["fixtureClose"]).toEqual({
+      error: "Error: close failed",
+    });
+    expect(out.ok).toBe(false);
+  });
+
+  test("a clean run stays clean", async () => {
+    const os = leakedOs([]);
+    const order: string[] = [];
+    const out = await runTeardown({
+      procs: [{ label: "target-ext", stop: okStop(order, "target-ext") }],
+      closeFixture: async () => {},
+      workDir: WORK,
+      scan: os.scan,
+      reap: os.reap,
+    });
+    expect(out.ok).toBe(true);
+    expect(out.teardown).toEqual({
+      "target-ext": { stopped: true, portClosed: true },
+      reapedLeakedTargets: 0,
+      reapFailures: 0,
+      scanFailures: 0,
+      strayProcessesUnderWorkDir: 0,
+    });
+  });
+
+  test("a real reserved port that was not verified closed is not a clean teardown", async () => {
+    const os = leakedOs([]);
+    const out = await runTeardown({
+      procs: [
+        {
+          label: "target-mgd",
+          stop: async () => ({ stopped: true, portClosed: null }),
+        },
+      ],
+      closeFixture: async () => {},
+      workDir: WORK,
+      scan: os.scan,
+      reap: os.reap,
+    });
+    expect(out.ok).toBe(false);
+    expect(projectTeardown(out.teardown)["target-mgd"]).toEqual({
+      stopped: true,
+      portClosed: false,
+      portChecked: false,
+    });
+  });
+
+  test("wiring: main() uses runTeardown, and no fallback reap names port 0", () => {
+    const src = readFileSync(
+      new URL("../scripts/verify-controller-delegation.ts", import.meta.url),
+      "utf8",
+    );
+    expect(src).toContain("await runTeardown({");
+    expect(src).not.toMatch(/killChecked\([^;]*,\s*0\s*\)/);
+    expect(src).not.toContain("procs.reverse()");
   });
 });
