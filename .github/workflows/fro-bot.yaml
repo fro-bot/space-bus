@@ -353,8 +353,7 @@ jobs:
         ) ||
         (
           github.event_name == 'pull_request' &&
-          !endsWith(github.event.pull_request.user.login || '', '[bot]') &&
-          (github.event.pull_request.user.login || '') != 'fro-bot'
+          !endsWith(github.event.pull_request.user.login || '', '[bot]')
         ) ||
         github.event_name == 'schedule' ||
         github.event_name == 'workflow_dispatch' ||
@@ -404,7 +403,7 @@ jobs:
 
       - name: Run Fro Bot
         id: fro-bot-agent
-        uses: fro-bot/agent@61388f23e4c0bd864b5f6dc05f460597c83a8093 # v0.150.0
+        uses: fro-bot/agent@96b57cf98b0bb51b6dd30f6b878cd01617a6bc2f # v0.151.0
         env:
           OPENCODE_PROMPT_ARTIFACT: "true"
           TASK_PROMPT: >-
@@ -420,12 +419,17 @@ jobs:
           trace-headers: "Authorization: Bearer ${{ secrets.FRO_BOT_TRACE_TOKEN }}"
           github-token: ${{ secrets.FRO_BOT_PAT }}
           auth-json: ${{ secrets.OPENCODE_AUTH_JSON }}
-          model: ${{ vars.FRO_BOT_MODEL }}
-          # The autoheal pass delivers fixes as branch + PR; the default (working-dir) discards them.
+          model: >-
+            ${{
+              (github.event_name == 'pull_request' && vars.FRO_BOT_MODEL_REVIEW)
+              || (github.event_name != 'pull_request' && vars.FRO_BOT_MODEL_ACT)
+              || vars.FRO_BOT_MODEL
+            }}
+          # The autoheal pass and dispatched prompts deliver fixes as branch + PR; the default (working-dir) discards them.
           # Empty everywhere else, which the action treats as unset.
           output-mode: >-
             ${{
-              (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.prompt == ''))
+              (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
               && 'branch-pr'
               || ''
             }}
