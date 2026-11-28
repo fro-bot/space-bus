@@ -152,6 +152,8 @@ Experimental subpath exports expose the bus's internals directly — the functio
 
 `@fro.bot/space-bus/server` is not a library entry: OpenCode's plugin loader reserves that subpath for the plugin itself, so it resolves to the plugin entry. Use `/managed-server` for the lifecycle API.
 
+If your code imports the default from `@fro.bot/space-bus` or `@fro.bot/space-bus/server`, replace `await plugin(input)` with `await plugin.server(input)`. The default export is now an object, not a function. `server(input)` returns the v1 tool hooks as before. If OpenCode loads the plugin for you, keep your existing plugin configuration. OpenCode v1 calls `server` and v2 calls `setup`.
+
 Node example (`/config` + `/core`):
 
 ```ts

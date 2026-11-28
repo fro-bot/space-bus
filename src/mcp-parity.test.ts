@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import SpaceBusPlugin from "./index";
+import { tool } from "@opencode-ai/plugin";
+import plugin from "./index";
+import { setupV2, type V2SetupContext } from "./plugin-v2";
 import { BUS_REGISTRY_DESCRIPTION } from "./tools/bus_registry";
 import { BUS_RESULT_DESCRIPTION } from "./tools/bus_result";
 import { BUS_ROSTER_DESCRIPTION } from "./tools/bus_roster";
@@ -17,6 +19,50 @@ const DESCRIPTIONS: Record<string, string> = {
   bus_wait: BUS_WAIT_DESCRIPTION,
   bus_registry: BUS_REGISTRY_DESCRIPTION,
 };
+
+const SpaceBusPlugin = plugin.server;
+
+describe("v1 <-> v2 registration parity", () => {
+  type V2Tool = { name: string; description: string; input: unknown };
+
+  async function v2Tools(): Promise<Map<string, V2Tool>> {
+    const callbacks: Array<(editor: { add(t: V2Tool): void }) => void> = [];
+    const ctx = {
+      location: { directory: "/tmp" },
+      tool: {
+        async transform(cb: (editor: { add(t: V2Tool): void }) => void) {
+          callbacks.push(cb);
+          return { dispose: async () => {} };
+        },
+      },
+    } as unknown as V2SetupContext;
+    await setupV2(ctx);
+    const tools = new Map<string, V2Tool>();
+    for (const cb of callbacks) cb({ add: (t) => tools.set(t.name, t) });
+    return tools;
+  }
+
+  test("both adapters expose the same names, descriptions and JSON Schema (incl. field descriptions)", async () => {
+    const hooks = await SpaceBusPlugin(
+      // biome-ignore lint: minimal stub, only `directory` is consumed
+      { directory: "/tmp" } as any,
+    );
+    const v1 = hooks.tool ?? {};
+    const v2 = await v2Tools();
+    expect([...v2.keys()].sort()).toEqual(Object.keys(v1).sort());
+    // Convert v1 args the way a v1 host does: with ITS zod (tool.schema, the
+    // copy bundled in the host SDK). The adapter's args are built by this
+    // package's newer zod, so a precise result relies on the per-field JSON
+    // Schema hook the adapter installs (plugin-v1.test.ts covers it in depth);
+    // equality with the v2 conversion proves nothing is dropped.
+    const z = tool.schema;
+    for (const [name, def] of Object.entries(v1)) {
+      const expected = z.toJSONSchema(z.object(def.args), { io: "input" });
+      expect(v2.get(name)?.description).toBe(def.description);
+      expect(v2.get(name)?.input).toEqual(expected);
+    }
+  });
+});
 
 describe("plugin factory <-> description constant parity", () => {
   test("factory produces exactly the six tools, each matching its description constant", async () => {
@@ -135,11 +181,13 @@ describe("plugin factory <-> description constant parity", () => {
 });
 
 describe("roster param + MCP inputSchema parity (Unit 4)", () => {
-  test("mcp.ts declares a ROSTER_PARAM_SCHEMA reused across all five inputSchemas", () => {
+  test("mcp.ts declares one ROSTER_PARAM_SCHEMA, applied to every factory-built inputSchema", () => {
     const mcpSource = readFileSync(join(__dirname, "mcp.ts"), "utf8");
     expect(mcpSource).toContain("ROSTER_PARAM_SCHEMA");
+    // One registration loop over makeBusContextTools, not five hand-written
+    // inputSchemas (src/mcp-handlers.test.ts asserts the resulting schemas).
     const usages = mcpSource.match(/roster: ROSTER_PARAM_SCHEMA/g);
-    expect(usages).toHaveLength(5);
+    expect(usages).toHaveLength(1);
   });
 });
 
@@ -156,45 +204,42 @@ function isOptionalZod(schema: unknown): boolean {
 }
 
 describe("bus_task metadata parity", () => {
-  test("both surfaces derive dispatch metadata via the shared dispatchMetadata helper", () => {
+  test("dispatchMetadata is derived once, in the shared bus_task factory; mcp.ts forwards it as structuredContent", () => {
     const mcpSource = readFileSync(join(__dirname, "mcp.ts"), "utf8");
     const busTaskSource = readFileSync(
       join(__dirname, "tools", "bus_task.ts"),
       "utf8",
     );
-    expect(mcpSource).toContain("dispatchMetadata(r)");
     expect(busTaskSource).toContain("dispatchMetadata(r)");
+    expect(mcpSource).not.toContain("dispatchMetadata");
+    expect(mcpSource).toContain("structuredContent");
   });
 });
 
 describe("mcp.ts source-text parity guard", () => {
   const mcpSource = readFileSync(join(__dirname, "mcp.ts"), "utf8");
 
-  test("references each BUS_*_DESCRIPTION identifier", () => {
-    expect(mcpSource).toContain("BUS_ROSTER_DESCRIPTION");
-    expect(mcpSource).toContain("BUS_TASK_DESCRIPTION");
-    expect(mcpSource).toContain("BUS_STATUS_DESCRIPTION");
-    expect(mcpSource).toContain("BUS_RESULT_DESCRIPTION");
-    expect(mcpSource).toContain("BUS_WAIT_DESCRIPTION");
-    expect(mcpSource).toContain("BUS_REGISTRY_DESCRIPTION");
+  test("five roster-bearing tools come from the shared factories; mcp.ts does not reimplement core calls or output formatting", () => {
+    expect(mcpSource).toContain("makeBusContextTools(");
+    // Execution + output assembly live in tools/bus_*.ts. If mcp.ts imports
+    // core or the formatters again, the two surfaces can drift.
+    expect(mcpSource).not.toMatch(/from "\.\/core"/);
+    expect(mcpSource).not.toMatch(/from "\.\/format"/);
+    for (const description of [
+      "BUS_ROSTER_DESCRIPTION",
+      "BUS_TASK_DESCRIPTION",
+      "BUS_STATUS_DESCRIPTION",
+      "BUS_RESULT_DESCRIPTION",
+      "BUS_WAIT_DESCRIPTION",
+    ]) {
+      expect(mcpSource).not.toContain(description);
+    }
   });
 
-  test("registers exactly six server.registerTool( calls, one per bus tool", () => {
-    const matches = mcpSource.match(/server\.registerTool\(\s*\n?\s*"(\w+)"/g);
-    expect(matches).not.toBeNull();
-    expect(matches).toHaveLength(6);
-    const names = (matches ?? []).map((m) => {
-      const nameMatch = m.match(/"(\w+)"/);
-      return nameMatch?.[1];
-    });
-    expect(names.sort()).toEqual([
-      "bus_registry",
-      "bus_result",
-      "bus_roster",
-      "bus_status",
-      "bus_task",
-      "bus_wait",
-    ]);
+  test("bus_registry stays MCP-registered with its own schema and the shared description", () => {
+    expect(mcpSource).toContain("BUS_REGISTRY_DESCRIPTION");
+    expect(mcpSource).toContain("inputSchema: ACTION_SCHEMA");
+    expect(mcpSource).toContain("runBusRegistryAction(");
   });
 
   test("ensureServer is gated on SPACE_BUS_MCP_SPAWN — never called unconditionally", () => {
@@ -230,18 +275,13 @@ describe("mcp.ts source-text parity guard", () => {
     expect(outside).not.toContain("ensureServer(");
   });
 
-  test("all five roster-bearing handlers route through the shared mcpLoadContext helper, not loadContext() directly", () => {
-    // Every registerTool handler that resolves a roster (bus_roster,
-    // bus_task, bus_status, bus_result, bus_wait — bus_registry manages
-    // the registry itself and has no roster context to resolve) must call
-    // mcpLoadContext(), not loadContext() bare — otherwise the
-    // SPACE_BUS_MCP_SPAWN gate would be bypassed for that handler.
+  test("the factories' context resolver is mcpLoadContext, never a bare loadContext()", () => {
+    // Every roster-bearing tool must resolve through mcpLoadContext, or the
+    // SPACE_BUS_MCP_SPAWN gate would be bypassed for that tool.
     const bareLoadContextCalls = mcpSource.match(/[^.\w]loadContext\(\)/g);
     expect(bareLoadContextCalls).not.toBeNull();
-    // Only the one call inside mcpLoadContext() itself should invoke the
-    // bare loadContext().
+    // Only the one call inside mcpLoadContext() itself.
     expect(bareLoadContextCalls).toHaveLength(1);
-    const mcpLoadContextCalls = mcpSource.match(/mcpLoadContext\(/g);
-    expect(mcpLoadContextCalls?.length).toBeGreaterThanOrEqual(5);
+    expect(mcpSource).toMatch(/mcpLoadContext\(rosterName\)/);
   });
 });

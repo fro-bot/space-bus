@@ -7,17 +7,35 @@ import { join } from "node:path";
 // falling back to `main`. If that subpath ever points at the
 // managed-server lifecycle module (dist/server.js — a namespace with
 // non-function exports like SUPERVISE_FAILURE_THRESHOLD) instead of the
-// actual plugin entry (dist/index.js — a single default function), the
-// loader's V1 shape check throws "Plugin export is not a function" and
-// the whole plugin fails to load. This test emulates that resolution
-// step and asserts the resolved module has exactly the V1 shape OpenCode
-// requires. It also asserts the lifecycle API is reachable at its
-// relocated subpath, `./managed-server`.
+// actual plugin entry (dist/index.js — a single default export), the
+// loader's shape check rejects the module and the whole plugin fails to
+// load. The entry is now the dual-host object `{ id, server, setup }` (v1
+// hosts call `server`, v2 hosts call `setup`); it must stay the module's
+// ONLY export, because a v1 host handed a legacy function default runs every
+// named export as a plugin factory. This test emulates that resolution step
+// and asserts the resolved module has exactly that shape. It also asserts the
+// lifecycle API is reachable at its relocated subpath, `./managed-server`.
 //
 // Runs against real build output (mirrors version-injection.test.ts's
 // e2e pattern) so a `bun run build` regression is caught here too.
 
 const projectRoot = join(import.meta.dir, "..");
+
+/** The dual-host entry shape both loaders accept: one `default` export, an
+ * object with a stable id and the two native entry points. */
+function isDualHostEntry(mod: Record<string, unknown>): boolean {
+  const entries = Object.entries(mod);
+  if (entries.length !== 1 || entries[0]?.[0] !== "default") return false;
+  const def = mod["default"] as Record<string, unknown> | null;
+  return (
+    typeof def === "object" &&
+    def !== null &&
+    typeof def["id"] === "string" &&
+    (def["id"] as string).length > 0 &&
+    typeof def["server"] === "function" &&
+    typeof def["setup"] === "function"
+  );
+}
 
 function runBuild() {
   const bunPath = Bun.which("bun");
@@ -41,7 +59,7 @@ function runBuild() {
 }
 
 describe('plugin entry guard: exports["./server"] must resolve to the plugin entry', () => {
-  test("loader-resolved entry has exactly one enumerable export, default, a function", async () => {
+  test("loader-resolved entry has exactly one enumerable export, default, a {id, server, setup} object", async () => {
     if (!runBuild()) return;
 
     const pkg = JSON.parse(
@@ -58,7 +76,73 @@ describe('plugin entry guard: exports["./server"] must resolve to the plugin ent
 
     expect(entries.length).toBe(1);
     expect(entries[0]?.[0]).toBe("default");
-    expect(typeof mod.default).toBe("function");
+    expect(isDualHostEntry(mod)).toBe(true);
+    expect(Object.keys(mod.default).sort()).toEqual(["id", "server", "setup"]);
+  }, 60_000);
+
+  test("built entry and its declarations never reference the v1 peer; both entry points load with it unresolvable", async () => {
+    if (!runBuild()) return;
+
+    const built = readFileSync(join(projectRoot, "dist", "index.js"), "utf8");
+    // A static import (or re-export) of the peer would be hoisted and fail on a
+    // v2-only install before `setup` ever runs.
+    expect(built).not.toMatch(
+      /^\s*(import|export)\b[^\n;]*from\s*["']@opencode-ai\/plugin/m,
+    );
+    expect(built).not.toMatch(/^\s*import\s*["']@opencode-ai\/plugin/m);
+    // The v1 adapter is SDK-free: no dynamic import and no type reference to
+    // the peer survives into the bundle or the emitted declarations either.
+    expect(built).not.toMatch(/["']@opencode-ai\/plugin["'/]/);
+    const declarations = join(projectRoot, "dist", "plugin-v1.d.ts");
+    expect(existsSync(declarations)).toBe(true);
+    expect(readFileSync(declarations, "utf8")).not.toMatch(
+      /["']@opencode-ai\/plugin["'/]/,
+    );
+
+    // And behaviorally: resolve nothing from the peer, then drive the built
+    // entry through setup and a tool execute.
+    const script = `
+      import { plugin as bunPlugin } from "bun";
+      bunPlugin({
+        name: "block-v1-peer",
+        setup(build) {
+          // A virtual module that throws on load stands in for "peer absent".
+          build.module("@opencode-ai/plugin", () => {
+            throw new Error("V1_PEER_RESOLVED");
+          });
+        },
+      });
+      const { default: entry } = await import(${JSON.stringify(join(projectRoot, "dist", "index.js"))});
+      const added = [];
+      await entry.setup({
+        location: { directory: "/tmp" },
+        tool: { async transform(cb) { cb({ add: (t) => added.push(t) }); return { dispose: async () => {} }; } },
+      });
+      let failFast = "";
+      try { await added.find((t) => t.name === "bus_task").execute({ prompt: "x" }, {}); } catch (e) { failFast = e.message; }
+      let serverCount = 0;
+      let serverError = "";
+      try { serverCount = Object.keys((await entry.server({ directory: "/tmp" })).tool).length; } catch (e) { serverError = e.message; }
+      let controlError = "";
+      try { await import("@opencode-ai/plugin"); } catch (e) { controlError = e.message; }
+      console.log(JSON.stringify({ count: added.length, failFast, serverCount, serverError, controlError }));
+    `;
+    const proc = Bun.spawnSync(["bun", "-e", script], {
+      cwd: projectRoot,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(proc.stderr.toString()).toBe("");
+    expect(proc.exitCode).toBe(0);
+    expect(JSON.parse(proc.stdout.toString())).toEqual({
+      count: 6,
+      failFast: "space-bus: project is required when starting a new session",
+      // the v1 `server` entry loads and returns six tools without the peer ...
+      serverCount: 6,
+      serverError: "",
+      // ... and the blocker is live (resolving the peer directly fails).
+      controlError: "V1_PEER_RESOLVED",
+    });
   }, 60_000);
 
   test("negative control: dist/server.js fails the V1 shape check the loader applies", async () => {
@@ -66,17 +150,13 @@ describe('plugin entry guard: exports["./server"] must resolve to the plugin ent
 
     // The pre-fix exports map pointed exports["./server"] at dist/server.js.
     // Prove the guard's shape check actually discriminates: the lifecycle
-    // module's namespace must FAIL the exactly-one-default-function check
-    // (it exports functions plus numeric constants), i.e. re-pointing the
-    // subpath back would turn the positive test above red.
+    // module's namespace must FAIL the dual-host entry check (it exports
+    // functions plus numeric constants), i.e. re-pointing the subpath back
+    // would turn the positive test above red.
     const mod = await import(join(projectRoot, "./dist/server.js"));
     const entries = Object.entries(mod);
 
-    const passesV1Shape =
-      entries.length === 1 &&
-      entries[0]?.[0] === "default" &&
-      typeof mod.default === "function";
-    expect(passesV1Shape).toBe(false);
+    expect(isDualHostEntry(mod)).toBe(false);
     // Specifically because of non-function exports (the loader's actual trip):
     expect(entries.some(([, v]) => typeof v !== "function")).toBe(true);
   }, 60_000);
@@ -112,9 +192,6 @@ describe('plugin entry guard: exports["./server"] must resolve to the plugin ent
     // single-default-function resolution.
     const resolved: string = pkg.exports?.["./server"]?.import ?? pkg.main;
     const mod = await import(join(projectRoot, resolved));
-    const entries = Object.entries(mod);
-    expect(entries.length).toBe(1);
-    expect(entries[0]?.[0]).toBe("default");
-    expect(typeof mod.default).toBe("function");
+    expect(isDualHostEntry(mod)).toBe(true);
   }, 60_000);
 });

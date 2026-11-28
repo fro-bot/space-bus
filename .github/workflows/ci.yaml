@@ -51,8 +51,11 @@ jobs:
         run: |
           node --input-type=module -e "
             import('./dist/index.js').then(m => {
-              if (typeof m.default !== 'function') {
-                throw new Error('default export is not a function');
+              const entry = m.default;
+              if (Object.keys(m).length !== 1 || typeof entry !== 'object' ||
+                  entry?.id !== 'space-bus' || typeof entry.server !== 'function' ||
+                  typeof entry.setup !== 'function') {
+                throw new Error('expected a single default Space Bus plugin with server and setup entries');
               }
             });
           "

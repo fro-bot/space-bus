@@ -2,7 +2,77 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import SpaceBusPlugin from "./index";
+import plugin, * as entryModule from "./index";
+
+// v1 hosts call `server(input, options)`; the factory shape is unchanged.
+const SpaceBusPlugin = plugin.server;
+
+describe("default entry: host-free definition", () => {
+  test("the module's only export is the default object {id, server, setup}", () => {
+    expect(Object.keys(entryModule)).toEqual(["default"]);
+    expect(typeof plugin).toBe("object");
+    expect(Object.keys(plugin).sort()).toEqual(["id", "server", "setup"]);
+    expect(plugin.id).toBe("space-bus");
+    expect(typeof plugin.server).toBe("function");
+    expect(typeof plugin.setup).toBe("function");
+  });
+});
+
+describe("v1 server: directory resolution", () => {
+  const ORIGINAL_ENV = process.env["SPACE_BUS_CONFIG"];
+  const ORIGINAL_FETCH = globalThis.fetch;
+  const made: string[] = [];
+
+  function rosterDir(projectName: string): string {
+    const dir = mkdtempSync(join(tmpdir(), "space-bus-index-dir-"));
+    made.push(dir);
+    writeFileSync(
+      join(dir, "spacebus.json"),
+      JSON.stringify({
+        server: { baseUrl: "http://127.0.0.1:4096" },
+        projects: [{ name: projectName, path: dir, description: "d" }],
+      }),
+    );
+    return dir;
+  }
+
+  function restore(): void {
+    for (const d of made.splice(0)) rmSync(d, { recursive: true, force: true });
+    globalThis.fetch = ORIGINAL_FETCH;
+    if (ORIGINAL_ENV === undefined) delete process.env["SPACE_BUS_CONFIG"];
+    else process.env["SPACE_BUS_CONFIG"] = ORIGINAL_ENV;
+  }
+
+  test("per-call ctx.directory wins over the instance directory; instance directory is the fallback", async () => {
+    delete process.env["SPACE_BUS_CONFIG"];
+    globalThis.fetch = (async () =>
+      new Response("[]", { status: 404 })) as unknown as typeof fetch;
+    try {
+      const instanceDir = rosterDir("instance-project");
+      const callDir = rosterDir("call-project");
+      const hooks = await SpaceBusPlugin(
+        // biome-ignore lint: minimal stub, only `directory` is consumed
+        { directory: instanceDir } as any,
+      );
+      const busRoster = hooks.tool?.bus_roster;
+      const perCall = (await busRoster?.execute(
+        {},
+        // biome-ignore lint: minimal stub
+        { directory: callDir } as any,
+      )) as string;
+      expect(perCall).toContain("call-project");
+      expect(perCall).not.toContain("instance-project");
+      const fallback = (await busRoster?.execute(
+        {},
+        // biome-ignore lint: minimal stub
+        {} as any,
+      )) as string;
+      expect(fallback).toContain("instance-project");
+    } finally {
+      restore();
+    }
+  });
+});
 
 describe("SpaceBusPlugin", () => {
   test("registers exactly the six bus tools with description/args/execute", async () => {

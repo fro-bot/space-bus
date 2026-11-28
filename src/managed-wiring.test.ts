@@ -4,7 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveRosterPath } from "./config";
 import { discoveryFilePath, removeDiscovery } from "./discovery";
-import SpaceBusPlugin from "./index";
+import plugin from "./index";
+
+const SpaceBusPlugin = plugin.server;
+
 import { stopServer } from "./server";
 
 const STUB_COMMAND = ["bun", "test/fixtures/stub-server.ts"];

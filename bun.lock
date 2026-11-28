@@ -18,6 +18,9 @@
       "peerDependencies": {
         "@opencode-ai/plugin": ">=1.17.13 <2",
       },
+      "optionalPeers": [
+        "@opencode-ai/plugin",
+      ],
     },
   },
   "packages": {
