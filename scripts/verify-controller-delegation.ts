@@ -2743,7 +2743,8 @@ async function main(): Promise<number> {
       );
       curMode = "external";
     }
-    const mgdHostPort = discovery?.port ?? 0;
+    // Discovery confirms the reservation; it never supplies the destination.
+    const mgdHostPort = managedPort ?? 0;
     if (discovery) {
       procs.push({
         label: "target-mgd (plugin-spawned)",
@@ -3002,7 +3003,7 @@ async function main(): Promise<number> {
           installedPackagePresent: hosts.identity.installedPackagePresent,
         },
       },
-      preflight: preflight ? projectPreflight(preflight) : null,
+      preflight: projectPreflight(preflight),
       mode: modeArg,
       managedRun,
       nonces: N,

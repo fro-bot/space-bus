@@ -167,18 +167,38 @@ function sh(
   return r.stdout.toString();
 }
 
+/**
+ * Every port this harness has reserved. `portOpen` connects only to these, so
+ * a port that arrives from anywhere else (a record a spawned host wrote, for
+ * example) can never become a connect destination here, whatever a caller
+ * forgot to check.
+ */
+const reservedPorts = new Set<number>();
+
 function freePort(): Promise<number> {
   return new Promise((ok, fail) => {
     const s = createServer();
     s.once("error", fail);
     s.listen(0, "127.0.0.1", () => {
       const port = (s.address() as { port: number }).port;
-      s.close(() => ok(port));
+      s.close(() => {
+        reservedPorts.add(port);
+        ok(port);
+      });
     });
   });
 }
 
+/**
+ * Is something listening on 127.0.0.1:`port`? The host is fixed and the port
+ * must be one `freePort()` reserved in this process; anything else rejects
+ * before a socket is opened (fail closed, not "closed").
+ */
 function portOpen(port: number): Promise<boolean> {
+  if (!reservedPorts.has(port))
+    return Promise.reject(
+      new Error("portOpen: port was not reserved by this harness"),
+    );
   return new Promise((ok) => {
     const s = new Socket();
     s.setTimeout(1000);

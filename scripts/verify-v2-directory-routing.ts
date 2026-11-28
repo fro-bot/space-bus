@@ -367,12 +367,10 @@ async function main(): Promise<number> {
     kind: Check["kind"],
     name: string,
     ok: boolean,
-    detail?: string,
+    _detail?: string,
   ) => {
-    checks.push({ name, kind, ok, ...(detail ? { detail } : {}) });
-    log(
-      `${ok ? "ok  " : "FAIL"} [${kind}] ${name}${ok || !detail ? "" : ` — ${detail}`}`,
-    );
+    checks.push({ name, kind, ok });
+    log(`${ok ? "ok  " : "FAIL"} [${kind}] ${name}`);
     return ok;
   };
   let exit = 1;
@@ -380,6 +378,7 @@ async function main(): Promise<number> {
   let fixture: Awaited<ReturnType<typeof startFixture>> | undefined;
   const teardown: Record<string, unknown> = {};
   const replies: Array<Json> = [];
+  const observedReplies = new Map<string, string>();
   try {
     const self = await sandboxSelfTest(iso);
     log(`sandbox self-test ok=${self.ok}`);
@@ -468,8 +467,7 @@ async function main(): Promise<number> {
     const bin = join(nm, CONTROLLER.packages[1] as string, "bin/opencode");
     evidence.write("manifest.json", {
       runId,
-      command:
-        `bun run scripts/verify-v2-directory-routing.ts ${argv.join(" ")}`.trim(),
+      command: `bun run scripts/verify-v2-directory-routing.ts --source ${source} --run-id ${runId}`,
       source: {
         mode: source,
         head: git("rev-parse", "HEAD").trim(),
@@ -615,8 +613,10 @@ async function main(): Promise<number> {
         return { read: false as const, status: r.status };
       return {
         read: true as const,
-        status:
-          list.find((x) => x.id === "space-bus")?.state?.status ?? "absent",
+        active: list.some(
+          (x) => x.id === "space-bus" && x.state?.status === "active",
+        ),
+        present: list.some((x) => x.id === "space-bus"),
       };
     };
     const states: Record<string, unknown> = {};
@@ -662,18 +662,14 @@ async function main(): Promise<number> {
       await http(`${base}/api/session/${sid}/prompt`, auth(dir), "POST", {
         text: `Run the scripted routing probe.\n@@PLAN=${JSON.stringify(plan)}`,
       });
-      const done = await until(
-        `${label} session to finish`,
-        180_000,
-        async () => {
-          const r = await http(`${base}/api/session/${sid}`, auth(dir));
-          const s = (r.body as Json | null)?.["data"] as Json | undefined;
-          return s?.["outcome"] !== undefined &&
-            (s?.["time"] as Json | undefined)?.["idle"] !== undefined
-            ? s
-            : undefined;
-        },
-      );
+      await until(`${label} session to finish`, 180_000, async () => {
+        const r = await http(`${base}/api/session/${sid}`, auth(dir));
+        const s = (r.body as Json | null)?.["data"] as Json | undefined;
+        return s?.["outcome"] !== undefined &&
+          (s?.["time"] as Json | undefined)?.["idle"] !== undefined
+          ? s
+          : undefined;
+      });
       const msgs = await http(`${base}/api/session/${sid}/message`, auth(dir));
       const data = (msgs.body as { data?: unknown } | null)?.data;
       if (msgs.status !== 200 || !Array.isArray(data))
@@ -697,14 +693,11 @@ async function main(): Promise<number> {
       const seen = (fixture?.requests ?? [])
         .slice(mark)
         .filter((r) => r.role === "controller" && r.hasTools);
+      observedReplies.set(label, text);
       replies.push({
         label,
-        outcome: done["outcome"],
-        status: state["status"],
-        roster: verdict.roster,
-        valid: verdict.valid,
-        modelCwd: seen[0]?.cwd ?? null,
-        text: text.slice(0, 400),
+        expectedRosterAndProjects: verdict.ok,
+        modelDirectoryMatches: seen[0]?.cwd === dir,
       });
       check(
         "harness",
@@ -734,12 +727,8 @@ async function main(): Promise<number> {
     await sessionCall("workspace-a (again)", dirs.a, wantA);
 
     // ---- detector controls: the judge can fail --------------------------------
-    const aReply = replies.find((r) =>
-      String(r["label"]).startsWith("workspace-a"),
-    )?.["text"] as string | undefined;
-    const bReply = replies.find((r) => r["label"] === "workspace-b")?.[
-      "text"
-    ] as string | undefined;
+    const aReply = observedReplies.get("workspace-a (1st)");
+    const bReply = observedReplies.get("workspace-b");
     check(
       "harness",
       "control: workspace-a's reply is judged wrong for workspace-b's expectation",
@@ -832,9 +821,8 @@ async function main(): Promise<number> {
             .filter((r) => r.role === "controller" && r.hasTools);
           replies.push({
             label: "launch (control)",
-            status: st["status"],
-            modelCwd: seen[0]?.cwd ?? null,
-            text: text.slice(0, 300),
+            modelDirectoryMatches: seen[0]?.cwd === dirs.launch,
+            unknownTool: /Unknown tool|not found|No tool/i.test(text),
           });
           check(
             "harness",
@@ -850,8 +838,8 @@ async function main(): Promise<number> {
     await snapshotPlugins("after-sessions");
     evidence.write("plugin-state.json", states);
     evidence.write("replies.json", replies);
-  } catch (e) {
-    check("harness", `fatal: ${(e as Error).message.slice(0, 300)}`, false);
+  } catch {
+    check("harness", "fatal: routing harness failed", false);
   } finally {
     if (host)
       teardown["controller"] = await stopOwned(host.child, host.bin, host.port);
@@ -902,8 +890,8 @@ async function main(): Promise<number> {
         "no managed target, no guest, no bridge",
       ],
     });
-  } catch (e) {
-    log(`could not persist summary: ${(e as Error).message}`);
+  } catch {
+    log("could not persist summary");
     exit = 1;
   }
   log(`exit ${exit}`);

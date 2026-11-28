@@ -666,7 +666,7 @@ describe("wiring: every persisted file is written from a projection", () => {
     "projectFlowEvidence(f, known)",
     "projectFixtureRequests(fixture?.requests, known)",
     'evidence.write("preflight.json", projectPreflight(preflight))',
-    "preflight: preflight ? projectPreflight(preflight) : null",
+    "preflight: projectPreflight(preflight)",
     "teardown: projectTeardown(teardown)",
     "checks: checks.map(projectCheckEvidence)",
   ])("%s", (needle) => {
